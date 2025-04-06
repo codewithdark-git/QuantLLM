@@ -7,7 +7,7 @@ class DatasetConfig:
     """Configuration for dataset loading and processing."""
     
     # Dataset identification
-    dataset_name_or_path: str
+    dataset_name: str
     dataset_type: str = "huggingface"  # huggingface, local, custom
     dataset_revision: str = "main"
     dataset_split: Optional[str] = None
@@ -56,7 +56,7 @@ class DatasetConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
         return {
-            "dataset_name_or_path": self.dataset_name_or_path,
+            "dataset_name": self.dataset_name,
             "dataset_type": self.dataset_type,
             "dataset_revision": self.dataset_revision,
             "dataset_split": self.dataset_split,
@@ -89,7 +89,7 @@ class DatasetConfig:
         
     def validate(self) -> bool:
         """Validate configuration values."""
-        if not self.dataset_name_or_path:
+        if not self.dataset_name:
             raise ValueError("Dataset name or path is required")
             
         if self.dataset_type not in ["huggingface", "local", "custom"]:

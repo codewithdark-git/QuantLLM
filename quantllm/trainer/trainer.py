@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List, Union, Callable
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
-import wandb
+from wandb import wandb, login
 from datetime import datetime
 import os
 from ..config.training_config import TrainingConfig
@@ -53,6 +53,7 @@ class FineTuningTrainer:
         self.hub_manager = hub_manager
         self.use_wandb = use_wandb
         self.wandb_config = wandb_config or {}
+        self.wandb_token = self.wandb_config['API_KEY']
         
         # Set device
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -141,8 +142,10 @@ class FineTuningTrainer:
         
     def _setup_wandb(self):
         """Setup Weights & Biases logging."""
-        if not wandb.api.api_key:
-            self.logger.log_warning("Weights & Biases API key not found. Disabling W&B logging.")
+        if wandb.login(key=self.wandb_token, relogin=True):
+            self.logger.log_info("Logged in to Weights & Biases")
+        else:
+            self.logger.log_error("Failed to log in to Weights & Biases")
             self.use_wandb = False
             return
             
@@ -162,45 +165,78 @@ class FineTuningTrainer:
         outputs = self.model(**batch)
         return outputs.loss
         
-    def _train_step(self, batch: Dict[str, torch.Tensor]) -> float:
-        """Perform a single training step."""
-        self.model.train()
-        
-        # Clear gradients
-        self.optimizer.zero_grad()
-        
-        # Forward pass with mixed precision
-        if self.scaler is not None:
-            with torch.cuda.amp.autocast():
-                loss = self._compute_loss(batch)
-                
+    def train_step(self, batch, scaler):
+        """Single training step."""
+        try:
+            # Move batch to device
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            
+            # Forward pass with modern autocast
+            with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+                outputs = self.model(**batch)
+                loss = outputs.loss
+
             # Backward pass with gradient scaling
-            self.scaler.scale(loss).backward()
+            scaler.scale(loss).backward()
             
-            # Gradient clipping
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm
-            )
+            if self.config.max_grad_norm is not None:
+                scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                
+            scaler.step(self.optimizer)
+            scaler.update()
             
-            # Optimizer step with gradient scaling
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            loss = self._compute_loss(batch)
-            loss.backward()
+            self.optimizer.zero_grad()
             
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.max_grad_norm
-            )
+            return loss.item()
             
-            self.optimizer.step()
+        except Exception as e:
+            print(f"Error in training step: {str(e)}")
+            raise
+
+    def train(self):
+        """Train the model."""
+        try:
+            self.logger.log_info("Starting training")
             
-        return loss.item()
-        
+            # Disable model caching when using gradient checkpointing
+            if hasattr(self.model.config, 'gradient_checkpointing') and self.model.config.gradient_checkpointing:
+                self.model.config.use_cache = False
+                self.logger.log_info("Disabled model caching due to gradient checkpointing")
+                
+            scaler = torch.cuda.amp.GradScaler()
+            
+            for epoch in range(self.config.num_epochs):
+                self.model.train()
+                total_loss = 0
+                
+                # Training loop
+                with tqdm(total=len(self.train_dataloader), desc=f"Epoch {epoch + 1}/{self.config.num_epochs}") as pbar:
+                    for step, batch in enumerate(self.train_dataloader):
+                        loss = self.train_step(batch, scaler)
+                        total_loss += loss
+                        
+                        # Update progress bar
+                        pbar.update(1)
+                        pbar.set_postfix({'loss': f'{loss:.4f}'})
+                        
+                        if self.config.save_steps > 0 and (step + 1) % self.config.save_steps == 0:
+                            self._save_checkpoint(epoch, step)
+                            
+                # Epoch end processing
+                avg_loss = total_loss / len(self.train_dataloader)
+                self.logger.log_info(f"Epoch {epoch + 1} - Average loss: {avg_loss:.4f}")
+                
+                if self.config.save_epochs > 0 and (epoch + 1) % self.config.save_epochs == 0:
+                    self._save_checkpoint(epoch)
+                    
+                if self.config.eval_epochs > 0 and (epoch + 1) % self.config.eval_epochs == 0:
+                    self._evaluate()
+                    
+        except Exception as e:
+            self.logger.log_error(f"Training error: {str(e)}")
+            raise
+                    
     def _evaluate(self) -> Dict[str, float]:
         """Evaluate the model on the validation set."""
         if self.eval_dataloader is None:
@@ -219,96 +255,6 @@ class FineTuningTrainer:
         avg_loss = total_loss / num_batches
         return {"eval_loss": avg_loss}
         
-    def train(self):
-        """Train the model."""
-        self.logger.log_info("Starting training")
-        
-        for epoch in range(self.config.num_epochs):
-            self.epoch = epoch
-            self.logger.log_info(f"Epoch {epoch + 1}/{self.config.num_epochs}")
-            
-            # Training loop
-            total_loss = 0
-            num_batches = 0
-            
-            progress_bar = tqdm(self.train_dataloader, desc="Training")
-            for batch in progress_bar:
-                # Training step
-                loss = self._train_step(batch)
-                total_loss += loss
-                num_batches += 1
-                
-                # Update learning rate
-                if self.scheduler is not None and not isinstance(self.scheduler, ReduceLROnPlateau):
-                    self.scheduler.step()
-                    
-                # Log metrics
-                if self.global_step % self.config.logging_steps == 0:
-                    avg_loss = total_loss / num_batches
-                    metrics = {
-                        "train_loss": avg_loss,
-                        "learning_rate": self.optimizer.param_groups[0]["lr"],
-                        "epoch": epoch + 1,
-                        "step": self.global_step
-                    }
-                    
-                    self.logger.log_metrics(metrics)
-                    if self.use_wandb:
-                        wandb.log(metrics)
-                        
-                # Evaluation and checkpointing
-                if self.eval_dataloader is not None and self.global_step % self.config.eval_steps == 0:
-                    eval_metrics = self._evaluate()
-                    self.logger.log_metrics(eval_metrics)
-                    if self.use_wandb:
-                        wandb.log(eval_metrics)
-                        
-                    # Update learning rate scheduler if using ReduceLROnPlateau
-                    if isinstance(self.scheduler, ReduceLROnPlateau):
-                        self.scheduler.step(eval_metrics["eval_loss"])
-                        
-                    # Early stopping and checkpointing
-                    if eval_metrics["eval_loss"] < self.best_metric - self.config.early_stopping_threshold:
-                        self.best_metric = eval_metrics["eval_loss"]
-                        self.patience_counter = 0
-                        
-                        # Save checkpoint locally
-                        if self.checkpoint_manager is not None:
-                            self.checkpoint_manager.save_checkpoint(
-                                self.model,
-                                self.optimizer,
-                                self.scheduler,
-                                self.global_step,
-                                self.epoch,
-                                eval_metrics
-                            )
-                            
-                        # Push to hub if configured
-                        if self.hub_manager is not None and self.hub_manager.is_logged_in():
-                            try:
-                                self.hub_manager.push_model(
-                                    self.model,
-                                    commit_message=f"Checkpoint at step {self.global_step} with eval_loss {eval_metrics['eval_loss']:.4f}"
-                                )
-                                self.logger.log_info("Model pushed to hub successfully")
-                            except Exception as e:
-                                self.logger.log_error(f"Failed to push model to hub: {str(e)}")
-                    else:
-                        self.patience_counter += 1
-                        if self.patience_counter >= self.config.early_stopping_patience:
-                            self.logger.log_info("Early stopping triggered")
-                            return
-                            
-                self.global_step += 1
-                
-            # End of epoch
-            avg_loss = total_loss / num_batches
-            self.logger.log_info(f"Epoch {epoch + 1} completed. Average loss: {avg_loss:.4f}")
-            
-        self.logger.log_info("Training completed")
-        if self.use_wandb:
-            wandb.finish()
-            
     def save_model(self, output_dir: Union[str, Path]):
         """Save the model and training state."""
         output_dir = Path(output_dir)
@@ -345,4 +291,4 @@ class FineTuningTrainer:
         self.optimizer.load_state_dict(training_state["optimizer_state_dict"])
         if self.scheduler and training_state["scheduler_state_dict"]:
             self.scheduler.load_state_dict(training_state["scheduler_state_dict"])
-        self.best_metric = training_state["best_metric"] 
+        self.best_metric = training_state["best_metric"]

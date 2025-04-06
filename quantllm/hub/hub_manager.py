@@ -12,16 +12,16 @@ class HubManager:
         """Initialize HubManager and login to Hugging Face."""
         self.model_id = model_id
         self.organization = organization
-        self.api = HfApi()
+        self.token = token
         
-        if token:
-            try:
-                login(token=token)
-                print(f"Successfully logged in to Hugging Face Hub")
-                self.token = token
-            except Exception as e:
-                print(f"Login failed: {str(e)}")
-                raise
+    def login(self):
+        """Login to Hugging Face Hub."""
+        try:
+            self.api = HfApi(token=self.token)
+            print("Successfully logged in to Hugging Face Hub.")
+        except Exception as e:
+            print(f"Error logging in: {str(e)}")
+            raise
                 
     def push_model(
         self,
