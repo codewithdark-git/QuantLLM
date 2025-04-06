@@ -1,6 +1,7 @@
 from datasets import load_dataset, Dataset
 from typing import Optional, Dict, Any, Union
-from ..finetune.logger import TrainingLogger
+import os
+from ..trainer.logger import TrainingLogger
 
 class LoadDataset:
     def __init__(self, logger: Optional[TrainingLogger] = None):
@@ -49,7 +50,7 @@ class LoadDataset:
     def load_local_dataset(
         self,
         file_path: str,
-        file_type: str = "csv",
+        file_type: str = "auto",
         **kwargs
     ) -> Dataset:
         """
@@ -57,14 +58,19 @@ class LoadDataset:
         
         Args:
             file_path (str): Path to the dataset file
-            file_type (str): Type of file (csv, json, etc.)
+            file_type (str): Type of file (auto, csv, json, text, parquet)
             **kwargs: Additional arguments for dataset loading
-            
-        Returns:
-            Dataset: Loaded dataset
         """
         try:
             self.logger.log_info(f"Loading local dataset: {file_path}")
+            
+            if file_type == "auto":
+                extension = os.path.splitext(file_path)[1][1:].lower()
+                if extension in ["csv", "json", "txt", "parquet"]:
+                    file_type = "text" if extension == "txt" else extension
+                else:
+                    raise ValueError(f"Unsupported file extension: {extension}")
+            
             dataset = load_dataset(
                 file_type,
                 data_files=file_path,
@@ -100,4 +106,4 @@ class LoadDataset:
             
         except Exception as e:
             self.logger.log_error(f"Error creating custom dataset: {str(e)}")
-            raise 
+            raise

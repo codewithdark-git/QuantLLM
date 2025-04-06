@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List, Union, Callable
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
-from ..finetune.logger import TrainingLogger
+from ..trainer.logger import TrainingLogger
 
 class ModelEvaluator:
     def __init__(

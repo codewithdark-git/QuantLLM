@@ -11,7 +11,7 @@ import wandb
 from datetime import datetime
 import os
 from ..config.training_config import TrainingConfig
-from ..finetune.logger import TrainingLogger
+from ..trainer.logger import TrainingLogger
 from ..hub.checkpoint_manager import CheckpointManager
 from ..hub.hub_manager import HubManager
 

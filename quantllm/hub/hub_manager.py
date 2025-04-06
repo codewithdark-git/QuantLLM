@@ -1,7 +1,6 @@
-from huggingface_hub import HfApi, Repository
+from huggingface_hub import login, HfApi, Repository
 from typing import Optional, Dict, Any
 import os
-from ..finetune.logger import TrainingLogger
 
 class HubManager:
     def __init__(
@@ -10,20 +9,20 @@ class HubManager:
         token: Optional[str] = None,
         organization: Optional[str] = None
     ):
-        """
-        Initialize the HuggingFace Hub manager.
-        
-        Args:
-            model_id (str): Model ID on HuggingFace Hub
-            token (str, optional): HuggingFace API token
-            organization (str, optional): Organization name
-        """
+        """Initialize HubManager and login to Hugging Face."""
         self.model_id = model_id
-        self.token = token
         self.organization = organization
         self.api = HfApi()
-        self.logger = TrainingLogger()
         
+        if token:
+            try:
+                login(token=token)
+                print(f"Successfully logged in to Hugging Face Hub")
+                self.token = token
+            except Exception as e:
+                print(f"Login failed: {str(e)}")
+                raise
+                
     def push_model(
         self,
         model,
@@ -31,23 +30,15 @@ class HubManager:
         commit_message: str = "Update model",
         **kwargs
     ):
-        """
-        Push model and tokenizer to HuggingFace Hub.
-        
-        Args:
-            model: The model to push
-            tokenizer: The tokenizer to push
-            commit_message (str): Commit message
-            **kwargs: Additional arguments for push
-        """
+        """Push model and tokenizer to HuggingFace Hub."""
         try:
-            # Create repository if it doesn't exist
             if not self.api.repo_exists(self.model_id):
                 self.api.create_repo(
                     repo_id=self.model_id,
                     token=self.token,
                     organization=self.organization
                 )
+                print(f"Created new repository: {self.model_id}")
                 
             # Push model
             model.push_to_hub(
@@ -56,6 +47,7 @@ class HubManager:
                 commit_message=commit_message,
                 **kwargs
             )
+            print(f"Successfully pushed model to {self.model_id}")
             
             # Push tokenizer
             tokenizer.push_to_hub(
@@ -64,11 +56,10 @@ class HubManager:
                 commit_message=commit_message,
                 **kwargs
             )
-            
-            self.logger.log_info(f"Successfully pushed model to {self.model_id}")
+            print(f"Successfully pushed tokenizer to {self.model_id}")
             
         except Exception as e:
-            self.logger.log_error(f"Error pushing model: {str(e)}")
+            print(f"Error pushing to hub: {str(e)}")
             raise
             
     def push_checkpoint(
@@ -77,22 +68,15 @@ class HubManager:
         commit_message: str = "Update checkpoint",
         **kwargs
     ):
-        """
-        Push checkpoint to HuggingFace Hub.
-        
-        Args:
-            checkpoint_path (str): Path to checkpoint
-            commit_message (str): Commit message
-            **kwargs: Additional arguments for push
-        """
+        """Push checkpoint to HuggingFace Hub."""
         try:
-            # Create repository if it doesn't exist
             if not self.api.repo_exists(self.model_id):
                 self.api.create_repo(
                     repo_id=self.model_id,
                     token=self.token,
                     organization=self.organization
                 )
+                print(f"Created new repository: {self.model_id}")
                 
             # Push checkpoint
             self.api.upload_folder(
@@ -102,20 +86,14 @@ class HubManager:
                 commit_message=commit_message,
                 **kwargs
             )
-            
-            self.logger.log_info(f"Successfully pushed checkpoint to {self.model_id}")
+            print(f"Successfully pushed checkpoint to {self.model_id}")
             
         except Exception as e:
-            self.logger.log_error(f"Error pushing checkpoint: {str(e)}")
+            print(f"Error pushing checkpoint: {str(e)}")
             raise
             
     def pull_model(self, local_dir: str = None):
-        """
-        Pull model from HuggingFace Hub.
-        
-        Args:
-            local_dir (str, optional): Local directory to save model
-        """
+        """Pull model from HuggingFace Hub."""
         try:
             if local_dir is None:
                 local_dir = self.model_id.split("/")[-1]
@@ -126,10 +104,9 @@ class HubManager:
                 clone_from=self.model_id,
                 token=self.token
             )
-            
-            self.logger.log_info(f"Successfully pulled model to {local_dir}")
+            print(f"Successfully pulled model to {local_dir}")
             return local_dir
             
         except Exception as e:
-            self.logger.log_error(f"Error pulling model: {str(e)}")
-            raise 
+            print(f"Error pulling model: {str(e)}")
+            raise

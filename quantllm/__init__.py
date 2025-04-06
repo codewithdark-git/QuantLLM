@@ -1,17 +1,17 @@
-from .model import ModelLoader
-from .dataset import (
+from .model import Model
+from .data import (
     LoadDataset,
     DatasetPreprocessor,
     DatasetSplitter,
     DataLoader
 )
-from .finetune import (
+from .trainer import (
     FineTuningTrainer,
     ModelEvaluator,
     TrainingLogger
 )
-from .hub import HubManager
-from .hub import CheckpointManager
+from .hub import HubManager, CheckpointManager
+
 from .config import (
     ModelConfig,
     DatasetConfig,
@@ -22,7 +22,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     # Model
-    "ModelLoader",
+    "Model",
     
     # Dataset
     "DataLoader",

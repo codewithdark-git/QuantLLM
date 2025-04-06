@@ -2,31 +2,25 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from typing import Optional, Dict, Any
 from .lora_config import LoraConfigManager
+from ..config.model_config import ModelConfig
 
-class ModelLoader:
+class Model:
     def __init__(
         self,
-        model_name: str,
-        quantization: str = "4bit",
-        use_lora: bool = True,
-        device_map: str = "auto",
-        **kwargs
+        config: ModelConfig
     ):
         """
-        Initialize the model loader.
+        Initialize the Model.
         
         Args:
-            model_name (str): Name or path of the model
-            quantization (str): Quantization mode ("4bit" or "8bit")
-            use_lora (bool): Whether to use LoRA
-            device_map (str): Device mapping strategy
-            **kwargs: Additional model configuration
+            config (ModelConfig): Configuration object for the model
+
         """
-        self.model_name = model_name
-        self.quantization = quantization
-        self.use_lora = use_lora
-        self.device_map = device_map
-        self.kwargs = kwargs
+        self.model_name = config.model_name
+        self.quantization = '4bit' if config.load_in_4bit else '8bit'
+        self.use_lora = config.use_lora
+        self.device_map = config.device_map
+        self.kwargs = config.kwargs
         
         self._setup_quantization()
         self._load_model()

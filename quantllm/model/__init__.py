@@ -1,4 +1,4 @@
-from .model_loader import ModelLoader
+from .model import Model
 from .lora_config import LoraConfigManager
 
-__all__ = ["ModelLoader", "LoraConfigManager"] 
+__all__ = ["Model", "LoraConfigManager"] 

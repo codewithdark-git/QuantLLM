@@ -112,7 +112,13 @@ class DatasetConfig:
         if abs(total_size - 1.0) > 1e-6:
             raise ValueError("Train, validation, and test sizes must sum to 1")
             
+        if isinstance(self.padding, str) and self.padding not in ["max_length", "longest", "do_not_pad"]:
+            raise ValueError("Padding must be True, False, 'max_length', 'longest', or 'do_not_pad'")
+            
+        if self.file_format not in ["auto", "csv", "json", "text", "parquet"]:
+            raise ValueError("File format must be 'auto', 'csv', 'json', 'text', or 'parquet'")
+            
         if self.data_dir is not None and not self.data_dir.exists():
             raise ValueError(f"Data directory does not exist: {self.data_dir}")
             
-        return True 
+        return True

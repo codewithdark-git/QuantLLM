@@ -2,7 +2,7 @@ import yaml
 import json
 from typing import Dict, Any, Optional
 from pathlib import Path
-from ..finetune.logger import TrainingLogger
+from ..trainer.logger import TrainingLogger
 
 class ConfigManager:
     def __init__(self, logger: Optional[TrainingLogger] = None):

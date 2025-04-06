@@ -2,17 +2,19 @@ import os
 import shutil
 from typing import Optional, Dict, Any
 from datetime import datetime
-from ..finetune.logger import TrainingLogger
+from ..trainer.logger import TrainingLogger
 
 class CheckpointManager:
-    def __init__(self, checkpoint_dir: str = "./checkpoints"):
+    def __init__(self, checkpoint_dir: str = "./checkpoints", save_total_limit: int = None):
         """
         Initialize the checkpoint manager.
         
         Args:
             checkpoint_dir (str): Directory to store checkpoints
+            save_total_limit (int, optional): Maximum number of checkpoints to keep
         """
         self.checkpoint_dir = checkpoint_dir
+        self.save_total_limit = save_total_limit
         os.makedirs(checkpoint_dir, exist_ok=True)
         self.logger = TrainingLogger()
         
@@ -52,6 +54,15 @@ class CheckpointManager:
                 with open(metrics_path, 'w') as f:
                     import json
                     json.dump(metrics, f, indent=4)
+            
+            # Handle save_total_limit
+            if self.save_total_limit is not None:
+                checkpoints = self.list_checkpoints()
+                if len(checkpoints) > self.save_total_limit:
+                    # Sort by creation time and remove oldest
+                    checkpoints.sort(key=lambda x: os.path.getctime(x))
+                    for checkpoint in checkpoints[:-self.save_total_limit]:
+                        self.delete_checkpoint(checkpoint)
                     
             self.logger.log_info(f"Checkpoint saved to {checkpoint_path}")
             return checkpoint_path
@@ -117,4 +128,4 @@ class CheckpointManager:
                 
         except Exception as e:
             self.logger.log_error(f"Error deleting checkpoint: {str(e)}")
-            raise 
+            raise

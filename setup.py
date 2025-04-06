@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="quantllm",
-    version="0.1.0",
+    version="0.0.1b",
     packages=find_packages(),
     install_requires=[
         "transformers>=4.30.0",
@@ -16,6 +16,8 @@ setup(
         "huggingface_hub>=0.15.0",
         "torch>=2.0.0",
         "pyyaml>=6.0",
+        "tqdm>=4.65.0",
+        "wandb>=0.15.0",
     ],
     author="Dark Coder",
     author_email="codewithdark90@gmail.com",

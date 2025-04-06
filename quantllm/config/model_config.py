@@ -7,7 +7,7 @@ class ModelConfig:
     """Configuration for model loading and initialization."""
     
     # Model identification
-    model_name_or_path: str
+    model_name: str
     model_type: str = "auto"
     revision: str = "main"
     trust_remote_code: bool = False
@@ -26,7 +26,7 @@ class ModelConfig:
     layer_norm_eps: float = 1e-12
     
     # Tokenizer
-    tokenizer_name_or_path: Optional[str] = None
+    tokenizer_name: Optional[str] = None
     tokenizer_revision: str = "main"
     tokenizer_trust_remote_code: bool = False
     
@@ -41,22 +41,28 @@ class ModelConfig:
     # LoRA
     lora_config: Optional[Dict[str, Any]] = None
     use_lora: bool = False
+
+    kwargs: Optional[Dict[str, Any]] = None
+    device_map: Optional[Dict[str, str]] = 'auto'  # 'auto' or specific device mapping
     
     def __post_init__(self):
         """Post-initialization processing."""
-        if self.tokenizer_name_or_path is None:
-            self.tokenizer_name_or_path = self.model_name_or_path
+        if self.tokenizer_name is None:
+            self.tokenizer_name = self.model_name
             
         if self.quantization_config is None:
             self.quantization_config = {}
             
         if self.lora_config is None:
             self.lora_config = {}
+
+        if self.kwargs is None:
+            self.kwargs = {}
             
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
         return {
-            "model_name_or_path": self.model_name_or_path,
+            "model_name": self.model_name,
             "model_type": self.model_type,
             "revision": self.revision,
             "trust_remote_code": self.trust_remote_code,
@@ -71,7 +77,7 @@ class ModelConfig:
             "type_vocab_size": self.type_vocab_size,
             "initializer_range": self.initializer_range,
             "layer_norm_eps": self.layer_norm_eps,
-            "tokenizer_name_or_path": self.tokenizer_name_or_path,
+            "tokenizer_name": self.tokenizer_name,
             "tokenizer_revision": self.tokenizer_revision,
             "tokenizer_trust_remote_code": self.tokenizer_trust_remote_code,
             "quantization_config": self.quantization_config,
@@ -81,7 +87,9 @@ class ModelConfig:
             "bnb_4bit_quant_type": self.bnb_4bit_quant_type,
             "bnb_4bit_use_double_quant": self.bnb_4bit_use_double_quant,
             "lora_config": self.lora_config,
-            "use_lora": self.use_lora
+            "use_lora": self.use_lora,
+            "kwargs": self.kwargs,
+            "device_map": self.device_map
         }
         
     @classmethod
@@ -91,7 +99,7 @@ class ModelConfig:
         
     def validate(self) -> bool:
         """Validate configuration values."""
-        if not self.model_name_or_path:
+        if not self.model_name:
             raise ValueError("Model name or path is required")
             
         if self.hidden_size is not None and self.hidden_size <= 0:
@@ -118,4 +126,7 @@ class ModelConfig:
         if self.load_in_8bit and self.load_in_4bit:
             raise ValueError("Cannot load model in both 8-bit and 4-bit precision")
             
-        return True 
+        if self.device_map not in ['auto', None] and not isinstance(self.device_map, dict):
+            raise ValueError("device_map must be 'auto', None, or a dictionary mapping layers to devices")
+            
+        return True

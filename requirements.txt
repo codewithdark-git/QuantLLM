@@ -5,4 +5,7 @@ peft>=0.4.0
 bitsandbytes>=0.39.0
 huggingface_hub>=0.15.0
 torch>=2.0.0
-pyyaml>=6.0 
+pyyaml>=6.0
+tqdm>=4.65.0
+wandb>=0.15.0
+ 

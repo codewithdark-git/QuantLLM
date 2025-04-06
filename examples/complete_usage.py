@@ -1,5 +1,5 @@
 from quantllm import (
-    ModelLoader,
+    Model,
     LoadDataset,
     DatasetPreprocessor,
     DatasetSplitter,
@@ -11,7 +11,7 @@ from quantllm import (
 )
 import os
 # Initialize logger
-from quantllm.finetune import TrainingLogger
+from quantllm.trainer import TrainingLogger
 from quantllm.config import (
     DatasetConfig,
     ModelConfig,
@@ -34,11 +34,10 @@ def main():
         model_config = ModelConfig(
             model_name="meta-llama/Llama-3.2-3B",
             load_in_4bit=True,
-            use_lora=True,
-            hub_manager=hub_manager
+            use_lora=True
         )
 
-        model_loader = ModelLoader(model_config)
+        model_loader = Model(model_config)
         model = model_loader.get_model()
         tokenizer = model_loader.get_tokenizer()
 
@@ -52,8 +51,7 @@ def main():
             max_length=512,
             train_size=0.8,
             val_size=0.1,
-            test_size=0.1,
-            hub_manager=hub_manager
+            test_size=0.1
         )
 
         # Load and prepare dataset
@@ -73,7 +71,7 @@ def main():
         # 4. Dataset Preprocessing
         logger.log_info("Preprocessing datasets")
         preprocessor = DatasetPreprocessor(tokenizer, logger)
-        train_dataset, val_dataset, test_dataset = preprocessor.tokenize_dataset(
+        train_tokenizer, val_tokenizer, test_tokenizer = preprocessor.tokenize_dataset(
             train_dataset, val_dataset, test_dataset,
             max_length=dataset_config.max_length,
             text_column=dataset_config.text_column,
@@ -83,9 +81,9 @@ def main():
         # Create data loaders using QuantLLMDataLoader
         logger.log_info("Creating data loaders")
         dataloaders = DataLoader.from_datasets(
-            train_dataset=train_dataset,
-            val_dataset=val_dataset,
-            test_dataset=test_dataset,
+            train_dataset=train_tokenizer,
+            val_dataset=val_tokenizer,
+            test_dataset=test_tokenizer,
             batch_size=4,
             num_workers=4
         )
