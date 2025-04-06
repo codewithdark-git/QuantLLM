@@ -45,57 +45,153 @@ from quantllm import (
     DatasetSplitter,
     FineTuningTrainer,
     ModelEvaluator,
-    TrainingConfig,
+    HubManager,
+    CheckpointManager,
+)
+import os
+from quantllm.finetune import TrainingLogger
+from quantllm.config import (
+    DatasetConfig,
     ModelConfig,
-    DatasetConfig
+    TrainingConfig,
 )
 
 # Initialize logger
-from quantllm.finetune import TrainingLogger
 logger = TrainingLogger()
 
-# 1. Dataset Configuration and Loading
+# 1. Initialize hub manager first
+hub_manager = HubManager(
+    model_id="your-username/llama-2-imdb",
+    token=os.getenv("HF_TOKEN")
+)
+
+# 2. Model Configuration and Loading
+model_config = ModelConfig(
+    model_name="meta-llama/Llama-3.2-3B",
+    load_in_4bit=True,
+    use_lora=True,
+    hub_manager=hub_manager
+)
+
+model_loader = ModelLoader(model_config)
+model = model_loader.get_model()
+tokenizer = model_loader.get_tokenizer()
+
+# 3. Dataset Configuration and Loading
 dataset_config = DatasetConfig(
     dataset_name_or_path="imdb",
     dataset_type="huggingface",
     text_column="text",
-    label_column="label"
+    label_column="label",
+    max_length=512,
+    train_size=0.8,
+    val_size=0.1,
+    test_size=0.1,
+    hub_manager=hub_manager
 )
 
+# Load and prepare dataset
 dataset_loader = DatasetLoader(logger)
-dataset = dataset_loader.load_hf_dataset(dataset_config.dataset_name_or_path)
+dataset = dataset_loader.load_hf_dataset(dataset_config)
 
-# 2. Model Configuration and Loading
-model_config = ModelConfig(
-    model_name_or_path="meta-llama/Llama-2-7b-hf",
-    load_in_4bit=True,
-    use_lora=True
+# Split dataset
+dataset_splitter = DatasetSplitter(logger)
+train_dataset, val_dataset, test_dataset = dataset_splitter.train_val_test_split(
+    dataset,
+    train_size=dataset_config.train_size,
+    val_size=dataset_config.val_size,
+    test_size=dataset_config.test_size
 )
 
-model_loader = ModelLoader(
-    model_name=model_config.model_name_or_path,
-    quantization="4bit" if model_config.load_in_4bit else None,
-    use_lora=model_config.use_lora
+# 4. Dataset Preprocessing
+preprocessor = DatasetPreprocessor(tokenizer, logger)
+train_dataset, val_dataset, test_dataset = preprocessor.tokenize_dataset(
+    train_dataset, val_dataset, test_dataset,
+    max_length=dataset_config.max_length,
+    text_column=dataset_config.text_column,
+    label_column=dataset_config.label_column
 )
-model = model_loader.get_model()
-tokenizer = model_loader.get_tokenizer()
 
-# 3. Training Configuration
+# Create data loaders
+train_dataloader = DataLoader(
+    train_dataset,
+    batch_size=4,
+    shuffle=True,
+    num_workers=4
+)
+val_dataloader = DataLoader(
+    val_dataset,
+    batch_size=4,
+    shuffle=False,
+    num_workers=4
+)
+test_dataloader = DataLoader(
+    test_dataset,
+    batch_size=4,
+    shuffle=False,
+    num_workers=4
+)
+
+# 5. Training Configuration
 training_config = TrainingConfig(
     learning_rate=2e-4,
     num_epochs=3,
-    batch_size=4
+    batch_size=4,
+    gradient_accumulation_steps=4,
+    warmup_steps=100,
+    logging_steps=50,
+    eval_steps=200,
+    save_steps=500,
+    early_stopping_patience=3,
+    early_stopping_threshold=0.01
 )
 
-# 4. Initialize and Run Trainer
+# Initialize checkpoint manager
+checkpoint_manager = CheckpointManager(
+    output_dir="./checkpoints",
+    save_total_limit=3
+)
+
+# 6. Initialize Trainer
 trainer = FineTuningTrainer(
     model=model,
     training_config=training_config,
     train_dataloader=train_dataloader,
     eval_dataloader=val_dataloader,
+    logger=logger,
+    checkpoint_manager=checkpoint_manager,
+    hub_manager=hub_manager,
+    use_wandb=True,
+    wandb_config={
+        "project": "quantllm-imdb",
+        "name": "llama-2-imdb-finetuning"
+    }
+)
+
+# 7. Train the model
+trainer.train()
+
+# 8. Evaluate on test set
+evaluator = ModelEvaluator(
+    model=model,
+    eval_dataloader=test_dataloader,
+    metrics=[
+        lambda preds, labels, _: (preds.argmax(dim=-1) == labels).float().mean().item()  # Accuracy
+    ],
     logger=logger
 )
-trainer.train()
+
+test_metrics = evaluator.evaluate()
+
+# 9. Save final model
+trainer.save_model("./final_model")
+
+# 10. Push to Hub if logged in
+if hub_manager.is_logged_in():
+    hub_manager.push_model(
+        model,
+        commit_message=f"Final model with test accuracy: {test_metrics.get('accuracy', 0):.4f}"
+    )
 ```
 
 ### ⚙️ Advanced Usage
@@ -105,7 +201,7 @@ trainer.train()
 Create a config file (e.g., `config.yaml`):
 ```yaml
 model:
-  model_name_or_path: "meta-llama/Llama-2-7b-hf"
+  model_name: "meta-llama/Llama-3.2-3B"
   load_in_4bit: true
   use_lora: true
   lora_config:
@@ -118,45 +214,21 @@ dataset:
   text_column: "text"
   label_column: "label"
   max_length: 512
+  train_size: 0.8
+  val_size: 0.1
+  test_size: 0.1
 
 training:
   learning_rate: 2e-4
   num_epochs: 3
   batch_size: 4
   gradient_accumulation_steps: 4
-```
-
-#### Hub Integration
-
-```python
-from quantllm.hub import HubManager
-
-hub_manager = HubManager(
-    model_id="your-username/llama-2-imdb",
-    token=os.getenv("HF_TOKEN")
-)
-
-if hub_manager.is_logged_in():
-    hub_manager.push_model(
-        model,
-        commit_message="Trained model with custom configuration"
-    )
-```
-
-#### Evaluation
-
-```python
-from quantllm.finetune import ModelEvaluator
-
-evaluator = ModelEvaluator(
-    model=model,
-    eval_dataloader=test_dataloader,
-    metrics=[
-        lambda preds, labels, _: (preds.argmax(dim=-1) == labels).float().mean().item()
-    ]
-)
-
-metrics = evaluator.evaluate()
+  warmup_steps: 100
+  logging_steps: 50
+  eval_steps: 200
+  save_steps: 500
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.01
 ```
 
 ## 📚 Documentation
@@ -165,14 +237,10 @@ metrics = evaluator.evaluate()
 
 ```python
 model_config = ModelConfig(
-    model_name_or_path="meta-llama/Llama-2-7b-hf",
+    model_name="meta-llama/Llama-3.2-3B",
     load_in_4bit=True,
     use_lora=True,
-    lora_config={
-        "r": 16,
-        "lora_alpha": 32,
-        "target_modules": ["q_proj", "v_proj"]
-    }
+    hub_manager=hub_manager
 )
 ```
 
@@ -187,7 +255,8 @@ dataset_config = DatasetConfig(
     max_length=512,
     train_size=0.8,
     val_size=0.1,
-    test_size=0.1
+    test_size=0.1,
+    hub_manager=hub_manager
 )
 ```
 
@@ -203,7 +272,8 @@ training_config = TrainingConfig(
     logging_steps=50,
     eval_steps=200,
     save_steps=500,
-    early_stopping_patience=3
+    early_stopping_patience=3,
+    early_stopping_threshold=0.01
 )
 ```
 

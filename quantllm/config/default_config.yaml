@@ -1,0 +1,20 @@
+model_name: "meta-llama/Llama-2-7b-hf"
+quantization: "4bit"
+use_lora: true
+dataset_name: "imdb"
+epochs: 3
+push_to_hub: true
+hub_model_id: "your-username/llama-2-4bit"
+
+# Training parameters
+batch_size: 4
+gradient_accumulation_steps: 4
+learning_rate: 2e-4
+warmup_steps: 100
+weight_decay: 0.01
+
+# LoRA parameters
+lora_r: 8
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: ["q_proj", "v_proj"] 
