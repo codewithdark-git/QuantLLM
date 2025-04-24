@@ -3,18 +3,18 @@ from setuptools import setup, find_packages
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
-with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
-
 setup(
     name="quantllm",
-    version="0.1.0",
+    version="1.1.0",
     author="Dark Coder",
     author_email="codewithdark90@gmail.com",
     description="A lightweight library for quantized LLM fine-tuning and deployment",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/codewithdark-git/QuantLLM",
+    project_urls={
+        "Homepage": "https://github.com/codewithdark-git/DiffusionLM",
+        "Sponsor": "https://github.com/sponsors/codewithdark-git",  # 💰
+    },
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -22,24 +22,12 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
-    python_requires=">=3.8",
-    install_requires=requirements,
-    extras_require={
-        "dev": [
-            "sphinx>=4.5.0",
-            "sphinx-rtd-theme>=1.0.0",
-            "sphinx-copybutton>=0.5.0",
-            "sphinx-autodoc-typehints>=1.18.3",
-            "myst-parser>=0.18.1",
-            "pytest>=7.0.0",
-            "pytest-cov>=3.0.0",
-            "black>=22.0.0",
-            "isort>=5.10.0",
-            "flake8>=4.0.0",
+    python_requires=">=3.10",
+    install_requires=[
             "torch>=2.0.0",
             "transformers>=4.30.0",
             "datasets>=2.12.0",
@@ -56,6 +44,19 @@ setup(
             "einops>=0.6.1",
             "evaluate>=0.4.0",
             "tensorboard>=2.13.0"
+    ],
+    extras_require={
+        "dev": [
+            "sphinx>=4.5.0",
+            "sphinx-rtd-theme>=1.0.0",
+            "sphinx-copybutton>=0.5.0",
+            "sphinx-autodoc-typehints>=1.18.3",
+            "myst-parser>=0.18.1",
+            "pytest>=7.0.0",
+            "pytest-cov>=3.0.0",
+            "black>=22.0.0",
+            "isort>=5.10.0",
+            "flake8>=4.0.0",
         ],
     },
     include_package_data=True,
