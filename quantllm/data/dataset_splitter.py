@@ -1,11 +1,26 @@
-from datasets import Dataset
-from typing import Optional, Dict, Any, Tuple
+from datasets import Dataset, DatasetDict
+from typing import Optional, Tuple, Union
+import numpy as np
 from ..trainer.logger import TrainingLogger
+from tqdm.auto import tqdm
+import logging
+
+# Configure logging
+logging.getLogger("datasets").setLevel(logging.WARNING)
 
 class DatasetSplitter:
-    def __init__(self, logger=None):
+    def __init__(self, logger: Optional[TrainingLogger] = None):
+        """Initialize dataset splitter."""
         self.logger = logger or TrainingLogger()
-        
+
+    def _get_dataset_from_dict(self, dataset: Union[Dataset, DatasetDict], split: str = "train") -> Dataset:
+        """Extract dataset from DatasetDict if needed."""
+        if isinstance(dataset, DatasetDict):
+            if split in dataset:
+                return dataset[split]
+            raise ValueError(f"DatasetDict does not contain split '{split}'")
+        return dataset
+
     def validate_split_params(self, train_size: float, val_size: float, test_size: float = None):
         """Validate split parameters."""
         if train_size <= 0 or train_size >= 1:
@@ -55,52 +70,104 @@ class DatasetSplitter:
             self.logger.log_error(f"Error splitting dataset: {str(e)}")
             raise
             
-    def train_val_test_split(self, dataset, train_size: float, val_size: float, test_size: float = None):
-        """Split dataset into train, validation and test sets."""
+    def train_val_test_split(
+        self,
+        dataset: Union[Dataset, DatasetDict],
+        train_size: float = 0.8,
+        val_size: float = 0.1,
+        test_size: float = 0.1,
+        shuffle: bool = True,
+        seed: int = 42,
+        split: str = "train"
+    ) -> Tuple[Dataset, Dataset, Dataset]:
+        """
+        Split dataset into train, validation and test sets with progress indication.
+        
+        Args:
+            dataset (Dataset or DatasetDict): Dataset to split
+            train_size (float): Proportion of training set
+            val_size (float): Proportion of validation set
+            test_size (float): Proportion of test set
+            shuffle (bool): Whether to shuffle the dataset
+            seed (int): Random seed
+            split (str): Which split to use if dataset is a DatasetDict
+            
+        Returns:
+            Tuple[Dataset, Dataset, Dataset]: Train, validation and test datasets
+        """
         try:
-            if not isinstance(dataset, Dataset):
-                if isinstance(dataset, dict) and 'train' in dataset:
-                    dataset = dataset['train']
-                else:
-                    raise ValueError(f"Expected Dataset object or dict with 'train' key, got {type(dataset)}")
-                    
-            if test_size is None:
-                test_size = 1.0 - train_size - val_size
-                
-            self.validate_split_params(train_size, val_size, test_size)
+            # Get the actual dataset if we have a DatasetDict
+            dataset = self._get_dataset_from_dict(dataset, split)
             
-            # If dataset is already split
-            if isinstance(dataset, dict) and all(k in dataset for k in ['train', 'validation', 'test']):
-                self.logger.log_info("Dataset already contains train/validation/test splits")
-                return dataset['train'], dataset['validation'], dataset['test']
+            # Validate split proportions
+            total = train_size + val_size + test_size
+            if not np.isclose(total, 1.0):
+                raise ValueError(f"Split proportions must sum to 1, got {total}")
             
-            # Convert ratios to absolute sizes
+            # Calculate split sizes
             total_size = len(dataset)
-            if total_size == 0:
-                raise ValueError("Dataset is empty")
+            train_samples = int(total_size * train_size)
+            val_samples = int(total_size * val_size)
+            test_samples = total_size - train_samples - val_samples
+            
+            self.logger.log_info("Splitting dataset...")
+            
+            # Create indices
+            indices = np.arange(total_size)
+            if shuffle:
+                with tqdm(total=1, desc="Shuffling dataset", unit="operation") as pbar:
+                    rng = np.random.default_rng(seed)
+                    rng.shuffle(indices)
+                    pbar.update(1)
+            
+            # Split dataset using Hugging Face's built-in functionality
+            with tqdm(total=2, desc="Creating splits", unit="split") as pbar:
+                # First split: train vs rest
+                train_val_split = dataset.train_test_split(
+                    train_size=train_size,
+                    seed=seed,
+                    shuffle=False  # We already shuffled if needed
+                )
+                train_dataset = train_val_split["train"]
+                rest_dataset = train_val_split["test"]
+                pbar.update(1)
                 
-            train_end = int(total_size * train_size)
-            val_end = train_end + int(total_size * val_size)
+                # Second split: val vs test from the rest
+                val_ratio = val_size / (val_size + test_size)
+                val_test_split = rest_dataset.train_test_split(
+                    train_size=val_ratio,
+                    seed=seed,
+                    shuffle=False
+                )
+                val_dataset = val_test_split["train"]
+                test_dataset = val_test_split["test"]
+                pbar.update(1)
             
-            # Shuffle dataset with seed for reproducibility
-            dataset = dataset.shuffle(seed=42)
-            
-            # Split dataset
-            train_dataset = dataset.select(range(train_end))
-            val_dataset = dataset.select(range(train_end, val_end))
-            test_dataset = dataset.select(range(val_end, total_size))
-            
-            # Validate split sizes
-            if len(train_dataset) == 0 or len(val_dataset) == 0 or len(test_dataset) == 0:
-                raise ValueError("One or more splits are empty. Try adjusting split ratios.")
-                
+            # Log split sizes
             self.logger.log_info(f"Split sizes - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+            
             return train_dataset, val_dataset, test_dataset
             
         except Exception as e:
             self.logger.log_error(f"Error splitting dataset: {str(e)}")
             raise
-            
+
+    def train_val_split(
+        self,
+        dataset: Union[Dataset, DatasetDict],
+        train_size: float = 0.8,
+        shuffle: bool = True,
+        seed: int = 42,
+        split: str = "train"
+    ) -> Tuple[Dataset, Dataset]:
+        """Split dataset into train and validation sets."""
+        dataset = self._get_dataset_from_dict(dataset, split)
+        return dataset.train_test_split(
+            train_size=train_size,
+            shuffle=shuffle,
+            seed=seed
+        ).values()
+
     def k_fold_split(self, dataset, n_splits: int = 5, shuffle: bool = True, seed: int = 42):
         """Create k-fold cross validation splits."""
         try:

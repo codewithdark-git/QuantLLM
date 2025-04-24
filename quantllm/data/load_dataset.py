@@ -1,7 +1,15 @@
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, disable_progress_bars
 from typing import Optional, Dict, Any, Union
 import os
 from ..trainer.logger import TrainingLogger
+from tqdm.auto import tqdm
+import logging
+import warnings
+
+# Disable unnecessary logging
+logging.getLogger("datasets").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+warnings.filterwarnings("ignore")
 
 class LoadDataset:
     def __init__(self, logger: Optional[TrainingLogger] = None):
@@ -12,6 +20,7 @@ class LoadDataset:
             logger (TrainingLogger, optional): Logger instance
         """
         self.logger = logger or TrainingLogger()
+        disable_progress_bars()  # Disable default progress bars
         
     def load_hf_dataset(
         self,
@@ -21,7 +30,7 @@ class LoadDataset:
         **kwargs
     ) -> Dataset:
         """
-        Load a dataset from HuggingFace.
+        Load a dataset from HuggingFace with custom progress bar.
         
         Args:
             dataset_name (str): Name of the dataset
@@ -34,12 +43,17 @@ class LoadDataset:
         """
         try:
             self.logger.log_info(f"Loading dataset: {dataset_name}")
-            dataset = load_dataset(
-                dataset_name,
-                split=split,
-                streaming=streaming,
-                **kwargs
-            )
+            
+            # Create progress bar
+            with tqdm(total=1, desc=f"Downloading {dataset_name}", unit="dataset") as pbar:
+                dataset = load_dataset(
+                    dataset_name,
+                    split=split,
+                    streaming=streaming,
+                    **kwargs
+                )
+                pbar.update(1)
+            
             self.logger.log_info(f"Successfully loaded dataset: {dataset_name}")
             return dataset
             
@@ -54,7 +68,7 @@ class LoadDataset:
         **kwargs
     ) -> Dataset:
         """
-        Load a dataset from local file.
+        Load a dataset from local file with progress bar.
         
         Args:
             file_path (str): Path to the dataset file
@@ -71,11 +85,15 @@ class LoadDataset:
                 else:
                     raise ValueError(f"Unsupported file extension: {extension}")
             
-            dataset = load_dataset(
-                file_type,
-                data_files=file_path,
-                **kwargs
-            )
+            # Create progress bar
+            with tqdm(total=1, desc=f"Loading {file_path}", unit="file") as pbar:
+                dataset = load_dataset(
+                    file_type,
+                    data_files=file_path,
+                    **kwargs
+                )
+                pbar.update(1)
+            
             self.logger.log_info(f"Successfully loaded local dataset: {file_path}")
             return dataset
             
@@ -89,7 +107,7 @@ class LoadDataset:
         **kwargs
     ) -> Dataset:
         """
-        Load a custom dataset from data.
+        Load a custom dataset from data with progress indication.
         
         Args:
             data (Union[Dict, list]): Dataset data
@@ -100,7 +118,12 @@ class LoadDataset:
         """
         try:
             self.logger.log_info("Creating custom dataset")
-            dataset = Dataset.from_dict(data, **kwargs)
+            
+            # Create progress bar
+            with tqdm(total=1, desc="Creating dataset", unit="dataset") as pbar:
+                dataset = Dataset.from_dict(data, **kwargs)
+                pbar.update(1)
+            
             self.logger.log_info("Successfully created custom dataset")
             return dataset
             

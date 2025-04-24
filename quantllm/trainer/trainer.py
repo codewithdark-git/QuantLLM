@@ -232,7 +232,12 @@ class FineTuningTrainer:
     def train(self):
         """Train the model."""
         try:
-            self.logger.log_info("Starting training")
+            # Log training start
+            self.logger.log_training_start(
+                model_name=self.model.config.name_or_path,
+                dataset_name=self.train_dataloader.dataset.__class__.__name__,
+                config=self.config.to_dict()
+            )
             
             # Disable model caching when using gradient checkpointing
             if hasattr(self.model.config, 'gradient_checkpointing') and self.model.config.gradient_checkpointing:
@@ -245,6 +250,9 @@ class FineTuningTrainer:
                 self.model.train()
                 total_loss = 0
                 
+                # Log epoch start
+                self.logger.log_epoch_start(epoch + 1, self.config.num_epochs)
+                
                 # Training loop
                 with tqdm(total=len(self.train_dataloader), desc=f"Epoch {epoch + 1}/{self.config.num_epochs}") as pbar:
                     for step, batch in enumerate(self.train_dataloader):
@@ -255,28 +263,49 @@ class FineTuningTrainer:
                         pbar.update(1)
                         pbar.set_postfix({'loss': f'{loss:.4f}'})
                         
+                        # Log steps if configured
+                        if step > 0 and self.config.logging_steps > 0 and step % self.config.logging_steps == 0:
+                            avg_loss = total_loss / (step + 1)
+                            self.logger.log_metrics({"loss": avg_loss}, step=step)
+                        
+                        # Save checkpoint if configured
                         if self.config.save_steps > 0 and (step + 1) % self.config.save_steps == 0:
-                            self._save_checkpoint(epoch, step)
+                            metrics = {"loss": total_loss / (step + 1)}
+                            self._save_checkpoint(epoch, step, metrics)
                             
                 # Epoch end processing
                 avg_loss = total_loss / len(self.train_dataloader)
-                self.logger.log_info(f"Epoch {epoch + 1} - Average loss: {avg_loss:.4f}")
+                epoch_metrics = {"avg_loss": avg_loss}
+                self.logger.log_epoch_complete(epoch + 1, epoch_metrics)
                 
-                if self.config.save_epochs > 0 and (epoch + 1) % self.config.save_epochs == 0:
-                    self._save_checkpoint(epoch)
-                    
+                # Run evaluation if configured
                 if self.config.eval_epochs > 0 and (epoch + 1) % self.config.eval_epochs == 0:
-                    self._evaluate()
-                    
+                    eval_metrics = self._evaluate()
+                    self.logger.log_evaluation_complete(eval_metrics)
+                
+                # Save epoch checkpoint if configured
+                if self.config.save_epochs > 0 and (epoch + 1) % self.config.save_epochs == 0:
+                    metrics = {"epoch": epoch + 1, "avg_loss": avg_loss}
+                    self._save_checkpoint(epoch, None, metrics)
+            
+            # Log final training metrics
+            final_metrics = {
+                "final_loss": avg_loss,
+                "total_epochs": self.config.num_epochs,
+                "total_steps": self.global_step
+            }
+            self.logger.log_training_complete(final_metrics)
+            
         except Exception as e:
             self.logger.log_error(f"Training error: {str(e)}")
             raise
-                    
+
     def _evaluate(self) -> Dict[str, float]:
         """Evaluate the model on the validation set."""
         if self.eval_dataloader is None:
             return {}
             
+        self.logger.log_evaluation_start()
         self.model.eval()
         total_loss = 0
         num_batches = 0
@@ -288,8 +317,31 @@ class FineTuningTrainer:
                 num_batches += 1
                 
         avg_loss = total_loss / num_batches
-        return {"eval_loss": avg_loss}
+        metrics = {"eval_loss": avg_loss}
+        self.logger.log_evaluation_complete(metrics)
+        return metrics
+
+    def _save_checkpoint(self, epoch: int, step: Optional[int] = None, metrics: Optional[Dict[str, float]] = None):
+        """Save a checkpoint."""
+        if self.checkpoint_manager is None:
+            return
+            
+        checkpoint_metrics = metrics or {}
+        checkpoint_metrics.update({
+            "epoch": epoch + 1,
+            "step": step if step is not None else "end_of_epoch",
+            "global_step": self.global_step
+        })
         
+        path = self.checkpoint_manager.save_checkpoint(
+            model=self.model,
+            tokenizer=None,  # We don't save tokenizer with checkpoints
+            epoch=epoch,
+            metrics=checkpoint_metrics
+        )
+        
+        self.logger.log_checkpoint_save(path, checkpoint_metrics)
+
     def save_model(self, output_dir: Union[str, Path]):
         """Save the model and training state."""
         output_dir = Path(output_dir)
