@@ -29,257 +29,59 @@ The goal of QuantLLM is to **democratize LLM training**, especially in low-resou
 
 ## 🚀 Getting Started
 
-### 🔧 Installation
+### Installation
 
 ```bash
 pip install quantllm
 ```
 
-### 📦 Basic Usage
+For detailed usage examples and API documentation, please refer to our:
+- 📚 [Official Documentation](https://quantllm.readthedocs.io/)
+- 🎓 [Tutorials](https://quantllm.readthedocs.io/tutorials/)
+- 📖 [API Reference](https://quantllm.readthedocs.io/api/)
 
-```python
-from quantllm import (
-    ModelLoader,
-    DatasetLoader,
-    DatasetPreprocessor,
-    DatasetSplitter,
-    FineTuningTrainer,
-    ModelEvaluator,
-    HubManager,
-    CheckpointManager,
-)
-import os
-from quantllm.finetune import TrainingLogger
-from quantllm.config import (
-    DatasetConfig,
-    ModelConfig,
-    TrainingConfig,
-)
+## 💻 Hardware Requirements
 
-# Initialize logger
-logger = TrainingLogger()
+### Minimum Requirements
+- **CPU**: 4+ cores
+- **RAM**: 16GB
+- **Storage**: 20GB free space
+- **Python**: 3.8+
 
-# 1. Initialize hub manager first
-hub_manager = HubManager(
-    model_id="your-username/llama-2-imdb",
-    token=os.getenv("HF_TOKEN")
-)
+### Recommended Requirements
+- **GPU**: NVIDIA GPU with 8GB+ VRAM
+- **RAM**: 32GB
+- **Storage**: 50GB+ SSD
+- **CUDA**: 11.7+
 
-# 2. Model Configuration and Loading
-model_config = ModelConfig(
-    model_name="meta-llama/Llama-3.2-3B",
-    load_in_4bit=True,
-    use_lora=True,
-    hub_manager=hub_manager
-)
+### Resource Usage Guidelines
+| Model Size | 4-bit (GPU RAM) | 8-bit (GPU RAM) | CPU RAM (min) |
+|------------|----------------|-----------------|---------------|
+| 3B params  | ~6GB          | ~9GB           | 16GB         |
+| 7B params  | ~12GB         | ~18GB          | 32GB         |
+| 13B params | ~20GB         | ~32GB          | 64GB         |
+| 70B params | ~90GB         | ~140GB         | 256GB        |
 
-model_loader = ModelLoader(model_config)
-model = model_loader.get_model()
-tokenizer = model_loader.get_tokenizer()
+## 🔄 Version Compatibility
 
-# 3. Dataset Configuration and Loading
-dataset_config = DatasetConfig(
-    dataset_name_or_path="imdb",
-    dataset_type="huggingface",
-    text_column="text",
-    label_column="label",
-    max_length=512,
-    train_size=0.8,
-    val_size=0.1,
-    test_size=0.1,
-    hub_manager=hub_manager
-)
+| QuantLLM | Python | PyTorch | Transformers | CUDA  |
+|----------|--------|----------|--------------|-------|
+| 0.1.x    | ≥3.8   | ≥2.0.0   | ≥4.30.0     | ≥11.7 |
+| 0.2.x    | ≥3.9   | ≥2.1.0   | ≥4.31.0     | ≥11.8 |
 
-# Load and prepare dataset
-dataset_loader = DatasetLoader(logger)
-dataset = dataset_loader.load_hf_dataset(dataset_config)
+## 🗺 Roadmap
 
-# Split dataset
-dataset_splitter = DatasetSplitter(logger)
-train_dataset, val_dataset, test_dataset = dataset_splitter.train_val_test_split(
-    dataset,
-    train_size=dataset_config.train_size,
-    val_size=dataset_config.val_size,
-    test_size=dataset_config.test_size
-)
-
-# 4. Dataset Preprocessing
-preprocessor = DatasetPreprocessor(tokenizer, logger)
-train_dataset, val_dataset, test_dataset = preprocessor.tokenize_dataset(
-    train_dataset, val_dataset, test_dataset,
-    max_length=dataset_config.max_length,
-    text_column=dataset_config.text_column,
-    label_column=dataset_config.label_column
-)
-
-# Create data loaders
-train_dataloader = DataLoader(
-    train_dataset,
-    batch_size=4,
-    shuffle=True,
-    num_workers=4
-)
-val_dataloader = DataLoader(
-    val_dataset,
-    batch_size=4,
-    shuffle=False,
-    num_workers=4
-)
-test_dataloader = DataLoader(
-    test_dataset,
-    batch_size=4,
-    shuffle=False,
-    num_workers=4
-)
-
-# 5. Training Configuration
-training_config = TrainingConfig(
-    learning_rate=2e-4,
-    num_epochs=3,
-    batch_size=4,
-    gradient_accumulation_steps=4,
-    warmup_steps=100,
-    logging_steps=50,
-    eval_steps=200,
-    save_steps=500,
-    early_stopping_patience=3,
-    early_stopping_threshold=0.01
-)
-
-# Initialize checkpoint manager
-checkpoint_manager = CheckpointManager(
-    output_dir="./checkpoints",
-    save_total_limit=3
-)
-
-# 6. Initialize Trainer
-trainer = FineTuningTrainer(
-    model=model,
-    training_config=training_config,
-    train_dataloader=train_dataloader,
-    eval_dataloader=val_dataloader,
-    logger=logger,
-    checkpoint_manager=checkpoint_manager,
-    hub_manager=hub_manager,
-    use_wandb=True,
-    wandb_config={
-        "project": "quantllm-imdb",
-        "name": "llama-2-imdb-finetuning"
-    }
-)
-
-# 7. Train the model
-trainer.train()
-
-# 8. Evaluate on test set
-evaluator = ModelEvaluator(
-    model=model,
-    eval_dataloader=test_dataloader,
-    metrics=[
-        lambda preds, labels, _: (preds.argmax(dim=-1) == labels).float().mean().item()  # Accuracy
-    ],
-    logger=logger
-)
-
-test_metrics = evaluator.evaluate()
-
-# 9. Save final model
-trainer.save_model("./final_model")
-
-# 10. Push to Hub if logged in
-if hub_manager.is_logged_in():
-    hub_manager.push_model(
-        model,
-        commit_message=f"Final model with test accuracy: {test_metrics.get('accuracy', 0):.4f}"
-    )
-```
-
-### ⚙️ Advanced Usage
-
-#### Configuration Files
-
-Create a config file (e.g., `config.yaml`):
-```yaml
-model:
-  model_name: "meta-llama/Llama-3.2-3B"
-  load_in_4bit: true
-  use_lora: true
-  lora_config:
-    r: 16
-    lora_alpha: 32
-    target_modules: ["q_proj", "v_proj"]
-
-dataset:
-  dataset_name_or_path: "imdb"
-  text_column: "text"
-  label_column: "label"
-  max_length: 512
-  train_size: 0.8
-  val_size: 0.1
-  test_size: 0.1
-
-training:
-  learning_rate: 2e-4
-  num_epochs: 3
-  batch_size: 4
-  gradient_accumulation_steps: 4
-  warmup_steps: 100
-  logging_steps: 50
-  eval_steps: 200
-  save_steps: 500
-  early_stopping_patience: 3
-  early_stopping_threshold: 0.01
-```
-
-## 📚 Documentation
-
-### Model Loading
-
-```python
-model_config = ModelConfig(
-    model_name="meta-llama/Llama-3.2-3B",
-    load_in_4bit=True,
-    use_lora=True,
-    hub_manager=hub_manager
-)
-```
-
-### Dataset Management
-
-```python
-dataset_config = DatasetConfig(
-    dataset_name_or_path="imdb",
-    dataset_type="huggingface",
-    text_column="text",
-    label_column="label",
-    max_length=512,
-    train_size=0.8,
-    val_size=0.1,
-    test_size=0.1,
-    hub_manager=hub_manager
-)
-```
-
-### Training Configuration
-
-```python
-training_config = TrainingConfig(
-    learning_rate=2e-4,
-    num_epochs=3,
-    batch_size=4,
-    gradient_accumulation_steps=4,
-    warmup_steps=100,
-    logging_steps=50,
-    eval_steps=200,
-    save_steps=500,
-    early_stopping_patience=3,
-    early_stopping_threshold=0.01
-)
-```
+- [ ] Multi-GPU training support
+- [ ] AutoML for hyperparameter tuning
+- [ ] More quantization methods
+- [ ] Custom model architecture support
+- [ ] Enhanced logging and visualization
+- [ ] Model compression techniques
+- [ ] Deployment optimizations
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+We welcome contributions! Please see our [CONTRIBUTE.md](CONTRIBUTE.md) for guidelines and setup instructions.
 
 ## 📝 License
 
@@ -290,4 +92,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [HuggingFace](https://huggingface.co/) for their amazing Transformers library
 - [bitsandbytes](https://github.com/TimDettmers/bitsandbytes) for quantization
 - [PEFT](https://github.com/huggingface/peft) for parameter-efficient fine-tuning
-- [Weights & Biases](https://wandb.ai/) for experiment tracking 
+- [Weights & Biases](https://wandb.ai/) for experiment tracking
+
+## 📫 Contact & Support
+
+- GitHub Issues: [Create an issue](https://github.com/yourusername/QuantLLM/issues)
+- Documentation: [Read the docs](https://quantllm.readthedocs.io/)
+- Discord: [Join our community](https://discord.gg/quantllm)
+- Email: support@quantllm.ai
