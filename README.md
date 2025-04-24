@@ -1,5 +1,9 @@
 # 🧠 QuantLLM: Lightweight Library for Quantized LLM Fine-Tuning and Deployment
 
+[![PyPI Downloads](https://static.pepy.tech/badge/quantllm)](https://pepy.tech/projects/quantllm)
+<img alt="PyPI - Version" src="https://img.shields.io/pypi/v/quantllm?logo=pypi&label=version&">
+
+
 ## 📌 Overview
 
 **QuantLLM** is a Python library designed for developers, researchers, and teams who want to fine-tune and deploy large language models (LLMs) **efficiently** using **4-bit and 8-bit quantization** techniques. It provides a modular and flexible framework for:
