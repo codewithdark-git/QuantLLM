@@ -25,7 +25,7 @@ For development installation:
 
 .. code-block:: bash
 
-    git clone https://github.com/yourusername/QuantLLM.git
+    git clone https://github.com/codewithdark-git/QuantLLM.git
     cd QuantLLM
     pip install -e ".[dev]"
 
