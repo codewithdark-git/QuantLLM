@@ -11,8 +11,8 @@ class DatasetPreprocessor:
         # Set pad token if not set
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            self.tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            print("Added [PAD] token to tokenizer")
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+            print("Set pad token to eos token")
 
     def validate_datasets(self, datasets):
         """Validate input datasets."""
@@ -43,35 +43,52 @@ class DatasetPreprocessor:
             self.validate_datasets([train_dataset, val_dataset, test_dataset])
             
             def process_and_tokenize_batch(examples):
+                # Get texts and preprocess
                 texts = examples[text_column]
                 if not isinstance(texts, list):
                     texts = [texts]
-                
-                # Preprocess texts
                 texts = [self.preprocess_text(text) for text in texts]
                 
                 try:
+                    # Tokenize with padding and truncation
+                    # Use max_length + 1 to account for the shift we'll do later
                     tokenized = self.tokenizer(
                         texts,
-                        padding=True,
+                        padding="max_length",
                         truncation=True,
-                        max_length=max_length,
-                        return_tensors="pt"
+                        max_length=max_length + 1,  # Add 1 to account for shift
+                        return_tensors=None
                     )
                     
+                    input_ids = tokenized["input_ids"]
+                    attention_mask = tokenized["attention_mask"]
+                    
+                    # Now shift to create inputs and labels
+                    # inputs will be [:-1] and labels will be [1:]
+                    labels = [ids[1:] for ids in input_ids]
+                    input_ids = [ids[:-1] for ids in input_ids]
+                    attention_mask = [mask[:-1] for mask in attention_mask]
+                    
+                    # Verify all sequences have the expected length
+                    expected_length = max_length
+                    if not all(len(seq) == expected_length for seq in input_ids):
+                        raise ValueError(f"Input sequence lengths don't match. Expected {expected_length}")
+                    if not all(len(seq) == expected_length for seq in attention_mask):
+                        raise ValueError(f"Attention mask lengths don't match. Expected {expected_length}")
+                    if not all(len(seq) == expected_length for seq in labels):
+                        raise ValueError(f"Label sequence lengths don't match. Expected {expected_length}")
+                    
                     result = {
-                        "input_ids": tokenized["input_ids"],
-                        "attention_mask": tokenized["attention_mask"]
+                        "input_ids": input_ids,
+                        "attention_mask": attention_mask,
+                        "labels": labels
                     }
                     
-                    if label_column and label_column in examples:
-                        result["labels"] = examples[label_column]
-                    
-                    print(f"Tokenized batch of {len(texts)} texts")  # User feedback
+                    self.logger.log_info(f"Tokenized batch of {len(texts)} texts")
                     return result
                     
                 except Exception as e:
-                    print(f"Error tokenizing batch: {str(e)}")  # User feedback
+                    self.logger.log_error(f"Error tokenizing batch: {str(e)}")
                     raise
             
             # Process datasets
@@ -79,9 +96,10 @@ class DatasetPreprocessor:
                 process_and_tokenize_batch,
                 batched=True,
                 batch_size=batch_size,
-                remove_columns=train_dataset.column_names
+                remove_columns=train_dataset.column_names,
+                desc="Tokenizing training set"
             )
-            print(f"Tokenized training dataset: {len(train_tokenized)} examples")  # User feedback
+            self.logger.log_info(f"Tokenized training dataset: {len(train_tokenized)} examples")
             
             val_tokenized = None
             if val_dataset is not None:
@@ -89,9 +107,10 @@ class DatasetPreprocessor:
                     process_and_tokenize_batch,
                     batched=True,
                     batch_size=batch_size,
-                    remove_columns=val_dataset.column_names
+                    remove_columns=val_dataset.column_names,
+                    desc="Tokenizing validation set"
                 )
-                print(f"Tokenized validation dataset: {len(val_tokenized)} examples")  # User feedback
+                self.logger.log_info(f"Tokenized validation dataset: {len(val_tokenized)} examples")
                 
             test_tokenized = None
             if test_dataset is not None:
@@ -99,12 +118,20 @@ class DatasetPreprocessor:
                     process_and_tokenize_batch,
                     batched=True,
                     batch_size=batch_size,
-                    remove_columns=test_dataset.column_names
+                    remove_columns=test_dataset.column_names,
+                    desc="Tokenizing test set"
                 )
-                print(f"Tokenized test dataset: {len(test_tokenized)} examples")  # User feedback
+                self.logger.log_info(f"Tokenized test dataset: {len(test_tokenized)} examples")
+            
+            # Set format to PyTorch tensors
+            train_tokenized.set_format("torch")
+            if val_tokenized:
+                val_tokenized.set_format("torch")
+            if test_tokenized:
+                test_tokenized.set_format("torch")
                 
             return train_tokenized, val_tokenized, test_tokenized
             
         except Exception as e:
-            print(f"Error in tokenization: {str(e)}")  # User feedback
+            self.logger.log_error(f"Error in tokenization: {str(e)}")
             raise

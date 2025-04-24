@@ -10,7 +10,7 @@ class ModelConfig:
     model_name: str
     model_type: str = "auto"
     revision: str = "main"
-    trust_remote_code: bool = False
+    trust_remote_code: bool = True
     
     # Model architecture
     hidden_size: Optional[int] = None
@@ -42,6 +42,12 @@ class ModelConfig:
     lora_config: Optional[Dict[str, Any]] = None
     use_lora: bool = False
 
+    # CPU optimization
+    cpu_offload: bool = False
+    gradient_checkpointing: bool = False
+    bf16: bool = False  # bfloat16 support for more efficient training
+    max_memory: Optional[dict] = None  # For device specific memory limits
+
     kwargs: Optional[Dict[str, Any]] = None
     device_map: Optional[Dict[str, str]] = 'auto'  # 'auto' or specific device mapping
     
@@ -58,6 +64,20 @@ class ModelConfig:
 
         if self.kwargs is None:
             self.kwargs = {}
+        
+        if self.load_in_4bit and self.load_in_8bit:
+            raise ValueError("Cannot use both 4-bit and 8-bit quantization simultaneously")
+        
+        # Set reasonable defaults for memory management
+        if self.max_memory is None:
+            import torch
+            if torch.cuda.is_available():
+                # Leave some GPU memory free for system
+                total_memory = torch.cuda.get_device_properties(0).total_memory
+                self.max_memory = {0: f"{int(total_memory * 0.85 / 1024**3)}GiB"}
+            else:
+                # Default CPU memory limit
+                self.max_memory = {"cpu": "16GiB"}
             
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary."""
@@ -88,6 +108,10 @@ class ModelConfig:
             "bnb_4bit_use_double_quant": self.bnb_4bit_use_double_quant,
             "lora_config": self.lora_config,
             "use_lora": self.use_lora,
+            "cpu_offload": self.cpu_offload,
+            "gradient_checkpointing": self.gradient_checkpointing,
+            "bf16": self.bf16,
+            "max_memory": self.max_memory,
             "kwargs": self.kwargs,
             "device_map": self.device_map
         }

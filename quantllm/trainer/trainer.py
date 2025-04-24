@@ -7,9 +7,16 @@ from typing import Optional, Dict, Any, List, Union, Callable
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
-from wandb import wandb, login
-from datetime import datetime
 import os
+from datetime import datetime
+
+# Conditionally import wandb
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 from ..config.training_config import TrainingConfig
 from ..trainer.logger import TrainingLogger
 from ..hub.checkpoint_manager import CheckpointManager
@@ -25,7 +32,7 @@ class FineTuningTrainer:
         logger: Optional[TrainingLogger] = None,
         checkpoint_manager: Optional[CheckpointManager] = None,
         hub_manager: Optional[HubManager] = None,
-        device: Optional[str] = None,
+        device: Optional[Union[str, torch.device]] = None,
         use_wandb: bool = False,
         wandb_config: Optional[Dict[str, Any]] = None
     ):
@@ -40,7 +47,7 @@ class FineTuningTrainer:
             logger (TrainingLogger, optional): Logger instance
             checkpoint_manager (CheckpointManager, optional): Checkpoint manager
             hub_manager (HubManager, optional): Hub manager for model pushing
-            device (str, optional): Device to train on
+            device (str or torch.device, optional): Device to train on
             use_wandb (bool): Whether to use Weights & Biases
             wandb_config (Dict[str, Any], optional): Weights & Biases configuration
         """
@@ -51,12 +58,16 @@ class FineTuningTrainer:
         self.logger = logger or TrainingLogger()
         self.checkpoint_manager = checkpoint_manager
         self.hub_manager = hub_manager
-        self.use_wandb = use_wandb
+        self.use_wandb = use_wandb and WANDB_AVAILABLE
         self.wandb_config = wandb_config or {}
-        self.wandb_token = self.wandb_config['API_KEY']
         
-        # Set device
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # Handle device setup
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
+            
+        self.logger.log_info(f"Using device: {self.device}")
         self.model.to(self.device)
         
         # Initialize optimizer
@@ -66,7 +77,7 @@ class FineTuningTrainer:
         self.scheduler = self._create_scheduler()
         
         # Initialize mixed precision training
-        self.scaler = torch.cuda.amp.GradScaler() if self.device == "cuda" else None
+        self.scaler = torch.cuda.amp.GradScaler() if self.device == torch.device("cuda") else None
         
         # Training state
         self.global_step = 0
@@ -74,7 +85,7 @@ class FineTuningTrainer:
         self.best_metric = float('inf')
         self.patience_counter = 0
         
-        # Setup Weights & Biases
+        # Setup Weights & Biases if enabled
         if self.use_wandb:
             self._setup_wandb()
             
@@ -142,19 +153,21 @@ class FineTuningTrainer:
         
     def _setup_wandb(self):
         """Setup Weights & Biases logging."""
-        if wandb.login(key=self.wandb_token, relogin=True):
-            self.logger.log_info("Logged in to Weights & Biases")
-        else:
-            self.logger.log_error("Failed to log in to Weights & Biases")
+        try:
+            if wandb.login(key=self.wandb_token, relogin=True):
+                self.logger.log_info("Logged in to Weights & Biases")
+                wandb.init(
+                    project=self.wandb_config.get("project", "quantllm"),
+                    name=self.wandb_config.get("name", f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
+                    config=self.config.to_dict()
+                )
+            else:
+                self.logger.log_warning("Failed to log in to Weights & Biases. Continuing without wandb logging.")
+                self.use_wandb = False
+        except Exception as e:
+            self.logger.log_warning(f"Error setting up Weights & Biases: {str(e)}. Continuing without wandb logging.")
             self.use_wandb = False
-            return
             
-        wandb.init(
-            project=self.wandb_config.get("project", "quantllm"),
-            name=self.wandb_config.get("name", f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
-            config=self.config.to_dict()
-        )
-        
     def _compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute loss for a batch of data."""
         # Move batch to device
@@ -168,30 +181,52 @@ class FineTuningTrainer:
     def train_step(self, batch, scaler):
         """Single training step."""
         try:
-            # Move batch to device
-            batch = {k: v.to(self.device) for k, v in batch.items()}
+            # Convert batch to dictionary if it's a tuple/list
+            if isinstance(batch, (tuple, list)):
+                batch = {
+                    "input_ids": batch[0],
+                    "attention_mask": batch[1],
+                    "labels": batch[2] if len(batch) > 2 else None
+                }
             
-            # Forward pass with modern autocast
-            with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+            # Move batch to device
+            batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                    for k, v in batch.items()}
+            
+            # Determine if we should use autocast based on device
+            if self.device.type == "cuda":
+                with torch.cuda.amp.autocast():
+                    outputs = self.model(**batch)
+                    loss = outputs.loss
+
+                # Backward pass with gradient scaling
+                scaler.scale(loss).backward()
+                
+                if self.config.max_grad_norm is not None:
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                    
+                scaler.step(self.optimizer)
+                scaler.update()
+            else:
+                # CPU or MPS training - no autocast needed
                 outputs = self.model(**batch)
                 loss = outputs.loss
-
-            # Backward pass with gradient scaling
-            scaler.scale(loss).backward()
-            
-            if self.config.max_grad_norm is not None:
-                scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
                 
-            scaler.step(self.optimizer)
-            scaler.update()
+                # Standard backward pass
+                loss.backward()
+                
+                if self.config.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                    
+                self.optimizer.step()
             
             self.optimizer.zero_grad()
             
             return loss.item()
             
         except Exception as e:
-            print(f"Error in training step: {str(e)}")
+            self.logger.log_error(f"Error in training step: {str(e)}")
             raise
 
     def train(self):
