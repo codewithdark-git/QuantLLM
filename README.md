@@ -70,8 +70,7 @@ For detailed usage examples and API documentation, please refer to our:
 
 | QuantLLM | Python | PyTorch | Transformers | CUDA  |
 |----------|--------|----------|--------------|-------|
-| 0.1.x    | ≥3.8   | ≥2.0.0   | ≥4.30.0     | ≥11.7 |
-| 0.2.x    | ≥3.9   | ≥2.1.0   | ≥4.31.0     | ≥11.8 |
+| latest    | ≥3.10   | ≥2.0.0   | ≥4.30.0     | ≥11.7 |
 
 ## 🗺 Roadmap
 
