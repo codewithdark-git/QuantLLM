@@ -8,6 +8,7 @@ __pycache__/
 *.dylib
 
 upcoming.md
+examples/
 
 logs
 main.py
