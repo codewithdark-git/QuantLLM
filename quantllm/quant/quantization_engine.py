@@ -445,81 +445,12 @@ class QuantizationEngine:
             raise
 
 class BaseQuantizer:
-    """Base class for all quantizers with device management."""
-    
-    def __init__(
-        self,
-        model: PreTrainedModel,
-        device: Optional[Union[str, torch.device]] = None,
-        **kwargs
-    ):
-        self.original_model = model
-        self.device_manager = DeviceManager(
-            primary_device=device if isinstance(device, torch.device)
-            else torch.device(device) if device
-            else None
-        )
-        self.logger = TrainingLogger()
-        
-    def _prepare_model_copy(self) -> PreTrainedModel:
-        """Create a deep copy of the model with proper device handling."""
-        try:
-            # Get model class and config
-            model_class = self.original_model.__class__
-            config = self.original_model.config
-            
-            # Create new instance
-            new_model = model_class(config)
-            
-            # Copy state dict with device handling
-            with torch.no_grad():
-                # First collect all parameters on CPU
-                cpu_state_dict = {}
-                for name, param in self.original_model.state_dict().items():
-                    cpu_state_dict[name] = param.cpu()
-                
-                # Then load into new model
-                new_model.load_state_dict(cpu_state_dict)
-            
-            return new_model
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to copy model: {str(e)}")
-            
-    def _ensure_model_on_device(self, model: PreTrainedModel) -> PreTrainedModel:
-        """Ensure model parameters are on the correct device."""
-        target_device = self.device_manager.primary_device
-        
-        # Move model to target device
-        for param in model.parameters():
-            param.data = move_to_device(param.data, target_device)
-            
-        return model
-        
-    def _validate_tensors(self, *tensors: torch.Tensor):
-        """Validate that tensors are on the same device."""
-        if not tensors:
-            return
-            
-        devices = {t.device for t in tensors}
-        if len(devices) > 1:
-            raise RuntimeError(
-                f"Expected all tensors to be on the same device, "
-                f"but found devices: {devices}"
-            )
-            
-    def prepare_for_quantization(self, model: PreTrainedModel) -> PreTrainedModel:
-        """Prepare model for quantization with proper device handling."""
-        model = self._ensure_model_on_device(model)
-        return model
-
-class BaseQuantizer:
     """Base class for all quantization methods."""
-    
+
     def __init__(
         self,
         model: PreTrainedModel,
-        bits: int = 8,
+        bits: int,
         device: Optional[Union[str, torch.device]] = None,
         **kwargs
     ):
@@ -528,20 +459,21 @@ class BaseQuantizer:
         
         self.bits = bits
         self.device_manager = DeviceManager(
-            torch.device(device) if device else None
+            primary_device=torch.device(device) if device else None
         )
         self.logger = TrainingLogger()
-        
+
         # Store original model config
+        from transformers import AutoConfig
         self.model_config = AutoConfig.from_pretrained(
             model.config._name_or_path,
             trust_remote_code=True
         ) if hasattr(model.config, '_name_or_path') else model.config
-        
+
         # Initialize model property
         self._model = None
         self._prepare_model(model)
-    
+
     @property
     def model(self) -> PreTrainedModel:
         """Get the current model instance."""
@@ -582,26 +514,26 @@ class BaseQuantizer:
                 
             # Move to target device if specified
             if self.device_manager.primary_device is not None:
-                new_model = new_model.to(self.device_manager.primary_device)
-                
+                new_model = move_to_device(new_model, self.device_manager.primary_device)
+
             self._model = new_model
             self.logger.log_info("Model preparation completed successfully")
-            
-        except Exception as e:            
+
+        except Exception as e:
             self.logger.log_error(f"Failed to prepare model: {str(e)}")
             raise
-    
+
     def prepare_calibration_data(self, calibration_data: torch.Tensor) -> torch.Tensor:
         """Prepare calibration data with proper device handling."""
         if calibration_data is None:
             raise ValueError("Calibration data is required")
-            
+
         # Move to appropriate device
         if self.device_manager.primary_device is not None:
-            calibration_data = calibration_data.to(self.device_manager.primary_device)
-            
+            calibration_data = move_to_device(calibration_data, self.device_manager.primary_device)
+
         return calibration_data
-    
+
     def _clear_memory(self):
         """Clear GPU memory and run garbage collection."""
         import gc
@@ -609,7 +541,7 @@ class BaseQuantizer:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             self.device_manager.sync()
-    
+
     def quantize(self, calibration_data: Optional[torch.Tensor] = None) -> PreTrainedModel:
         """Abstract method for quantization. Must be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement quantize()")

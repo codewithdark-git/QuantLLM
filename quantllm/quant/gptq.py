@@ -24,6 +24,25 @@ class GPTQQuantizer(BaseQuantizer):
         batch_size: int = 4,
         device: Optional[Union[str, torch.device]] = None
     ):
+        """
+        Initializes the GPTQQuantizer.
+
+        Args:
+            model (PreTrainedModel): The model to be quantized.
+            bits (int, optional): Number of bits for quantization. Defaults to 4.
+            group_size (int, optional): Size of the quantization group. Defaults to 128.
+            actorder (bool, optional): Whether to use activation order for columns. Defaults to False.
+            allow_mixed_bits (bool, optional): Whether to allow mixed bits quantization. Defaults to False.
+                                           (Note: Current implementation might not fully support this).
+            use_triton (bool, optional): Whether to attempt using Triton kernels. Defaults to False.
+                                      (Note: Custom GPTQ Triton kernels are not yet implemented).
+            percdamp (float, optional): Percentage of dampening to use for Hessian update. Defaults to 0.01.
+            sym (bool, optional): Whether to use symmetric quantization. Defaults to True.
+            batch_size (int, optional): Batch size for processing calibration data. Defaults to 4.
+            device (Optional[Union[str, torch.device]], optional): 
+                The device for quantization operations ('cpu', 'cuda', etc.). 
+                Inherited from BaseQuantizer. Defaults to None (auto-detection).
+        """
         super().__init__(model=model, bits=bits, device=device)
         self.group_size = group_size
         self.actorder = actorder
@@ -33,15 +52,15 @@ class GPTQQuantizer(BaseQuantizer):
         self.sym = sym
         self.batch_size = batch_size
         
+        if self.use_triton:
+            self.logger.log_info(
+                "Triton flag is enabled, but custom Triton kernels for GPTQ-specific operations "
+                "(Hessian computation, quantization algorithm) are not yet implemented in `GPTQQuantizer`. "
+                "The existing kernels in `kernels.py` are for general model layer optimization."
+            )
+
         # Initialize H matrices for each layer
         self.H = {}
-        
-    def _clear_memory(self):
-        """Clear CUDA memory and run garbage collection."""
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            self.device_manager.sync()
             
     def quantize(self, calibration_data: Optional[torch.Tensor] = None) -> PreTrainedModel:
         """
@@ -57,7 +76,7 @@ class GPTQQuantizer(BaseQuantizer):
             raise ValueError("GPTQ requires calibration data for quantization")
             
         # Prepare model and data
-        calibration_data = self.prepare_for_quantization(calibration_data)
+        calibration_data = self.prepare_calibration_data(calibration_data)
         self.model.eval()
         
         # Process layers
@@ -86,9 +105,15 @@ class GPTQQuantizer(BaseQuantizer):
     
     def _compute_hessian(self, layer: nn.Linear, data: torch.Tensor) -> torch.Tensor:
         """Compute Hessian approximation for a layer with memory-efficient processing."""
-        device = self.device_manager.primary_device
         n = layer.in_features
-        H = torch.zeros((n, n), device=device)
+        H_size_bytes = n * n * 4  # Assuming float32 for H matrix elements
+        H_size_gb = H_size_bytes / (1024 ** 3)
+        if H_size_gb > 1:
+            self.logger.log_warning(
+                f"Hessian matrix H for layer will be approximately {H_size_gb:.2f} GB. "
+                "This might lead to OOM errors for large layers."
+            )
+        H = torch.zeros((n, n), device=self.device_manager.primary_device)
         
         def hook_fn(module, input, output):
             x = input[0].detach()
@@ -100,22 +125,25 @@ class GPTQQuantizer(BaseQuantizer):
                 num_chunks = math.ceil(x.size(0) / chunk_size)
                 
                 for i in range(num_chunks):
-                    chunk = x[i * chunk_size:(i + 1) * chunk_size]
-                    chunk_H = torch.matmul(chunk.t(), chunk)
-                    H.add_(chunk_H)
+                    chunk = x[i * chunk_size:(i + 1) * chunk_size] # chunk is already on primary_device due to input x
+                    chunk_H = torch.matmul(chunk.t(), chunk) # on primary_device
+                    H.add_(chunk_H) # H is on primary_device
                     
                     del chunk_H
                     if i % 10 == 0:
                         self._clear_memory()
         
         # Register forward hook
-        handle = layer.register_forward_hook(hook_fn)
+        # Ensure layer is on the primary device for hook registration and ops
+        layer_on_device = move_to_device(layer, self.device_manager.primary_device)
+        handle = layer_on_device.register_forward_hook(hook_fn)
         
         # Process calibration data in batches
+        # self.model is expected to be on self.device_manager.primary_device by BaseQuantizer
         with torch.no_grad():
             for i in range(0, len(data), self.batch_size):
-                batch = data[i:i+self.batch_size].to(device)
-                self.model(batch)
+                batch = move_to_device(data[i:i+self.batch_size], self.device_manager.primary_device)
+                self.model(batch) # self.model(batch) implies model and batch are on same device
                 
                 if i % (self.batch_size * 10) == 0:
                     self._clear_memory()
@@ -125,11 +153,31 @@ class GPTQQuantizer(BaseQuantizer):
     
     def _quantize_layer(self, layer: nn.Linear, H: torch.Tensor) -> QuantizedLinear:
         """Quantize a single layer using GPTQ with memory management."""
-        device = self.device_manager.primary_device
+        # Log warning about H usage
+        if not self.actorder:
+            self.logger.log_warning(
+                f"Hessian matrix H computed for layer but `self.actorder` is False. "
+                "H will not be used in the current quantization logic of `_quantize_layer`."
+            )
+        else: # self.actorder is True
+            # Investigate H usage for actorder.
+            # Typically, actorder involves permuting W based on H.
+            # If no such logic exists, it's a gap.
+            # For now, let's assume no specific permutation logic is implemented using H directly here.
+            self.logger.log_warning(
+                f"`self.actorder` is True, but no explicit column reordering logic "
+                "(based on Hessian H) is found within `_quantize_layer`. "
+                "Ensure `actorder` functionality is correctly implemented if it relies on H."
+            )
+            # If H is used in some other way for actorder, this warning might need adjustment.
+
+        target_device = self.device_manager.primary_device
         
         # Ensure tensors are on the correct device
-        H = H.to(device)
-        W = layer.weight.data.to(device)
+        H = move_to_device(H, target_device)
+        # Original layer's weights should be moved to target_device before processing
+        layer = move_to_device(layer, target_device)
+        W = layer.weight.data # W is now on target_device
         
         # Initialize quantized layer
         quantized = QuantizedLinear(
@@ -139,31 +187,35 @@ class GPTQQuantizer(BaseQuantizer):
             config=QuantizationConfig(
                 bits=self.bits,
                 scheme="symmetric" if self.sym else "asymmetric",
-                granularity="per-channel",
+                granularity="per-channel", # GPTQ typically uses per-column or per-group scaling
                 calibration="gptq"
             )
-        ).to(device)
+        )
+        quantized = move_to_device(quantized, target_device)
         
         if layer.bias is not None:
+            # layer is already on target_device
             quantized.bias.data.copy_(layer.bias.data)
         
         # Process in chunks to save memory
-        chunk_size = min(1024, layer.out_features)
+        chunk_size = min(1024, layer.out_features) # This chunking is along output features (rows of W)
         for i in range(0, layer.out_features, chunk_size):
             chunk_end = min(i + chunk_size, layer.out_features)
-            W_chunk = W[i:chunk_end]
+            W_chunk = W[i:chunk_end] # W_chunk is on target_device
             
             # Compute optimal scaling factors for this chunk
             if self.sym:
-                max_val = W_chunk.abs().max(dim=1)[0]
-                scale = (2 ** (self.bits - 1) - 1) / max_val
+                max_val = W_chunk.abs().max(dim=1)[0] # max per output channel/row
+                scale = (2 ** (self.bits - 1) - 1) / max_val # scale per output channel/row
             else:
                 min_val = W_chunk.min(dim=1)[0]
                 max_val = W_chunk.max(dim=1)[0]
                 scale = (2 ** self.bits - 1) / (max_val - min_val)
             
             # Quantize chunk
-            W_quant = torch.round(W_chunk * scale.unsqueeze(1))
+            # scale needs to be unsqueezed for row-wise multiplication if W_chunk is [chunk_out_features, in_features]
+            # and scale is [chunk_out_features]
+            W_quant = torch.round(W_chunk * scale.unsqueeze(1)) # W_quant on target_device
             W_quant = torch.clamp(
                 W_quant,
                 -(2 ** (self.bits - 1)),
@@ -171,8 +223,9 @@ class GPTQQuantizer(BaseQuantizer):
             )
             
             # Store quantized weights and scale
+            # quantized layer and its buffers are on target_device
             quantized.weight_quantized.data[i:chunk_end] = W_quant.to(torch.int8)
-            quantized.weight_scale.data[i:chunk_end] = 1.0 / scale
+            quantized.weight_scale.data[i:chunk_end] = 1.0 / scale # scale is per output channel for this chunk
             
             del W_chunk, W_quant
             self._clear_memory()
