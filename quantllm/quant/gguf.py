@@ -27,8 +27,28 @@ class GGUFQuantizer(BaseQuantizer):
         use_packed: bool = True,
         legacy_format: bool = False,
         batch_size: int = 4,
-        device: Optional[Union[str, torch.device]] = None
+        device: Optional[Union[str, torch.device]] = None,
+        cpu_offload: bool = False
     ):
+        """
+        Initializes the GGUFQuantizer.
+
+        Args:
+            model (PreTrainedModel): The model to be quantized.
+            bits (int, optional): Number of bits for quantization. Defaults to 4.
+            group_size (int, optional): Size of the quantization group. Defaults to 32.
+            desc_act (bool, optional): Whether to describe activations in GGUF metadata. Defaults to False.
+            desc_ten (bool, optional): Whether to describe tensors in GGUF metadata. Defaults to False.
+            use_packed (bool, optional): Whether to use packed quantization types (e.g., Q4_K_M). Defaults to True.
+            legacy_format (bool, optional): Whether to use a legacy GGUF format version. Defaults to False.
+            batch_size (int, optional): Batch size for processing calibration data. Defaults to 4.
+            device (Optional[Union[str, torch.device]], optional): 
+                The device for quantization operations ('cpu', 'cuda', etc.). 
+                Inherited from BaseQuantizer. Defaults to None (auto-detection).
+            cpu_offload (bool, optional): 
+                If True, quantized layers and some computations are forced to CPU, 
+                reducing GPU memory usage. Defaults to False.
+        """
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization. Install with: pip install ctransformers")
             
@@ -39,6 +59,7 @@ class GGUFQuantizer(BaseQuantizer):
         self.use_packed = use_packed
         self.legacy_format = legacy_format
         self.batch_size = batch_size
+        self.cpu_offload = cpu_offload
     def quantize(
         self,
         calibration_data: Optional[torch.Tensor] = None
@@ -78,42 +99,41 @@ class GGUFQuantizer(BaseQuantizer):
     
     def _collect_stats(self, data: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
         """Collect statistics for quantization with memory-efficient batch processing."""
-        device = next(self.model.parameters()).device
         stats = {}
         
         def hook_fn(name):
             def fn(module, input, output):
                 if name not in stats:
-                    # Initialize stats on CPU if offloading is enabled
-                    target_device = 'cpu' if self.cpu_offload else device
+                    stat_device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
+                    output_sample = output[0] # output_sample is on self.device_manager.primary_device
                     stats[name] = {
-                        "min_val": torch.tensor(float('inf'), device=target_device),
-                        "max_val": torch.tensor(float('-inf'), device=target_device),
-                        "sum": torch.zeros_like(output[0], device=target_device),
-                        "sq_sum": torch.zeros_like(output[0], device=target_device),
-                        "count": 0
+                        "min_val": torch.tensor(float('inf'), device=stat_device),
+                        "max_val": torch.tensor(float('-inf'), device=stat_device),
+                        "sum": torch.zeros(output_sample.shape[1:], device=stat_device), # sum over batch dim
+                        "sq_sum": torch.zeros(output_sample.shape[1:], device=stat_device), # sum over batch dim
+                        "count": torch.tensor(0, dtype=torch.long, device=stat_device)
                     }
                 
-                x = output[0].detach()
+                stat_device = stats[name]["sum"].device # Get the actual device where stats are stored
+                x = output[0].detach() # x is on self.device_manager.primary_device
                 
-                # Process in chunks to save memory
-                chunk_size = 1024  # Adjust based on available memory
+                # Process in chunks to save memory (chunking along batch dimension of x)
+                chunk_size = 1024  # Adjust based on available memory for x_batch_dim * x_other_dims
                 num_chunks = math.ceil(x.size(0) / chunk_size)
                 
                 for i in range(num_chunks):
-                    chunk = x[i * chunk_size:(i + 1) * chunk_size]
-                    if self.cpu_offload:
-                        chunk = chunk.cpu()
+                    chunk_on_primary = x[i * chunk_size:(i + 1) * chunk_size]
+                    chunk_for_stats = move_to_device(chunk_on_primary, stat_device)
                     
-                    # Update statistics
-                    stats[name]["min_val"] = torch.min(stats[name]["min_val"], torch.min(chunk))
-                    stats[name]["max_val"] = torch.max(stats[name]["max_val"], torch.max(chunk))
-                    stats[name]["sum"] += torch.sum(chunk, dim=0)
-                    stats[name]["sq_sum"] += torch.sum(chunk ** 2, dim=0)
-                    stats[name]["count"] += chunk.size(0)
+                    # Update statistics on stat_device
+                    stats[name]["min_val"] = torch.min(stats[name]["min_val"], torch.min(chunk_for_stats.view(-1, chunk_for_stats.size(-1)), dim=0)[0])
+                    stats[name]["max_val"] = torch.max(stats[name]["max_val"], torch.max(chunk_for_stats.view(-1, chunk_for_stats.size(-1)), dim=0)[0])
+                    stats[name]["sum"] += torch.sum(chunk_for_stats, dim=0) # Summing over batch for each feature
+                    stats[name]["sq_sum"] += torch.sum(chunk_for_stats ** 2, dim=0) # Summing over batch
+                    stats[name]["count"] += chunk_for_stats.size(0)
                     
                     # Clear intermediate tensors
-                    del chunk
+                    del chunk_on_primary, chunk_for_stats
                     if i % 10 == 0:  # Periodic memory cleanup
                         self._clear_memory()
             
@@ -121,15 +141,18 @@ class GGUFQuantizer(BaseQuantizer):
         
         # Register hooks for all linear layers
         hooks = []
+        # self.model is already on self.device_manager.primary_device due to BaseQuantizer._prepare_model
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
+                # module is part of self.model, so it's on self.device_manager.primary_device
                 hooks.append(module.register_forward_hook(hook_fn(name)))
         
         # Process calibration data in batches
+        # calibration_data is already on self.device_manager.primary_device from self.prepare_calibration_data
         with torch.no_grad():
             for i in range(0, len(data), self.batch_size):
-                batch = data[i:i+self.batch_size]
-                self.model(batch)
+                batch = move_to_device(data[i:i+self.batch_size], self.device_manager.primary_device)
+                self.model(batch) # Model and batch are on primary_device
                 
                 # Periodic memory cleanup
                 if i % (self.batch_size * 10) == 0:
@@ -141,11 +164,17 @@ class GGUFQuantizer(BaseQuantizer):
         
         # Compute final statistics
         for name in stats:
-            stats[name]["mean"] = stats[name]["sum"] / stats[name]["count"]
-            stats[name]["std"] = torch.sqrt(
-                stats[name]["sq_sum"] / stats[name]["count"] 
-                - stats[name]["mean"] ** 2
-            )
+            current_count = stats[name]["count"].item() # Get Python number for conditional
+            if current_count > 0:
+                stats[name]["mean"] = stats[name]["sum"] / stats[name]["count"]
+                var = stats[name]["sq_sum"] / stats[name]["count"] - stats[name]["mean"] ** 2
+                # Ensure variance is not negative due to floating point inaccuracies
+                stats[name]["std"] = torch.sqrt(torch.max(torch.tensor(0.0, device=var.device), var))
+            else:
+                stat_device = stats[name]["sum"].device
+                # Keep original shape for sum/sq_sum by using zeros_like
+                stats[name]["mean"] = torch.zeros_like(stats[name]["sum"], device=stat_device)
+                stats[name]["std"] = torch.zeros_like(stats[name]["sum"], device=stat_device)
             
             # Clean up intermediate values
             del stats[name]["sum"]
@@ -160,9 +189,11 @@ class GGUFQuantizer(BaseQuantizer):
         stats: Optional[Dict[str, torch.Tensor]] = None
     ) -> QuantizedLinear:
         """Quantize a single layer to GGUF format with memory-efficient processing."""
-        device = next(layer.parameters()).device
+        target_device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
         
-        # Initialize quantized layer
+        layer = move_to_device(layer, target_device)
+
+        # Initialize quantized layer and move to target_device
         quantized = QuantizedLinear(
             layer.in_features,
             layer.out_features,
@@ -188,70 +219,79 @@ class GGUFQuantizer(BaseQuantizer):
         # Process in chunks to save memory
         chunk_size = 1024  # Adjust based on available memory
         
+        
+        quantized = move_to_device(quantized, target_device)
+
         # Copy bias if exists
         if layer.bias is not None:
+            # layer.bias.data is already on target_device because layer was moved
             quantized.bias.data.copy_(layer.bias.data)
             
-        # Get weight matrix
-        W = layer.weight.data.clone()
-        if self.cpu_offload:
-            W = W.cpu()
+        # Get weight matrix, clone, and ensure it's on target_device
+        W = move_to_device(layer.weight.data.clone(), target_device)
         
         # Apply statistics if available
         if stats is not None:
-            if self.cpu_offload:
-                stats = {k: v.cpu() for k, v in stats.items()}
-            W = (W - stats["mean"]) / (stats["std"] + 1e-6)
+            # stats values (mean, std) are on stat_device from _collect_stats
+            # Move them to W.device (target_device) for the operation
+            mean = move_to_device(stats["mean"], W.device)
+            std = move_to_device(stats["std"], W.device)
+            W = (W - mean) / (std + 1e-6) # W is on target_device
         
         # Compute scales per group if using grouping
+        # All intermediate tensors (max_abs, scale_val, group_chunk etc.) should be on target_device
         if self.group_size > 0:
             n_groups = W.shape[0] // self.group_size
             W_groups = W.view(n_groups, self.group_size, -1)
             
-            scales = []
-            zero_points = []
+            scales_list = [] # Renamed from scales
+            zero_points_list = [] # Renamed from zero_points
             
             # Process groups in chunks
             for start_idx in range(0, n_groups, chunk_size):
                 end_idx = min(start_idx + chunk_size, n_groups)
-                group_chunk = W_groups[start_idx:end_idx]
+                group_chunk = W_groups[start_idx:end_idx] # group_chunk is on target_device
                 
-                chunk_scales = []
-                chunk_zero_points = []
+                current_chunk_scales = []
+                current_chunk_zero_points = []
                 
-                for group in group_chunk:
+                for group_idx_in_chunk in range(group_chunk.size(0)):
+                    group = group_chunk[group_idx_in_chunk] # group is on target_device
                     max_abs = torch.max(torch.abs(group))
-                    scale = (2 ** (self.bits - 1) - 1) / max_abs
-                    chunk_scales.append(scale)
-                    chunk_zero_points.append(torch.zeros_like(scale))
+                    current_scale_val = (2 ** (self.bits - 1) - 1) / max_abs # current_scale_val on target_device
+                    current_chunk_scales.append(current_scale_val)
+                    current_chunk_zero_points.append(torch.zeros_like(current_scale_val, device=target_device)) # Ensure on target_device
                 
-                scales.extend(chunk_scales)
-                zero_points.extend(chunk_zero_points)
+                scales_list.extend(current_chunk_scales)
+                zero_points_list.extend(current_chunk_zero_points)
                 
                 # Clear intermediate tensors
-                del group_chunk, chunk_scales, chunk_zero_points
+                del group_chunk, current_chunk_scales, current_chunk_zero_points
                 self._clear_memory()
             
-            scales = torch.stack(scales)
-            zero_points = torch.stack(zero_points)
+            scales = torch.stack(scales_list) # scales is on target_device
+            zero_points = torch.stack(zero_points_list) # zero_points is on target_device
         else:
             # Global quantization
-            max_abs = torch.max(torch.abs(W))
+            max_abs = torch.max(torch.abs(W)) # W is on target_device
+            scale_val = (2 ** (self.bits - 1) - 1) / max_abs # scale_val is on target_device
+            # target_device is already defined
             scales = torch.full(
                 (W.size(0),),
-                (2 ** (self.bits - 1) - 1) / max_abs,
-                device='cpu' if self.cpu_offload else device
+                scale_val,
+                device=target_device # Ensure scales is on target_device
             )
-            zero_points = torch.zeros_like(scales)
+            zero_points = torch.zeros_like(scales, device=target_device) # Ensure zero_points is on target_device
             
         # Quantize weights in chunks
-        W_quant = []
+        W_quant_list = [] # Renamed from W_quant
         for start_idx in range(0, W.size(0), chunk_size):
             end_idx = min(start_idx + chunk_size, W.size(0))
-            chunk = W[start_idx:end_idx]
-            chunk_scales = scales[start_idx:end_idx]
+            # W, scales are on target_device
+            chunk = W[start_idx:end_idx] 
+            current_chunk_scales = scales[start_idx:end_idx] # Renamed
             
-            chunk_quant = torch.round(chunk * chunk_scales.view(-1, 1))
+            chunk_quant = torch.round(chunk * current_chunk_scales.view(-1, 1)) # chunk_quant on target_device
             
             # Pack groups if enabled
             if self.use_packed and self.group_size > 0:
@@ -270,35 +310,36 @@ class GGUFQuantizer(BaseQuantizer):
                                 ((chunk_quant[..., 3::4] + 2) << 6)
                     chunk_quant = chunk_packed.to(torch.uint8)
                 elif self.bits == 8:
-                    chunk_quant = chunk_quant.to(torch.int8)
+                    chunk_quant = chunk_quant.to(torch.int8) # Already on target_device
                 
-                chunk_quant = chunk_quant.view(chunk.size(0), -1)
+                chunk_quant = chunk_quant.view(chunk.size(0), -1) # Reshape back
             
-            W_quant.append(chunk_quant)
+            W_quant_list.append(chunk_quant)
             
             # Clear intermediate tensors
-            del chunk, chunk_scales, chunk_quant
+            del chunk, current_chunk_scales, chunk_quant
+            if 'chunk_packed' in locals(): del chunk_packed
             self._clear_memory()
         
-        W_quant = torch.cat(W_quant, dim=0)
+        W_quant = torch.cat(W_quant_list, dim=0) # W_quant is on target_device
         
-        # Move tensors to appropriate device
-        target_device = device if not self.cpu_offload else 'cpu'
-        W_quant = W_quant.to(target_device)
-        scales = scales.to(target_device)
-        zero_points = zero_points.to(target_device)
+        # scales and zero_points are already on target_device
+        # W_quant is already on target_device and correct dtype from packing logic or .to(torch.int8)
         
         # Store quantized weights and parameters
+        # quantized and its buffers are on target_device
         quantized.weight_quantized.copy_(W_quant)
         quantized.weight_scale.copy_(1.0 / scales)
         quantized.weight_zero_point.copy_(zero_points)
         
         # Store additional GGUF-specific information
         if stats is not None:
+            # stats values (mean, std) are on stat_device from _collect_stats
+            # Move them to target_device for storing in quantized module's buffers (if they exist)
             if hasattr(quantized, 'input_mean'):
-                quantized.input_mean.copy_(stats["mean"].to(target_device))
+                quantized.input_mean.copy_(move_to_device(stats["mean"], target_device))
             if hasattr(quantized, 'input_std'):
-                quantized.input_std.copy_(stats["std"].to(target_device))
+                quantized.input_std.copy_(move_to_device(stats["std"], target_device))
         
         return quantized
     def convert_to_gguf(self, output_path: str):
@@ -346,8 +387,10 @@ class GGUFQuantizer(BaseQuantizer):
                                     end_idx = min(start_idx + chunk_size, tensor.numel())
                                     chunk = tensor.view(-1)[start_idx:end_idx]
                                     
-                                    if self.cpu_offload:
-                                        chunk = chunk.cpu()
+                                    # If self.cpu_offload is True, module tensors are already on CPU.
+                                    # Otherwise, they are on primary_device and need to be moved to CPU.
+                                    if not self.cpu_offload:
+                                        chunk = move_to_device(chunk, torch.device('cpu'))
                                     
                                     ctransformers.save_tensor(
                                         f"{name}.{tensor_name}",
@@ -361,11 +404,11 @@ class GGUFQuantizer(BaseQuantizer):
                         
                         # Process bias if exists
                         if hasattr(module, "bias") and module.bias is not None:
-                            bias = module.bias.data
-                            if self.cpu_offload:
-                                bias = bias.cpu()
-                            ctransformers.save_tensor(f"{name}.bias", bias, 0, f)
-                            del bias
+                            bias_data = module.bias.data # Renamed to avoid conflict
+                            if not self.cpu_offload:
+                                bias_data = move_to_device(bias_data, torch.device('cpu'))
+                            ctransformers.save_tensor(f"{name}.bias", bias_data, 0, f)
+                            del bias_data
                             
                         self._clear_memory()
             

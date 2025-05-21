@@ -23,6 +23,22 @@ class AWQQuantizer(BaseQuantizer):
         batch_size: int = 2,
         device: Optional[Union[str, torch.device]] = None
     ):
+        """
+        Initializes the AWQQuantizer.
+
+        Args:
+            model (PreTrainedModel): The model to be quantized.
+            bits (int, optional): Number of bits for quantization. Defaults to 4.
+            group_size (int, optional): Size of the quantization group. Defaults to 128.
+            zero_point (bool, optional): Whether to use zero-point quantization for activations. Defaults to True.
+            scale_dtype (str, optional): Data type for scales. Defaults to "fp32".
+            version (str, optional): AWQ algorithm version (e.g., "v1", "v2"). Defaults to "v2".
+            enable_mnn_kernel (bool, optional): Whether to enable MNN kernel (if applicable). Defaults to False.
+            batch_size (int, optional): Batch size for calibration data processing. Defaults to 2.
+            device (Optional[Union[str, torch.device]], optional): 
+                The device for quantization operations ('cpu', 'cuda', etc.). 
+                Inherited from BaseQuantizer. Defaults to None (auto-detection).
+        """
         super().__init__(model=model, bits=bits, device=device)
         self.group_size = group_size
         self.zero_point = zero_point
@@ -34,12 +50,6 @@ class AWQQuantizer(BaseQuantizer):
         # Initialize activation statistics dictionaries
         self.act_scales = {}
         self.weight_scales = {}
-        
-    def _clear_memory(self):
-        """Clear GPU memory and run garbage collection."""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
         
     def quantize(
         self,
@@ -65,15 +75,12 @@ class AWQQuantizer(BaseQuantizer):
             batch = calibration_data[step:end_idx]
             
             # Collect statistics for this batch
-            self._collect_activation_stats(batch)
+            self._collect_activation_stats(batch) # Removed num_steps argument
             
             # Clean up batch
             del batch
             self._clear_memory()
             
-        # Process collected statistics
-        self._process_activation_stats()
-        
         # Quantize the model layer by layer
         for name, module in self.model.named_modules():            
             if isinstance(module, nn.Linear):
@@ -97,8 +104,7 @@ class AWQQuantizer(BaseQuantizer):
         return self.model
     def _collect_activation_stats(
         self,
-        data: torch.Tensor,
-        num_steps: int
+        data: torch.Tensor # Removed num_steps parameter
     ):
         """Collect activation statistics for each layer."""
         
@@ -124,51 +130,48 @@ class AWQQuantizer(BaseQuantizer):
                     module.register_forward_hook(hook_fn(name))
                 )
         
-        # Run calibration in smaller batches
+        # Run calibration (forward pass on the provided data batch)
         with torch.no_grad():
-            batch_size = 2  # Small batch size to prevent OOM
-            for step in range(num_steps):
-                # Clear CUDA cache periodically
-                if step % 10 == 0:
-                    torch.cuda.empty_cache()
-                
-                # Process a small batch
-                start_idx = (step * batch_size) % len(data)
-                end_idx = min(start_idx + batch_size, len(data))
-                batch = data[start_idx:end_idx]
-                
-                # Move batch to appropriate device
-                device = next(self.model.parameters()).device
-                batch = batch.to(device)
-                
-                self.model(batch)
-                
-                # Move batch back to CPU to free GPU memory
-                batch = batch.cpu()
-                
+            # Ensure data is on the primary device for model processing
+            data_on_device = move_to_device(data, self.device_manager.primary_device)
+            self.model(data_on_device)
+            # Data can be moved back to CPU if it's large and memory is a concern,
+            # but hooks should have already captured necessary info to CPU.
+            # For simplicity here, we assume hooks manage CPU transfer if needed.
+            # del data_on_device # Optionally delete if memory is very tight
+
         # Remove hooks
         for handle in handles:
             handle.remove()
             
-        # Move model to CPU temporarily to free GPU memory
-        self.model = self.model.cpu()
-        torch.cuda.empty_cache()
+        # model is already on self.device_manager.primary_device from the quantize method's perspective
+        # or moved by prepare_calibration_data.
+        # The processing of act_scales should happen after all batches are processed.
+        # However, the current structure calls this per batch.
+        # For now, let's keep the quantile calculation here, but ideally, it would be after the main loop in `quantize`.
+        # To avoid issues with model device, let's ensure model is on CPU for this CPU-bound operation,
+        # then move it back if it was on GPU.
         
+        original_model_device = self.model.device # Store original device
+        self.model = move_to_device(self.model, torch.device('cpu'))
+        self._clear_memory() 
+
         # Process collected statistics on CPU
         for name in self.act_scales:
-            scales = torch.stack(self.act_scales[name])
-            # Use 99.9th percentile for more robust statistics
-            self.act_scales[name] = torch.quantile(scales, 0.999)
-            
-        # Move model back to GPU
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = self.model.to(device)
-            
-        # Process collected statistics
-        for name in self.act_scales:
-            scales = torch.stack(self.act_scales[name])
-            # Use 99.9th percentile for more robust statistics
-            self.act_scales[name] = torch.quantile(scales, 0.999)
+            if self.act_scales[name]: # Ensure list is not empty
+                scales_list = self.act_scales[name]
+                # If scales_list contains tensors that are not on CPU, move them.
+                # Assuming they are already on CPU due to `scale.cpu()` in hook.
+                scales_tensor = torch.stack(scales_list)
+                self.act_scales[name] = torch.quantile(scales_tensor, 0.999)
+            else:
+                # Handle cases where a layer might not have collected scales (e.g. not used in forward pass)
+                self.logger.log_warning(f"No activation scales collected for layer {name}. Using default scale of 1.0.")
+                self.act_scales[name] = torch.tensor(1.0, device='cpu') # Default to a CPU tensor
+
+        # Restore model to its original device
+        self.model = move_to_device(self.model, original_model_device)
+        # The duplicated block of "Process collected statistics" is now removed.
             
     def _quantize_layer(
         self,
@@ -176,9 +179,9 @@ class AWQQuantizer(BaseQuantizer):
         act_scale: torch.Tensor
     ) -> QuantizedLinear:
         """Quantize a single layer using AWQ."""
-        device = next(layer.parameters()).device
-        
-        # Initialize quantized layer
+        target_device = self.device_manager.primary_device
+
+        # Initialize quantized layer and move to target device
         quantized = QuantizedLinear(
             layer.in_features,
             layer.out_features,
@@ -193,40 +196,46 @@ class AWQQuantizer(BaseQuantizer):
                 format="awq"
             )
         )
-        
-        # Copy bias if exists
+        quantized = move_to_device(quantized, target_device)
+
+        # Ensure layer parameters are on the target_device for computation
+        layer = move_to_device(layer, target_device)
+
+        # Copy bias if exists, ensuring it's on the target device
         if layer.bias is not None:
-            quantized.bias.data.copy_(layer.bias.data)
+            quantized.bias.data.copy_(layer.bias.data) # Bias already on target_device due to layer move
         
         # Get weight matrix
-        W = layer.weight.data.clone()
+        W = layer.weight.data.clone() # W is on target_device
         
-        # Scale weights by activation scale
-        W = W / act_scale.view(1, -1)
+        # Ensure act_scale is on the same device as W before division
+        act_scale_on_device = move_to_device(act_scale, W.device)
+        W = W / act_scale_on_device.view(1, -1)
         
         # Compute quantization scales per group
+        # All computations for scales and zero_points should happen on target_device
         if self.group_size > 0:
             n_groups = W.shape[0] // self.group_size
             W_groups = W.view(n_groups, self.group_size, -1)
             
-            scales = []
-            zero_points = [] if self.zero_point else None
+            scales_list = [] # Renamed from scales to scales_list
+            zero_points_list = [] if self.zero_point else None # Renamed
             
             for idx in range(n_groups):
                 group = W_groups[idx]
                 max_abs = torch.max(torch.abs(group))
-                scale = (2 ** (self.bits - 1) - 1) / max_abs
-                scales.append(scale)
+                current_scale = (2 ** (self.bits - 1) - 1) / max_abs # Renamed from scale
+                scales_list.append(current_scale)
                 
                 if self.zero_point:
-                    zero_point = -(torch.max(group) + torch.min(group)) / 2 * scale
-                    zero_points.append(zero_point)
+                    current_zero_point = -(torch.max(group) + torch.min(group)) / 2 * current_scale # Renamed
+                    zero_points_list.append(current_zero_point)
             
-            scales = torch.stack(scales)
+            scales = torch.stack(scales_list)
             if self.zero_point:
-                zero_points = torch.stack(zero_points)
+                zero_points = torch.stack(zero_points_list)
             else:
-                zero_points = torch.zeros_like(scales)
+                zero_points = torch.zeros_like(scales, device=target_device) # Ensure on target_device
         else:
             max_abs = torch.max(torch.abs(W), dim=1)[0]
             scales = (2 ** (self.bits - 1) - 1) / max_abs
@@ -235,18 +244,23 @@ class AWQQuantizer(BaseQuantizer):
                 min_vals = torch.min(W, dim=1)[0]
                 zero_points = -(max_vals + min_vals) / 2 * scales
             else:
-                zero_points = torch.zeros_like(scales)
+                zero_points = torch.zeros_like(scales, device=target_device) # Ensure on target_device
                 
         # Quantize weights
+        # W, scales, zero_points are on target_device
         W_quant = torch.round(W * scales.view(-1, 1) - zero_points.view(-1, 1))
+        W_quant = W_quant.to(torch.int8) # Cast to int8
         
         # Store quantized weights and parameters
-        quantized.weight_quantized.copy_(W_quant.to(torch.int8))
-        quantized.weight_scale.copy_(1.0 / scales)
-        quantized.weight_zero_point.copy_(zero_points)
+        # quantized module and its buffers are already on target_device
+        quantized.weight_quantized.copy_(W_quant) # W_quant is already on target_device and int8
+        quantized.weight_scale.copy_(1.0 / scales) # scales is on target_device
+        quantized.weight_zero_point.copy_(zero_points) # zero_points is on target_device
         
         # Store additional AWQ-specific information
+        # Ensure act_scale is on the same device as the quantized layer's parameters
         if hasattr(quantized, 'act_scale'):
-            quantized.act_scale.copy_(act_scale)
+            # act_scale_on_device was already computed and is on target_device
+            quantized.act_scale.copy_(act_scale_on_device)
         
         return quantized
