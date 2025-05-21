@@ -54,6 +54,7 @@ class QuantizationBenchmark:
         results = {}
         try:
             self._clear_memory()
+            print(f"GPU memory before {name}: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
             
             # Configure quantizer for memory efficiency
             mem_efficient_args = dict(quantizer_args)
@@ -66,23 +67,26 @@ class QuantizationBenchmark:
                     "percdamp": 0.01,
                     "block_size": 128,
                 })
+              print(f"Creating model copy for {name}...")
+            # Create a fresh model instance with same config
+            config_dict = self.model.config.to_dict()
+            config_dict.pop('_name_or_path', None)  # Remove path to ensure clean config
             
-            print(f"Creating copy of model for {name}...")
-            # Create a fresh model instance from pretrained
-            model_clone = AutoModelForCausalLM.from_pretrained(
-                self.model.config._name_or_path,
-                low_cpu_mem_usage=True,
-                torch_dtype=torch.float32,
-                device_map=None  # Important: disable device map for copying
-            )
+            model_clone = type(self.model)(self.model.config)
             
             print(f"Copying parameters for {name}...")
-            # Manually copy parameters to ensure proper copying
+            # Copy parameters with proper CPU offloading
             with torch.no_grad():
-                for name, param in self.model.named_parameters():
-                    if name in model_clone.state_dict():
-                        # Ensure parameter is on CPU for copying
-                        model_clone.state_dict()[name].copy_(param.cpu())
+                state_dict = {}
+                for param_name, param in self.model.state_dict().items():
+                    # Handle device placement during copy
+                    param_data = param.detach()
+                    if param_data.device.type != 'cpu':
+                        param_data = param_data.cpu()
+                    state_dict[param_name] = param_data
+                
+                # Load state dict all at once
+                model_clone.load_state_dict(state_dict)
             
             # Initialize quantizer with model copy
             quantizer = quantizer_class(model=model_clone, **mem_efficient_args)

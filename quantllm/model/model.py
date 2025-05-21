@@ -143,3 +143,26 @@ class Model:
                     new_model.state_dict()[name].copy_(param.cpu())
         
         return new_model
+
+    def get_base_model(self):
+        """Get a fresh instance of the base model without device mapping."""
+        try:
+            # Create a fresh instance with minimal settings
+            model = AutoModelForCausalLM.from_pretrained(
+                self.config.model_name,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float32,
+                device_map=None  # Important: disable device map
+            )
+            # Copy weights from current model
+            with torch.no_grad():
+                for name, param in self.model.named_parameters():
+                    if name in model.state_dict():
+                        param_data = param.data
+                        if hasattr(param_data, "cpu"):
+                            param_data = param_data.cpu()
+                        model.state_dict()[name].copy_(param_data)
+            return model
+        except Exception as e:
+            logging.error(f"Error creating base model: {str(e)}")
+            raise
