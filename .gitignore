@@ -9,6 +9,8 @@ __pycache__/
 
 upcoming.md
 examples/
+*.ipynb
+
 
 logs
 main.py

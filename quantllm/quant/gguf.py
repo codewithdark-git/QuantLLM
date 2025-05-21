@@ -135,8 +135,7 @@ class GGUFQuantizer:
             }
             
         return stats
-        
-    def _quantize_layer(
+          def _quantize_layer(
         self,
         layer: nn.Linear,
         stats: Optional[Dict[str, torch.Tensor]] = None
@@ -152,7 +151,7 @@ class GGUFQuantizer:
             config=QuantizationConfig(
                 bits=self.bits,
                 scheme="symmetric",
-                granularity="per-group" if self.group_size > 0 else "per-tensor",
+                granularity="per-channel" if self.group_size > 0 else "per-tensor",
                 calibration="minmax",
                 channel_wise=self.group_size > 0,
                 dtype=f"int{self.bits}",

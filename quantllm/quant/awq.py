@@ -77,8 +77,7 @@ class AWQQuantizer:
                     setattr(self.model, name, quantized)
         
         return self.model
-    
-    def _collect_activation_stats(
+      def _collect_activation_stats(
         self,
         data: torch.Tensor,
         num_steps: int
@@ -94,22 +93,58 @@ class AWQQuantizer:
                         if name not in self.act_scales:
                             self.act_scales[name] = []
                         x = input[0].detach()
-                        scale = torch.max(torch.abs(x))
-                        self.act_scales[name].append(scale)
+                        # Handle both 2D and 3D inputs
+                        if len(x.shape) == 3:
+                            # For 3D input (batch_size, seq_len, hidden_size)
+                            scale = torch.max(torch.abs(x.view(-1, x.size(-1))))
+                        else:
+                            scale = torch.max(torch.abs(x))
+                        self.act_scales[name].append(scale.cpu())  # Move to CPU to save memory
                     return fn
                     
                 handles.append(
                     module.register_forward_hook(hook_fn(name))
                 )
         
-        # Run calibration
+        # Run calibration in smaller batches
         with torch.no_grad():
-            for _ in range(num_steps):
-                self.model(data)
+            batch_size = 2  # Small batch size to prevent OOM
+            for step in range(num_steps):
+                # Clear CUDA cache periodically
+                if step % 10 == 0:
+                    torch.cuda.empty_cache()
+                
+                # Process a small batch
+                start_idx = (step * batch_size) % len(data)
+                end_idx = min(start_idx + batch_size, len(data))
+                batch = data[start_idx:end_idx]
+                
+                # Move batch to appropriate device
+                device = next(self.model.parameters()).device
+                batch = batch.to(device)
+                
+                self.model(batch)
+                
+                # Move batch back to CPU to free GPU memory
+                batch = batch.cpu()
                 
         # Remove hooks
         for handle in handles:
             handle.remove()
+            
+        # Move model to CPU temporarily to free GPU memory
+        self.model = self.model.cpu()
+        torch.cuda.empty_cache()
+        
+        # Process collected statistics on CPU
+        for name in self.act_scales:
+            scales = torch.stack(self.act_scales[name])
+            # Use 99.9th percentile for more robust statistics
+            self.act_scales[name] = torch.quantile(scales, 0.999)
+            
+        # Move model back to GPU
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(device)
             
         # Process collected statistics
         for name in self.act_scales:

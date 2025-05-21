@@ -68,8 +68,7 @@ class GPTQQuantizer:
                     setattr(self.model, name, quantized)
         
         return self.model
-    
-    def _compute_hessian(self, layer: nn.Linear, data: torch.Tensor) -> torch.Tensor:
+      def _compute_hessian(self, layer: nn.Linear, data: torch.Tensor) -> torch.Tensor:
         """Compute Hessian approximation for a layer."""
         device = next(layer.parameters()).device
         
@@ -79,6 +78,9 @@ class GPTQQuantizer:
         
         def hook_fn(module, input, output):
             x = input[0].detach()
+            # Reshape input if needed (batch_size * seq_len, hidden_size)
+            if len(x.shape) == 3:
+                x = x.view(-1, x.size(-1))
             with torch.no_grad():
                 # Accumulate x^T x for Hessian approximation
                 H.add_(torch.matmul(x.t(), x))
@@ -88,7 +90,11 @@ class GPTQQuantizer:
         
         # Run calibration data through model
         with torch.no_grad():
-            self.model(data)
+            # Process in smaller batches to save memory
+            batch_size = 4  # Adjust based on available memory
+            for i in range(0, len(data), batch_size):
+                batch = data[i:i+batch_size]
+                self.model(batch)
             
         # Remove hook
         handle.remove()
