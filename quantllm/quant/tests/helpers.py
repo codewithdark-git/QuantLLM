@@ -61,9 +61,21 @@ def create_dummy_model(input_dim=16, hidden_dim=32, output_dim=10) -> PreTrained
     model = DummyModel(config)
     return model
 
-def create_dummy_calibration_data(batch_size=4, dim=16, num_samples=20) -> torch.Tensor:
+def create_dummy_calibration_data(batch_size: int = 2, vocab_size: int = 1000, seq_len: int = 32, num_samples: int = 8) -> torch.Tensor:
     """
-    Creates a random float tensor for calibration.
-    Shape: (num_samples, dim)
+    Creates a random integer tensor representing token IDs for calibration.
+    Suitable for language models expecting input_ids.
+
+    Args:
+        batch_size (int): Not directly used in current output shape, but common for dataloaders.
+                          The output tensor is a single batch of all samples.
+        vocab_size (int): The maximum value for token IDs (exclusive).
+        seq_len (int): The sequence length of each calibration sample.
+        num_samples (int): The number of calibration samples to generate.
+
+    Returns:
+        torch.Tensor: A tensor of shape (num_samples, seq_len) with random token IDs.
     """
-    return torch.randn(num_samples, dim)
+    # batch_size is not directly used here as we return a single tensor of (num_samples, seq_len)
+    # which can then be handled by a DataLoader or processed in chunks by the quantizer.
+    return torch.randint(0, vocab_size, (num_samples, seq_len))

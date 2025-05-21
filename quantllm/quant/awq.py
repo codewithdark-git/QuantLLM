@@ -6,14 +6,14 @@ import torch.nn as nn
 import numpy as np
 from typing import Optional, Dict, Any, List, Union, Tuple
 from transformers import PreTrainedModel
-from .quantization_engine import BaseQuantizer, QuantizationConfig, QuantizedLinear
+from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConfig, QuantizedLinear
 
 class AWQQuantizer(BaseQuantizer):
     """AWQ quantization implementation with memory-efficient processing."""
     
     def __init__(
         self,
-        model: PreTrainedModel,
+        model_or_model_name_or_path: Union[str, PreTrainedModel], # Changed parameter name
         bits: int = 4,
         group_size: int = 128, 
         zero_point: bool = True,
@@ -27,7 +27,8 @@ class AWQQuantizer(BaseQuantizer):
         Initializes the AWQQuantizer.
 
         Args:
-            model (PreTrainedModel): The model to be quantized.
+            model_or_model_name_or_path (Union[str, PreTrainedModel]): 
+                The Hugging Face model name/path or a PreTrainedModel instance to be quantized.
             bits (int, optional): Number of bits for quantization. Defaults to 4.
             group_size (int, optional): Size of the quantization group. Defaults to 128.
             zero_point (bool, optional): Whether to use zero-point quantization for activations. Defaults to True.
@@ -39,7 +40,9 @@ class AWQQuantizer(BaseQuantizer):
                 The device for quantization operations ('cpu', 'cuda', etc.). 
                 Inherited from BaseQuantizer. Defaults to None (auto-detection).
         """
-        super().__init__(model=model, bits=bits, device=device)
+        # Pass all relevant kwargs to BaseQuantizer
+        # AWQQuantizer specific args are handled here.
+        super().__init__(model_or_model_name_or_path=model_or_model_name_or_path, bits=bits, device=device)
         self.group_size = group_size
         self.zero_point = zero_point
         self.scale_dtype = scale_dtype
@@ -101,7 +104,18 @@ class AWQQuantizer(BaseQuantizer):
                 
                 self._clear_memory()
         
+        # Update model config with quantization parameters
+        awq_specific_params = {
+            "zero_point": self.zero_point,
+            "version": self.version,
+            "scale_dtype": self.scale_dtype, # Added from __init__
+            "enable_mnn_kernel": self.enable_mnn_kernel # Added from __init__
+            # batch_size is more of a process param, not a model config param usually
+        }
+        self._update_model_config_with_quant_params("awq", awq_specific_params)
+        
         return self.model
+
     def _collect_activation_stats(
         self,
         data: torch.Tensor # Removed num_steps parameter

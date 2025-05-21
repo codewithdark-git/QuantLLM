@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union, Tuple
 from transformers import PreTrainedModel
-from .quantization_engine import BaseQuantizer, QuantizationConfig, QuantizedLinear
+from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConfig, QuantizedLinear
 
 try:
     import ctransformers
@@ -19,7 +19,7 @@ class GGUFQuantizer(BaseQuantizer):
     
     def __init__(
         self,
-        model: PreTrainedModel,
+        model_or_model_name_or_path: Union[str, PreTrainedModel], # Changed parameter name
         bits: int = 4,
         group_size: int = 32,
         desc_act: bool = False,
@@ -34,7 +34,8 @@ class GGUFQuantizer(BaseQuantizer):
         Initializes the GGUFQuantizer.
 
         Args:
-            model (PreTrainedModel): The model to be quantized.
+            model_or_model_name_or_path (Union[str, PreTrainedModel]): 
+                The Hugging Face model name/path or a PreTrainedModel instance to be quantized.
             bits (int, optional): Number of bits for quantization. Defaults to 4.
             group_size (int, optional): Size of the quantization group. Defaults to 32.
             desc_act (bool, optional): Whether to describe activations in GGUF metadata. Defaults to False.
@@ -52,7 +53,7 @@ class GGUFQuantizer(BaseQuantizer):
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization. Install with: pip install ctransformers")
             
-        super().__init__(model=model, bits=bits, device=device)
+        super().__init__(model_or_model_name_or_path=model_or_model_name_or_path, bits=bits, device=device)
         self.group_size = group_size
         self.desc_act = desc_act
         self.desc_ten = desc_ten
@@ -94,9 +95,20 @@ class GGUFQuantizer(BaseQuantizer):
                     setattr(self.model, name, quantized)
                 
                 self._clear_memory()
+
+        # Update model config with quantization parameters
+        gguf_specific_params = {
+            "use_packed": self.use_packed,
+            "cpu_offload": self.cpu_offload,
+            "desc_act": self.desc_act,
+            "desc_ten": self.desc_ten,
+            "legacy_format": self.legacy_format
+            # group_size is handled by BaseQuantizer if present as self.group_size
+        }
+        self._update_model_config_with_quant_params("gguf", gguf_specific_params)
         
         return self.model
-    
+
     def _collect_stats(self, data: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
         """Collect statistics for quantization with memory-efficient batch processing."""
         stats = {}
