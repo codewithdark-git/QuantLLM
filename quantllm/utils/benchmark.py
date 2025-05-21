@@ -63,10 +63,13 @@ class QuantizationBenchmark:
                 mem_efficient_args.update({
                     "percdamp": 0.01,
                     "block_size": 128,
-                })
-              # Create a deep copy of the model using state dict
-            model_clone = type(self.model)(self.model.config)
-            model_clone.load_state_dict(self.model.state_dict())
+                })            # Create a deep copy of the model using from_pretrained
+            config = self.model.config
+            model_clone = type(self.model)(config)
+            # Copy weights manually to ensure proper copying
+            for param_name, param in self.model.state_dict().items():
+                if param_name in model_clone.state_dict():
+                    model_clone.state_dict()[param_name].copy_(param)
             
             # Initialize quantizer with model copy on CPU
             quantizer = quantizer_class(model=model_clone, **mem_efficient_args)
@@ -76,7 +79,7 @@ class QuantizationBenchmark:
                 quantizer.model = quantizer.model.cuda()
                 cal_data = self.calibration_data.cuda()
             else:
-                cal_data = self.calibration_data
+                cal_data = self.calibration_data.clone()
                 
             # Measure quantization time
             start_time = time.time()
