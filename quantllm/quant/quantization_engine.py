@@ -17,7 +17,9 @@ class QuantizationConfig:
         granularity: str = "per-tensor",
         calibration: str = "minmax",
         channel_wise: bool = False,
-        dtype: str = "int8"
+        dtype: str = "int8",
+        format: Optional[str] = None,
+        format_config: Optional[Dict[str, Any]] = None
     ):
         self.bits = bits
         self.scheme = scheme
@@ -25,6 +27,8 @@ class QuantizationConfig:
         self.calibration = calibration
         self.channel_wise = channel_wise
         self.dtype = dtype
+        self.format = format
+        self.format_config = format_config or {}
         self.validate()
         
     def validate(self):
@@ -32,7 +36,8 @@ class QuantizationConfig:
         valid_schemes = {"symmetric", "asymmetric", "power_of_2"}
         valid_granularity = {"per-tensor", "per-channel"}
         valid_calibration = {"minmax", "histogram", "entropy"}
-        valid_dtypes = {"int8", "uint8", "int4", "uint4"}
+        valid_dtypes = {"int8", "uint8", "int4", "uint4", "int2", "uint2"}
+        valid_formats = {None, "gguf", "gptq", "awq"}
         
         if self.scheme not in valid_schemes:
             raise ValueError(f"Invalid quantization scheme: {self.scheme}")
@@ -44,6 +49,8 @@ class QuantizationConfig:
             raise ValueError(f"Invalid dtype: {self.dtype}")
         if not 2 <= self.bits <= 8:
             raise ValueError(f"Bits must be between 2 and 8, got {self.bits}")
+        if self.format not in valid_formats:
+            raise ValueError(f"Invalid format: {self.format}")
 
 class QuantizedLinear(nn.Module):
     """Memory-efficient quantized linear layer."""
