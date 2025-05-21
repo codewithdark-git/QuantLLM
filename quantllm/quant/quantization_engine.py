@@ -3,7 +3,7 @@
 from typing import Dict, Any, Optional, Union, List, Tuple
 import torch
 import torch.nn as nn
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, AutoConfig, AutoModelForCausalLM, AutoTokenizer
 import numpy as np
 from ..trainer.logger import TrainingLogger
 
@@ -449,79 +449,111 @@ class BaseQuantizer:
 
     def __init__(
         self,
-        model: PreTrainedModel,
+        model_or_model_name_or_path: Union[str, PreTrainedModel],
         bits: int,
         device: Optional[Union[str, torch.device]] = None,
         **kwargs
     ):
-        """Initialize base quantizer with device management."""
-        from transformers import AutoConfig, AutoModelForCausalLM
-        
+        """Initialize base quantizer with device management and model loading."""
         self.bits = bits
         self.device_manager = DeviceManager(
             primary_device=torch.device(device) if device else None
         )
         self.logger = TrainingLogger()
+        self.tokenizer = None
+        self._model: Optional[PreTrainedModel] = None # Internal attribute for the property
+        self.model_name_or_path: Optional[str] = None
+        self.model_config = None
 
-        # Store original model config
-        from transformers import AutoConfig
-        self.model_config = AutoConfig.from_pretrained(
-            model.config._name_or_path,
-            trust_remote_code=True
-        ) if hasattr(model.config, '_name_or_path') else model.config
+        if isinstance(model_or_model_name_or_path, str):
+            self.model_name_or_path = model_or_model_name_or_path
+            self.logger.log_info(f"Loading tokenizer from: {self.model_name_or_path}")
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+            
+            self.logger.log_info(f"Loading model from: {self.model_name_or_path}")
+            model_instance = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+            self.model_config = model_instance.config
+            self._model = self._prepare_model_instance(model_instance, make_copy=False) # Loaded, so don't copy again here
+        
+        elif isinstance(model_or_model_name_or_path, PreTrainedModel):
+            original_model = model_or_model_name_or_path
+            self.model_config = original_model.config
+            if hasattr(original_model.config, '_name_or_path') and original_model.config._name_or_path:
+                self.model_name_or_path = original_model.config._name_or_path
+                try:
+                    self.logger.log_info(f"Attempting to load tokenizer from model's config path: {self.model_name_or_path}")
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+                except Exception as e:
+                    self.logger.log_warning(
+                        f"Could not load tokenizer based on the provided model's config path ({self.model_name_or_path}): {e}. "
+                        "Please handle tokenizer separately if needed."
+                    )
+            else:
+                 self.logger.log_warning(
+                    "Provided model instance does not have a '_name_or_path' attribute in its config. "
+                    "Tokenizer cannot be automatically loaded. Please handle tokenizer separately if needed."
+                )
+            # Prepare a copy of the provided model instance
+            self._model = self._prepare_model_instance(original_model, make_copy=True)
+        else:
+            raise TypeError("model_or_model_name_or_path must be a string (Hugging Face model name/path) or a PreTrainedModel instance.")
 
-        # Initialize model property
-        self._model = None
-        self._prepare_model(model)
+    def _prepare_model_instance(self, model_to_prepare: PreTrainedModel, make_copy: bool = False) -> PreTrainedModel:
+        """Prepares the model instance by copying (if specified), setting to eval mode, and moving to device."""
+        prepared_model = model_to_prepare
+        if make_copy:
+            self.logger.log_info("Creating a copy of the provided model instance.")
+            # Ensure model_config is set if we are copying from an instance directly
+            if self.model_config is None: # Should have been set in __init__
+                 self.model_config = model_to_prepare.config
+
+            new_model_from_config = AutoModelForCausalLM.from_config(self.model_config, trust_remote_code=True)
+            
+            self.logger.log_info("Copying model parameters for the new instance...")
+            with torch.no_grad():
+                state_dict = {}
+                for name, param in model_to_prepare.state_dict().items():
+                    param_data = param.detach().cpu() # Always copy to CPU first for safety
+                    state_dict[name] = param_data
+                new_model_from_config.load_state_dict(state_dict, strict=True)
+            prepared_model = new_model_from_config
+        
+        prepared_model.eval()
+        if self.device_manager.primary_device is not None:
+            self.logger.log_info(f"Moving model to device: {self.device_manager.primary_device}")
+            prepared_model = move_to_device(prepared_model, self.device_manager.primary_device)
+        
+        self.logger.log_info("Model preparation (copy, eval, device move) completed successfully.")
+        return prepared_model
 
     @property
     def model(self) -> PreTrainedModel:
         """Get the current model instance."""
         if self._model is None:
-            raise RuntimeError("Model not properly initialized")
+            raise RuntimeError("Model not properly initialized or loaded.")
         return self._model
     
     @model.setter
     def model(self, value: PreTrainedModel):
         """Set the model instance with proper device handling."""
-        self._model = value
-    
-    def _prepare_model(self, original_model: PreTrainedModel):
-        """Create a proper copy of the model with device handling."""
-        from transformers import AutoModelForCausalLM
-        
-        try:
-            # Create new model instance            
-            self.logger.log_info("Creating new model instance...")
-            new_model = AutoModelForCausalLM.from_config(
-                self.model_config,
-                trust_remote_code=True
-            )
-            
-            # Copy state dict with proper device handling            
-            self.logger.log_info("Copying model parameters...")
-            with torch.no_grad():
-                state_dict = {}
-                for name, param in original_model.state_dict().items():
-                    # Always copy to CPU first
-                    param_data = param.detach()
-                    if param_data.device.type != 'cpu':
-                        param_data = param_data.cpu()
-                    state_dict[name] = param_data
-                
-                # Load state dict
-                new_model.load_state_dict(state_dict, strict=True)
-                
-            # Move to target device if specified
-            if self.device_manager.primary_device is not None:
-                new_model = move_to_device(new_model, self.device_manager.primary_device)
+        if not isinstance(value, PreTrainedModel):
+            raise TypeError("Value must be a PreTrainedModel instance.")
+        # When model is set directly, assume user wants to use this exact instance (potentially modified).
+        # We should still prepare it (eval mode, device).
+        # If tokenizer auto-loading is desired, it should ideally happen based on this new model's config.
+        self.model_config = value.config
+        if hasattr(value.config, '_name_or_path') and value.config._name_or_path:
+             self.model_name_or_path = value.config._name_or_path
+             try:
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+             except Exception as e:
+                self.logger.log_warning(f"Could not load tokenizer for newly set model: {e}")
+        else:
+            self.model_name_or_path = None
+            self.tokenizer = None # Reset tokenizer if new model has no path
+            self.logger.log_warning("Newly set model has no _name_or_path in config, tokenizer not loaded.")
 
-            self._model = new_model
-            self.logger.log_info("Model preparation completed successfully")
-
-        except Exception as e:
-            self.logger.log_error(f"Failed to prepare model: {str(e)}")
-            raise
+        self._model = self._prepare_model_instance(value, make_copy=False) # make_copy=False, user is setting it directly.
 
     def prepare_calibration_data(self, calibration_data: torch.Tensor) -> torch.Tensor:
         """Prepare calibration data with proper device handling."""
@@ -545,3 +577,27 @@ class BaseQuantizer:
     def quantize(self, calibration_data: Optional[torch.Tensor] = None) -> PreTrainedModel:
         """Abstract method for quantization. Must be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement quantize()")
+
+    def _update_model_config_with_quant_params(self, method_name: str, method_specific_params: Optional[Dict] = None):
+        if not hasattr(self.model, 'config') or self.model.config is None:
+            self.logger.log_warning("Model does not have a config object. Skipping update of quantization parameters in model config.")
+            return
+
+        quant_params = {
+            "quant_method": method_name,
+            "bits": self.bits,
+        }
+        if hasattr(self, 'group_size'): # group_size is part of many quantizer __init__
+             quant_params["group_size"] = self.group_size
+        
+        if method_specific_params:
+            quant_params.update(method_specific_params)
+        
+        # Ensure quantization_config is a plain dict for JSON serialization
+        # and update it if it already exists, or create it if not.
+        if hasattr(self.model.config, 'quantization_config') and isinstance(self.model.config.quantization_config, dict):
+            self.model.config.quantization_config.update(quant_params)
+        else:
+            self.model.config.quantization_config = quant_params
+        
+        self.logger.log_info(f"Updated model.config.quantization_config with: {self.model.config.quantization_config}")

@@ -6,14 +6,14 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union
 from transformers import PreTrainedModel
-from .quantization_engine import BaseQuantizer, QuantizationConfig, QuantizedLinear
+from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConfig, QuantizedLinear
 
 class GPTQQuantizer(BaseQuantizer):
     """GPTQ quantization implementation with memory-efficient processing."""
     
     def __init__(
         self,
-        model: PreTrainedModel,
+        model_or_model_name_or_path: Union[str, PreTrainedModel], # Changed parameter name
         bits: int = 4,
         group_size: int = 128,
         actorder: bool = False,
@@ -28,7 +28,8 @@ class GPTQQuantizer(BaseQuantizer):
         Initializes the GPTQQuantizer.
 
         Args:
-            model (PreTrainedModel): The model to be quantized.
+            model_or_model_name_or_path (Union[str, PreTrainedModel]): 
+                The Hugging Face model name/path or a PreTrainedModel instance to be quantized.
             bits (int, optional): Number of bits for quantization. Defaults to 4.
             group_size (int, optional): Size of the quantization group. Defaults to 128.
             actorder (bool, optional): Whether to use activation order for columns. Defaults to False.
@@ -43,7 +44,7 @@ class GPTQQuantizer(BaseQuantizer):
                 The device for quantization operations ('cpu', 'cuda', etc.). 
                 Inherited from BaseQuantizer. Defaults to None (auto-detection).
         """
-        super().__init__(model=model, bits=bits, device=device)
+        super().__init__(model_or_model_name_or_path=model_or_model_name_or_path, bits=bits, device=device)
         self.group_size = group_size
         self.actorder = actorder
         self.allow_mixed_bits = allow_mixed_bits
@@ -101,8 +102,18 @@ class GPTQQuantizer(BaseQuantizer):
                 self._clear_memory()
                 del self.H[name]
         
+        # Update model config with quantization parameters
+        gptq_specific_params = {
+            "actorder": self.actorder,
+            "sym": self.sym,
+            "percdamp": self.percdamp,
+            "allow_mixed_bits": self.allow_mixed_bits # Added from __init__
+            # use_triton is more of a runtime/environment flag, might not be essential in model config
+        }
+        self._update_model_config_with_quant_params("gptq", gptq_specific_params)
+        
         return self.model
-    
+
     def _compute_hessian(self, layer: nn.Linear, data: torch.Tensor) -> torch.Tensor:
         """Compute Hessian approximation for a layer with memory-efficient processing."""
         n = layer.in_features
