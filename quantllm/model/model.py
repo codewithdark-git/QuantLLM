@@ -125,3 +125,21 @@ class Model:
     def get_device(self):
         """Get the current device."""
         return self._device
+
+    def copy_model(self):
+        """Create a deep copy of the model with all parameters on CPU."""
+        # First, create a new instance with same config but minimal settings
+        new_model = AutoModelForCausalLM.from_pretrained(
+            self.config.model_name,
+            low_cpu_mem_usage=True,
+            torch_dtype=torch.float32,
+            device_map=None  # Disable device_map for copying
+        )
+        
+        # Copy parameters from current model
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if name in new_model.state_dict():
+                    new_model.state_dict()[name].copy_(param.cpu())
+        
+        return new_model

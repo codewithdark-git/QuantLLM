@@ -49,6 +49,8 @@ class QuantizationBenchmark:
         quantizer_args: Dict
     ) -> Dict[str, float]:
         """Benchmark a specific quantizer with memory management."""
+        from transformers import AutoModelForCausalLM
+        
         results = {}
         try:
             self._clear_memory()
@@ -63,18 +65,29 @@ class QuantizationBenchmark:
                 mem_efficient_args.update({
                     "percdamp": 0.01,
                     "block_size": 128,
-                })            # Create a deep copy of the model using from_pretrained
-            config = self.model.config
-            model_clone = type(self.model)(config)
-            # Copy weights manually to ensure proper copying
-            for param_name, param in self.model.state_dict().items():
-                if param_name in model_clone.state_dict():
-                    model_clone.state_dict()[param_name].copy_(param)
+                })
             
-            # Initialize quantizer with model copy on CPU
+            print(f"Creating copy of model for {name}...")
+            # Create a fresh model instance from pretrained
+            model_clone = AutoModelForCausalLM.from_pretrained(
+                self.model.config._name_or_path,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.float32,
+                device_map=None  # Important: disable device map for copying
+            )
+            
+            print(f"Copying parameters for {name}...")
+            # Manually copy parameters to ensure proper copying
+            with torch.no_grad():
+                for name, param in self.model.named_parameters():
+                    if name in model_clone.state_dict():
+                        # Ensure parameter is on CPU for copying
+                        model_clone.state_dict()[name].copy_(param.cpu())
+            
+            # Initialize quantizer with model copy
             quantizer = quantizer_class(model=model_clone, **mem_efficient_args)
             
-            # Move to device for quantization
+            # Move to appropriate device
             if self.device == "cuda":
                 quantizer.model = quantizer.model.cuda()
                 cal_data = self.calibration_data.cuda()
@@ -84,6 +97,7 @@ class QuantizationBenchmark:
             # Measure quantization time
             start_time = time.time()
             
+            print(f"Starting quantization for {name}...")
             if name == "AWQ":
                 # AWQ uses batched processing
                 cal_steps = min(20, len(cal_data))
