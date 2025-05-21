@@ -1,6 +1,9 @@
 Trainer API
 ==========
 
+QuantLLM provides a comprehensive training API with built-in support for quantization, 
+efficient fine-tuning, and progress tracking.
+
 Fine-Tuning Trainer
 -----------------
 
@@ -27,6 +30,65 @@ Training Logger
 
 Example Usage
 -----------
+
+Complete Training Pipeline
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    from quantllm import (
+        Model, ModelConfig, 
+        FineTuningTrainer, TrainingConfig,
+        TrainingLogger, CheckpointManager
+    )
+
+    # Initialize logger for beautiful progress display
+    logger = TrainingLogger()
+
+    # Configure model with advanced optimizations
+    config = ModelConfig(
+        model_name="facebook/opt-125m",
+        load_in_4bit=True,         # Memory efficient!
+        use_lora=True,             # Parameter efficient!
+        gradient_checkpointing=True # Training efficient!
+    )
+
+    # Initialize training with rich features
+    training_config = TrainingConfig(
+        learning_rate=2e-4,
+        num_epochs=3,
+        batch_size=8,
+        gradient_accumulation_steps=4,
+        # Advanced features
+        warmup_ratio=0.1,
+        evaluation_strategy="steps",
+        eval_steps=100,
+        save_strategy="epoch",
+        logging_steps=10,
+        # Mixed precision training
+        fp16=True,
+        # Multi-GPU support
+        ddp_find_unused_parameters=False
+    )
+
+    # Setup checkpointing
+    checkpoint_manager = CheckpointManager(
+        checkpoint_dir="./checkpoints",
+        save_total_limit=3
+    )
+
+    # Initialize and train
+    trainer = FineTuningTrainer(
+        model=model,
+        training_config=training_config,
+        train_dataloader=train_loader,
+        eval_dataloader=val_loader,
+        logger=logger,
+        checkpoint_manager=checkpoint_manager
+    )
+    
+    # Start training with full monitoring
+    trainer.train()
 
 Basic Training
 ~~~~~~~~~~~~

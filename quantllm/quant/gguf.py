@@ -19,7 +19,7 @@ class GGUFQuantizer(BaseQuantizer):
     
     def __init__(
         self,
-        model_or_model_name_or_path: Union[str, PreTrainedModel], # Changed parameter name
+        model_name: Union[str, PreTrainedModel], # Changed parameter name
         bits: int = 4,
         group_size: int = 32,
         desc_act: bool = False,
@@ -53,7 +53,7 @@ class GGUFQuantizer(BaseQuantizer):
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization. Install with: pip install ctransformers")
             
-        super().__init__(model_or_model_name_or_path=model_or_model_name_or_path, bits=bits, device=device)
+        super().__init__(model_name=model_name, bits=bits, device=device)
         self.group_size = group_size
         self.desc_act = desc_act
         self.desc_ten = desc_ten

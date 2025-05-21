@@ -3,7 +3,7 @@ import torch
 import os
 import tempfile
 from transformers import PreTrainedModel
-from quantllm.api import QuantizerFactory
+from quantllm.api.high_level import QuantizerFactory
 from quantllm.quant.quantization_engine import QuantizedLinear
 from quantllm.quant.gguf import GGUFQuantizer # For direct instantiation in convert_to_gguf test
 from .helpers import create_dummy_calibration_data

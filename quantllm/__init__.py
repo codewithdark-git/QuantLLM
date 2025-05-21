@@ -11,8 +11,23 @@ from .trainer import (
     TrainingLogger
 )
 from .hub import HubManager, CheckpointManager
-from .utils.optimizations import get_optimal_training_settings
-from .utils.log_config import configure_logging, enable_logging
+from .utils import (
+    get_optimal_training_settings,
+    configure_logging,
+    enable_logging,
+    QuantizationBenchmark
+)
+from .api import QuantLLM
+
+from .quant import (
+    QuantizationConfig, 
+    QuantizationEngine, 
+    QuantizedLinear, 
+    GGUFQuantizer, 
+    GPTQQuantizer, 
+    AWQQuantizer
+)
+
 
 from .config import (
     ModelConfig,
@@ -53,17 +68,26 @@ __all__ = [
     "ModelConfig",
     "DatasetConfig",
     "TrainingConfig",
+    "QuantizationBenchmark",
     
     # Utilities
     "get_optimal_training_settings",
     "configure_logging",
     "enable_logging",
+
+    # Quantization
+    "QuantizationConfig",
+    "QuantizationEngine",
+    "QuantizedLinear",
+    "GGUFQuantizer",
+    "GPTQQuantizer",
+    "AWQQuantizer",
+
+    # API
+    "QuantLLM"
 ]
+
 
 # Initialize package-level logger with fancy welcome message
 logger = TrainingLogger()
-logger.log_success(f"""
-✨ QuantLLM v{__version__} initialized successfully ✨
-🚀 Efficient Quantized Language Model Fine-Tuning
-📚 Documentation: https://github.com/codewithdark-git/QuantLLM
-""")
+logger.log_welcome_message()

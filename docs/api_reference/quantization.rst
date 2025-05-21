@@ -1,16 +1,107 @@
-Easy Quantization with `QuantizerFactory`
-=========================================
+# QuantLLM: Advanced Model Quantization
+===================================
 
-The recommended way to quantize models with QuantLLM is by using the `QuantizerFactory.quantize_from_pretrained` static method. This high-level API simplifies the process of loading a model from Hugging Face, quantizing it using a specified method, and receiving the quantized model along with its tokenizer.
+💫 Introduction
+------------
+QuantLLM is a powerful library that provides state-of-the-art quantization methods to compress large language models while maintaining their performance. Supporting multiple quantization methods (AWQ, GPTQ, GGUF), it enables efficient model deployment in production environments.
+
+🚀 Getting Started
+---------------
+QuantLLM offers multiple quantization methods, each optimized for different use cases. The high-level `QuantLLM` API provides a simple interface to quantize models while the low-level API gives you fine-grained control over the quantization process.
+
+Key Features:
+- Multiple quantization methods (AWQ, GPTQ, GGUF)
+- Memory-efficient processing
+- Hardware-specific optimizations
+- Comprehensive metrics and logging
+- Easy model export and deployment
+
+Complete Example
+---------------
 
 .. code-block:: python
 
     import torch
-    from quantllm import QuantizerFactory # Assuming __init__.py is updated
+    from quantllm import QuantLLM
+    from transformers import AutoTokenizer
+    import time
 
-    # Example: Quantizing facebook/opt-125m using AWQ
-    model_name = "facebook/opt-125m"
-    method = "awq" # Can be 'awq', 'gptq', or 'gguf'
+    # 1. Model and Method Selection
+    model_name = "facebook/opt-125m"  # Any Hugging Face model
+    method = "awq"  # Choose: 'awq', 'gptq', or 'gguf'
+
+    # 2. Configure Quantization
+    quant_config = {
+        "bits": 4,                # Quantization bits (2-8)
+        "group_size": 128,        # Size of quantization groups
+        "zero_point": True,       # Zero-point quantization (AWQ)
+        "version": "v2",          # AWQ algorithm version
+        "scale_dtype": "fp32",    # Scale factor data type
+        "batch_size": 4          # Processing batch size
+    }
+
+    # 3. Prepare Calibration Data
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    
+    # Representative text samples for calibration
+    calibration_texts = [
+        "Translate English to French: Hello, how are you?",
+        "Summarize this text: The quick brown fox jumps over the lazy dog",
+        "What is the capital of France?",
+        "Write a short story about a robot learning to paint.",
+        "Explain quantum computing in simple terms."
+    ]
+    
+    # Tokenize with proper padding and attention masks
+    inputs = tokenizer(
+        calibration_texts, 
+        padding=True,
+        truncation=True,
+        max_length=512,
+        return_tensors="pt"
+    )
+
+    # 4. Model Quantization with Error Handling
+    try:
+        print("Starting quantization process...")
+        start_time = time.time()
+        
+        # Perform quantization
+        quantized_model, tokenizer = QuantLLM.quantize_from_pretrained(
+            model_name=model_name,
+            method=method,
+            quant_config_dict=quant_config,
+            calibration_data=inputs["input_ids"],
+            calibration_steps=50,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        
+        print(f"Quantization completed in {time.time() - start_time:.2f} seconds")
+        
+        # 5. Model Validation
+        test_input = "Translate this to French: The weather is beautiful today."
+        inputs = tokenizer(test_input, return_tensors="pt").to(quantized_model.device)
+        
+        with torch.no_grad():
+            outputs = quantized_model.generate(
+                **inputs,
+                max_length=50,
+                num_return_sequences=1,
+                temperature=0.7
+            )
+            
+        result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"Test Output: {result}")
+        
+        # 6. Save Quantized Model (Optional)
+        save_path = "./quantized_model"
+        quantized_model.save_pretrained(save_path)
+        tokenizer.save_pretrained(save_path)
+        print(f"Model saved to {save_path}")
+        
+    except Exception as e:
+        print(f"Error during quantization: {str(e)}")
+        raise
 
     # Define quantization configuration
     quant_config = {

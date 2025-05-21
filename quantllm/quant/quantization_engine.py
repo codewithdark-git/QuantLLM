@@ -449,7 +449,7 @@ class BaseQuantizer:
 
     def __init__(
         self,
-        model_or_model_name_or_path: Union[str, PreTrainedModel],
+        model_name: Union[str, PreTrainedModel],
         bits: int,
         device: Optional[Union[str, torch.device]] = None,
         **kwargs
@@ -462,27 +462,27 @@ class BaseQuantizer:
         self.logger = TrainingLogger()
         self.tokenizer = None
         self._model: Optional[PreTrainedModel] = None # Internal attribute for the property
-        self.model_name_or_path: Optional[str] = None
+        self.model_name: Optional[str] = None
         self.model_config = None
 
-        if isinstance(model_or_model_name_or_path, str):
-            self.model_name_or_path = model_or_model_name_or_path
+        if isinstance(model_name, str):
+            self.model_name = model_name
             self.logger.log_info(f"Loading tokenizer from: {self.model_name_or_path}")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True)
-            
-            self.logger.log_info(f"Loading model from: {self.model_name_or_path}")
-            model_instance = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+
+            self.logger.log_info(f"Loading model from: {self.model_name}")
+            model_instance = AutoModelForCausalLM.from_pretrained(self.model_name, trust_remote_code=True)
             self.model_config = model_instance.config
             self._model = self._prepare_model_instance(model_instance, make_copy=False) # Loaded, so don't copy again here
         
-        elif isinstance(model_or_model_name_or_path, PreTrainedModel):
-            original_model = model_or_model_name_or_path
+        elif isinstance(model_name, PreTrainedModel):
+            original_model = model_name
             self.model_config = original_model.config
             if hasattr(original_model.config, '_name_or_path') and original_model.config._name_or_path:
-                self.model_name_or_path = original_model.config._name_or_path
+                self.model_name = original_model.config._name_or_path
                 try:
-                    self.logger.log_info(f"Attempting to load tokenizer from model's config path: {self.model_name_or_path}")
-                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+                    self.logger.log_info(f"Attempting to load tokenizer from model's config path: {self.model_name}")
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
                 except Exception as e:
                     self.logger.log_warning(
                         f"Could not load tokenizer based on the provided model's config path ({self.model_name_or_path}): {e}. "
@@ -496,7 +496,7 @@ class BaseQuantizer:
             # Prepare a copy of the provided model instance
             self._model = self._prepare_model_instance(original_model, make_copy=True)
         else:
-            raise TypeError("model_or_model_name_or_path must be a string (Hugging Face model name/path) or a PreTrainedModel instance.")
+            raise TypeError("model_name must be a string (Hugging Face model name/path) or a PreTrainedModel instance.")
 
     def _prepare_model_instance(self, model_to_prepare: PreTrainedModel, make_copy: bool = False) -> PreTrainedModel:
         """Prepares the model instance by copying (if specified), setting to eval mode, and moving to device."""

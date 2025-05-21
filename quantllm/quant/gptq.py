@@ -13,7 +13,7 @@ class GPTQQuantizer(BaseQuantizer):
     
     def __init__(
         self,
-        model_or_model_name_or_path: Union[str, PreTrainedModel], # Changed parameter name
+        model_name: Union[str, PreTrainedModel], # Changed parameter name
         bits: int = 4,
         group_size: int = 128,
         actorder: bool = False,
@@ -44,7 +44,7 @@ class GPTQQuantizer(BaseQuantizer):
                 The device for quantization operations ('cpu', 'cuda', etc.). 
                 Inherited from BaseQuantizer. Defaults to None (auto-detection).
         """
-        super().__init__(model_or_model_name_or_path=model_or_model_name_or_path, bits=bits, device=device)
+        super().__init__(model_name=model_name, bits=bits, device=device)
         self.group_size = group_size
         self.actorder = actorder
         self.allow_mixed_bits = allow_mixed_bits

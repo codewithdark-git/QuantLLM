@@ -13,7 +13,7 @@ class AWQQuantizer(BaseQuantizer):
     
     def __init__(
         self,
-        model_or_model_name_or_path: Union[str, PreTrainedModel], # Changed parameter name
+        model_name: Union[str, PreTrainedModel], # Changed parameter name
         bits: int = 4,
         group_size: int = 128, 
         zero_point: bool = True,
@@ -42,7 +42,7 @@ class AWQQuantizer(BaseQuantizer):
         """
         # Pass all relevant kwargs to BaseQuantizer
         # AWQQuantizer specific args are handled here.
-        super().__init__(model_or_model_name_or_path=model_or_model_name_or_path, bits=bits, device=device)
+        super().__init__(model_name=model_name, bits=bits, device=device)
         self.group_size = group_size
         self.zero_point = zero_point
         self.scale_dtype = scale_dtype
