@@ -64,9 +64,11 @@ class QuantizationBenchmark:
                     "percdamp": 0.01,
                     "block_size": 128,
                 })
+              # Create a deep copy of the model using state dict
+            model_clone = type(self.model)(self.model.config)
+            model_clone.load_state_dict(self.model.state_dict())
             
-            # Initialize quantizer with model on CPU
-            model_clone = self.model.clone()
+            # Initialize quantizer with model copy on CPU
             quantizer = quantizer_class(model=model_clone, **mem_efficient_args)
             
             # Move to device for quantization
