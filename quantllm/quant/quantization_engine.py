@@ -202,9 +202,8 @@ class QuantizationEngine:
             self._quantize_layers(model, stats)
             
             return model
-            
         except Exception as e:
-            self.logger.error(f"Error during quantization: {str(e)}")
+            self.logger.log_error(f"Error during quantization: {str(e)}")
             raise
             
     def _prepare_model(self, model: PreTrainedModel) -> PreTrainedModel:
@@ -375,11 +374,11 @@ class QuantizationEngine:
                 model.optimize()
                 onnx.save(model, path)
                 
-            else:
+            else:                
                 raise ValueError(f"Unsupported export format: {format}")
                 
         except Exception as e:
-            self.logger.error(f"Error exporting model: {str(e)}")
+            self.logger.log_error(f"Error exporting model: {str(e)}")
             raise
             
     def benchmark(
@@ -441,8 +440,8 @@ class QuantizationEngine:
                 "p99_latency": torch.quantile(latencies, 0.99).item()
             }
             
-        except Exception as e:
-            self.logger.error(f"Error during benchmarking: {str(e)}")
+        except Exception as e:            
+            self.logger.log_error(f"Error during benchmarking: {str(e)}")
             raise
 
 class BaseQuantizer:
@@ -560,15 +559,15 @@ class BaseQuantizer:
         from transformers import AutoModelForCausalLM
         
         try:
-            # Create new model instance
-            self.logger.info("Creating new model instance...")
+            # Create new model instance            
+            self.logger.log_info("Creating new model instance...")
             new_model = AutoModelForCausalLM.from_config(
                 self.model_config,
                 trust_remote_code=True
             )
             
-            # Copy state dict with proper device handling
-            self.logger.info("Copying model parameters...")
+            # Copy state dict with proper device handling            
+            self.logger.log_info("Copying model parameters...")
             with torch.no_grad():
                 state_dict = {}
                 for name, param in original_model.state_dict().items():
@@ -586,10 +585,10 @@ class BaseQuantizer:
                 new_model = new_model.to(self.device_manager.primary_device)
                 
             self._model = new_model
-            self.logger.info("Model preparation completed successfully")
+            self.logger.log_info("Model preparation completed successfully")
             
-        except Exception as e:
-            self.logger.error(f"Failed to prepare model: {str(e)}")
+        except Exception as e:            
+            self.logger.log_error(f"Failed to prepare model: {str(e)}")
             raise
     
     def prepare_calibration_data(self, calibration_data: torch.Tensor) -> torch.Tensor:

@@ -39,7 +39,6 @@ class GGUFQuantizer(BaseQuantizer):
         self.use_packed = use_packed
         self.legacy_format = legacy_format
         self.batch_size = batch_size
-        
     def quantize(
         self,
         calibration_data: Optional[torch.Tensor] = None
@@ -58,7 +57,7 @@ class GGUFQuantizer(BaseQuantizer):
         # Convert linear layers to quantized versions
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                self.logger.info(f"Processing layer: {name}")
+                self.logger.log_info(f"Processing layer: {name}")
                 
                 # Create quantized layer
                 layer_stats = stats.get(name, None)

@@ -75,9 +75,9 @@ class AWQQuantizer(BaseQuantizer):
         self._process_activation_stats()
         
         # Quantize the model layer by layer
-        for name, module in self.model.named_modules():
+        for name, module in self.model.named_modules():            
             if isinstance(module, nn.Linear):
-                self.logger.info(f"Processing layer: {name}")
+                self.logger.log_info(f"Processing layer: {name}")
                 
                 # Get activation scale for this layer
                 act_scale = self.act_scales.get(name)

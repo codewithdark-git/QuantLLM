@@ -61,9 +61,9 @@ class GPTQQuantizer(BaseQuantizer):
         self.model.eval()
         
         # Process layers
-        for name, module in self.model.named_modules():
+        for name, module in self.model.named_modules():            
             if isinstance(module, nn.Linear):
-                self.logger.info(f"Processing layer: {name}")
+                self.logger.log_info(f"Processing layer: {name}")
                 
                 # Compute Hessian approximation
                 self.H[name] = self._compute_hessian(module, calibration_data)
