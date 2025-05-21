@@ -7,6 +7,62 @@ from transformers import PreTrainedModel
 import numpy as np
 from ..trainer.logger import TrainingLogger
 
+def get_device_map(model: PreTrainedModel) -> Dict[str, torch.device]:
+    """Get device mapping for model parameters."""
+    device_map = {}
+    for name, param in model.named_parameters():
+        device_map[name] = param.device
+    return device_map
+
+def move_to_device(
+    tensor: torch.Tensor,
+    device: torch.device,
+    force_copy: bool = False
+) -> torch.Tensor:
+    """Safely move tensor to device with proper error handling."""
+    try:
+        if force_copy:
+            return tensor.to(device, copy=True)
+        if tensor.device == device:
+            return tensor
+        return tensor.to(device)
+    except Exception as e:
+        raise RuntimeError(f"Failed to move tensor to {device}: {str(e)}")
+
+class DeviceManager:
+    """Manage device placement and synchronization."""
+    
+    def __init__(self, primary_device: Optional[torch.device] = None):
+        self.primary_device = primary_device or self._get_default_device()
+        self.device_maps = {}
+    
+    def _get_default_device(self) -> torch.device:
+        """Get the best available device."""
+        if torch.cuda.is_available():
+            # Automatically select GPU with most free memory
+            max_free = 0
+            best_device = 0
+            for i in range(torch.cuda.device_count()):
+                free_mem = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
+                if free_mem > max_free:
+                    max_free = free_mem
+                    best_device = i
+            return torch.device(f'cuda:{best_device}')
+        return torch.device('cpu')
+    
+    def sync(self):
+        """Synchronize all CUDA devices."""
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.synchronize(i)
+                
+    def ensure_same_device(self, *tensors: torch.Tensor) -> List[torch.Tensor]:
+        """Ensure all tensors are on the same device."""
+        if not tensors:
+            return []
+        target_device = tensors[0].device
+        return [move_to_device(t, target_device) for t in tensors]
+
 class QuantizationConfig:
     """Configuration for quantization parameters."""
     
@@ -108,10 +164,14 @@ class QuantizationEngine:
     def __init__(
         self,
         config: QuantizationConfig,
-        logger: Optional[TrainingLogger] = None
+        logger: Optional[TrainingLogger] = None,
+        device: Optional[Union[str, torch.device]] = None
     ):
         self.config = config
         self.logger = logger or TrainingLogger()
+        self.device_manager = DeviceManager(
+            torch.device(device) if device else None
+        )
         
     def quantize_model(
         self,

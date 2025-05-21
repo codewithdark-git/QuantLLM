@@ -2,15 +2,55 @@
 
 import gc
 import time
+import copy
 import torch
 import pandas as pd
-from typing import Dict, List, Tuple
-from transformers import PreTrainedModel
+from typing import Dict, List, Tuple, Optional
+from transformers import PreTrainedModel, AutoConfig, AutoModelForCausalLM
 from ..quant import (
     GPTQQuantizer,
     AWQQuantizer,
     GGUFQuantizer
 )
+from ..quant.quantization_engine import DeviceManager
+
+class ModelCopier:
+    """Utility for safely copying models with proper device management."""
+    
+    @staticmethod
+    def deep_copy(model: PreTrainedModel, device_manager: DeviceManager) -> PreTrainedModel:
+        """Create a deep copy of a model with proper device handling."""
+        try:
+            # Get model configuration
+            config = AutoConfig.from_pretrained(
+                model.config._name_or_path,
+                trust_remote_code=True
+            )
+            
+            # Create new model instance with same config
+            new_model = AutoModelForCausalLM.from_config(
+                config,
+                trust_remote_code=True
+            )
+            
+            # Copy state dict with proper device management
+            with torch.no_grad():
+                # First collect all parameters on CPU
+                state_dict = {}
+                for name, param in model.state_dict().items():
+                    state_dict[name] = param.detach().cpu()
+                
+                # Load state dict onto new model
+                new_model.load_state_dict(state_dict, strict=True)
+                
+                # Move to appropriate device
+                target_device = device_manager.primary_device
+                new_model = new_model.to(target_device)
+                
+            return new_model
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to copy model: {str(e)}")
 
 class QuantizationBenchmark:
     """Memory-efficient benchmark implementation for quantization methods."""
@@ -21,27 +61,30 @@ class QuantizationBenchmark:
         calibration_data: torch.Tensor,
         input_shape: Tuple[int, ...] = (1, 32),
         num_inference_steps: int = 100,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+        device: Optional[Union[str, torch.device]] = None
     ):
         """Initialize benchmark with memory management."""
-        self.model = model.cpu()  # Keep model on CPU initially
-        self.calibration_data = calibration_data.cpu()  # Keep data on CPU
+        self.device_manager = DeviceManager(
+            torch.device(device) if device else None
+        )
+        self.model = model.to("cpu")  # Keep original model on CPU
+        self.calibration_data = calibration_data.to("cpu")
         self.input_shape = input_shape
         self.num_inference_steps = num_inference_steps
-        self.device = device
         self.results = {}
         
-        # Set memory-efficient options
+        # Memory optimization settings
         if torch.cuda.is_available():
             torch.backends.cuda.max_split_size_mb = 128
             torch.backends.cudnn.benchmark = True
             
     def _clear_memory(self):
         """Clear GPU memory and run garbage collection."""
+        gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        gc.collect()
-        
+            self.device_manager.sync()
+            
     def benchmark_quantizer(
         self,
         name: str,
@@ -49,12 +92,11 @@ class QuantizationBenchmark:
         quantizer_args: Dict
     ) -> Dict[str, float]:
         """Benchmark a specific quantizer with memory management."""
-        from transformers import AutoModelForCausalLM
-        
         results = {}
         try:
             self._clear_memory()
-            print(f"GPU memory before {name}: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
+            if torch.cuda.is_available():
+                print(f"GPU memory before {name}: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
             
             # Configure quantizer for memory efficiency
             mem_efficient_args = dict(quantizer_args)
@@ -67,41 +109,27 @@ class QuantizationBenchmark:
                     "percdamp": 0.01,
                     "block_size": 128,
                 })
-              print(f"Creating model copy for {name}...")
-            # Create a fresh model instance with same config
-            config_dict = self.model.config.to_dict()
-            config_dict.pop('_name_or_path', None)  # Remove path to ensure clean config
             
-            model_clone = type(self.model)(self.model.config)
+            print(f"Creating model copy for {name}...")
+            model_clone = ModelCopier.deep_copy(
+                self.model,
+                self.device_manager
+            )
             
-            print(f"Copying parameters for {name}...")
-            # Copy parameters with proper CPU offloading
-            with torch.no_grad():
-                state_dict = {}
-                for param_name, param in self.model.state_dict().items():
-                    # Handle device placement during copy
-                    param_data = param.detach()
-                    if param_data.device.type != 'cpu':
-                        param_data = param_data.cpu()
-                    state_dict[param_name] = param_data
-                
-                # Load state dict all at once
-                model_clone.load_state_dict(state_dict)
+            # Initialize quantizer
+            quantizer = quantizer_class(
+                model=model_clone,
+                device=self.device_manager.primary_device,
+                **mem_efficient_args
+            )
             
-            # Initialize quantizer with model copy
-            quantizer = quantizer_class(model=model_clone, **mem_efficient_args)
+            # Prepare calibration data
+            cal_data = self.calibration_data.to(self.device_manager.primary_device)
             
-            # Move to appropriate device
-            if self.device == "cuda":
-                quantizer.model = quantizer.model.cuda()
-                cal_data = self.calibration_data.cuda()
-            else:
-                cal_data = self.calibration_data.clone()
-                
             # Measure quantization time
             start_time = time.time()
-            
             print(f"Starting quantization for {name}...")
+            
             if name == "AWQ":
                 # AWQ uses batched processing
                 cal_steps = min(20, len(cal_data))
@@ -111,28 +139,29 @@ class QuantizationBenchmark:
                 )
             else:
                 # Direct quantization for others
-                quantized_model = quantizer.quantize(calibration_data=cal_data)
+                quantized_model = quantizer.quantize(
+                    calibration_data=cal_data
+                )
                 
             quant_time = time.time() - start_time
             
-            # Move calibration data back to CPU and clear GPU
-            if self.device == "cuda":
-                cal_data = cal_data.cpu()
-                self._clear_memory()
+            # Move data back to CPU and clear memory
+            cal_data = cal_data.cpu()
+            self._clear_memory()
             
             # Prepare for inference benchmark
-            quantized_model = quantized_model.to(self.device)
+            quantized_model = quantized_model.to(self.device_manager.primary_device)
             test_input = torch.randint(
                 0, 1000,
                 (1, min(self.input_shape[1], 32)),
-                device=self.device
+                device=self.device_manager.primary_device
             )
             
             # Limited warmup
             for _ in range(5):
                 with torch.no_grad():
                     quantized_model(test_input)
-                if self.device == "cuda":
+                if torch.cuda.is_available():
                     torch.cuda.synchronize()
             
             # Measure inference latency
@@ -141,14 +170,14 @@ class QuantizationBenchmark:
                 start = time.perf_counter()
                 with torch.no_grad():
                     quantized_model(test_input)
-                if self.device == "cuda":
+                if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 latencies.append((time.perf_counter() - start) * 1000)  # ms
                 
             latencies = torch.tensor(latencies)
             
             # Calculate memory usage
-            if self.device == "cuda":
+            if torch.cuda.is_available():
                 memory_allocated = torch.cuda.memory_allocated() / 1024**2  # MB
                 peak_memory = torch.cuda.max_memory_allocated() / 1024**2  # MB
             else:
