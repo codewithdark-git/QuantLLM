@@ -1,5 +1,6 @@
-"""AWQ (Activation-Aware Weight Quantization) implementation for LLM quantization."""
+"""AWQ (Activation-Aware Weight Quantization) implementation with memory-efficient processing."""
 
+import gc
 import torch
 import torch.nn as nn 
 import numpy as np
@@ -8,7 +9,8 @@ from transformers import PreTrainedModel
 from .quantization_engine import QuantizationConfig, QuantizedLinear
 
 class AWQQuantizer:
-    """AWQ quantization implementation."""
+    """AWQ quantization implementation with memory-efficient processing."""
+    """AWQ quantization implementation with memory-efficient processing."""
     
     def __init__(
         self,
@@ -18,7 +20,9 @@ class AWQQuantizer:
         zero_point: bool = True,
         scale_dtype: str = "fp32",
         version: str = "v2",
-        enable_mnn_kernel: bool = False
+        enable_mnn_kernel: bool = False,
+        batch_size: int = 2,  # Small batch size for memory efficiency
+        cpu_offload: bool = True  # Enable CPU offloading
     ):
         self.model = model
         self.bits = bits
@@ -32,50 +36,90 @@ class AWQQuantizer:
         self.act_scales = {}
         self.weight_scales = {}
         
+        self.batch_size = batch_size
+        self.cpu_offload = cpu_offload
+        
+    def _clear_memory(self):
+        """Clear GPU memory and run garbage collection."""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
     def quantize(
         self,
         calibration_data: Optional[torch.Tensor] = None,
         calibration_steps: int = 100
     ) -> PreTrainedModel:
-        """
-        Quantize model using AWQ algorithm.
-        
-        Args:
-            calibration_data: Data used for computing activation statistics
-            calibration_steps: Number of steps for calibration
-            
-        Returns:
-            Quantized model
-        """
+        """Memory-efficient quantization using AWQ algorithm."""
         if calibration_data is None:
             raise ValueError("AWQ requires calibration data for quantization")
-        
-        # Prepare model for quantization
+            
+        # Keep model on CPU initially
+        self.model.cpu()
         self.model.eval()
         
-        # Collect activation statistics
-        self._collect_activation_stats(calibration_data, calibration_steps)
+        # Process calibration data in batches
+        total_steps = min(calibration_steps, len(calibration_data))
+        for step in range(0, total_steps, self.batch_size):
+            # Clear memory before processing batch
+            self._clear_memory()
+            
+            # Get batch
+            end_idx = min(step + self.batch_size, total_steps)
+            batch = calibration_data[step:end_idx]
+            
+            # Move batch to appropriate device
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            batch = batch.to(device)
+            
+            # Temporarily move model to device
+            if device.type == "cuda":
+                self.model = self.model.cuda()
+            
+            # Collect statistics for this batch
+            self._collect_activation_stats(batch)
+            
+            # Move model back to CPU if offloading enabled
+            if self.cpu_offload and device.type == "cuda":
+                self.model = self.model.cpu()
+            
+            # Clean up batch
+            del batch
+            self._clear_memory()
+            
+        # Process collected statistics
+        self._process_activation_stats()
         
-        # Convert linear layers to quantized versions 
+        # Quantize the model layer by layer
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                # Get activation scale for this layer
-                act_scale = self.act_scales.get(name, None)
-                if act_scale is None:
-                    continue
+                # Move layer to device temporarily for quantization
+                if device.type == "cuda":
+                    module = module.cuda()
                     
-                # Convert to quantized layer
-                quantized = self._quantize_layer(module, act_scale)
+                # Get activation scale for this layer
+                act_scale = self.act_scales.get(name)
+                if act_scale is not None:
+                    # Quantize layer
+                    quantized = self._quantize_layer(module, act_scale)
+                    
+                    # Move quantized layer back to CPU if offloading
+                    if self.cpu_offload:
+                        quantized = quantized.cpu()
+                        
+                    # Replace layer in model
+                    parent_name = '.'.join(name.split('.')[:-1])
+                    child_name = name.split('.')[-1]
+                    
+                    if parent_name:
+                        parent = self.model.get_submodule(parent_name)
+                        setattr(parent, child_name, quantized)
+                    else:
+                        setattr(self.model, name, quantized)
+                        
+                # Clean up
+                self._clear_memory()
                 
-                # Replace layer in model
-                parent_name = '.'.join(name.split('.')[:-1])
-                child_name = name.split('.')[-1]
-                if parent_name:
-                    parent = self.model.get_submodule(parent_name)
-                    setattr(parent, child_name, quantized)
-                else:
-                    setattr(self.model, name, quantized)
-        
         return self.model
       def _collect_activation_stats(
         self,

@@ -1,5 +1,7 @@
 """GGUF (GGML Universal Format) quantization implementation."""
 
+import gc
+import math
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union, Tuple
@@ -13,7 +15,7 @@ except ImportError:
     CT_AVAILABLE = False
 
 class GGUFQuantizer:
-    """GGUF quantization implementation with CTransformers integration."""
+    """GGUF quantization implementation with CTransformers integration and memory-efficient processing."""
     
     def __init__(
         self,
@@ -23,7 +25,9 @@ class GGUFQuantizer:
         desc_act: bool = False,
         desc_ten: bool = False,
         use_packed: bool = True,
-        legacy_format: bool = False
+        legacy_format: bool = False,
+        batch_size: int = 4,
+        cpu_offload: bool = False
     ):
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization. Install with: pip install ctransformers")
@@ -35,13 +39,21 @@ class GGUFQuantizer:
         self.desc_ten = desc_ten
         self.use_packed = use_packed
         self.legacy_format = legacy_format
+        self.batch_size = batch_size
+        self.cpu_offload = cpu_offload
         
+    def _clear_memory(self):
+        """Clear CUDA memory and run garbage collection."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
     def quantize(
         self,
         calibration_data: Optional[torch.Tensor] = None
     ) -> PreTrainedModel:
         """
-        Quantize model using GGUF format.
+        Quantize model using GGUF format with memory-efficient processing.
         
         Args:
             calibration_data: Optional tensor for computing quantization statistics
@@ -60,9 +72,19 @@ class GGUFQuantizer:
         # Convert linear layers to quantized versions
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
+                print(f"Processing layer: {name}")
+                
                 # Create quantized layer
                 layer_stats = stats.get(name, None)
-                quantized = self._quantize_layer(module, layer_stats)
+                
+                # Move stats to appropriate device
+                if layer_stats is not None and self.cpu_offload:
+                    layer_stats = {k: v.to('cpu') for k, v in layer_stats.items()}
+                
+                quantized = self._quantize_layer(
+                    module,
+                    {k: v.to(module.weight.device) for k, v in layer_stats.items()} if self.cpu_offload and layer_stats else layer_stats
+                )
                 
                 # Replace layer in model
                 parent_name = '.'.join(name.split('.')[:-1])
@@ -72,75 +94,96 @@ class GGUFQuantizer:
                     setattr(parent, child_name, quantized)
                 else:
                     setattr(self.model, name, quantized)
+                
+                # Clear memory after processing each layer
+                self._clear_memory()
         
         return self.model
-        
+    
     def _collect_stats(self, data: torch.Tensor) -> Dict[str, Dict[str, torch.Tensor]]:
-        """Collect statistics for quantization."""
+        """Collect statistics for quantization with memory-efficient batch processing."""
+        device = next(self.model.parameters()).device
         stats = {}
         
         def hook_fn(name):
             def fn(module, input, output):
                 if name not in stats:
+                    # Initialize stats on CPU if offloading is enabled
+                    target_device = 'cpu' if self.cpu_offload else device
                     stats[name] = {
-                        "min_val": torch.tensor(float('inf')),
-                        "max_val": torch.tensor(float('-inf')),
-                        "sum": torch.zeros_like(output[0]),
-                        "sq_sum": torch.zeros_like(output[0]),
+                        "min_val": torch.tensor(float('inf'), device=target_device),
+                        "max_val": torch.tensor(float('-inf'), device=target_device),
+                        "sum": torch.zeros_like(output[0], device=target_device),
+                        "sq_sum": torch.zeros_like(output[0], device=target_device),
                         "count": 0
                     }
-                    
+                
                 x = output[0].detach()
-                stats[name]["min_val"] = torch.min(
-                    stats[name]["min_val"],
-                    torch.min(x)
-                )
-                stats[name]["max_val"] = torch.max(
-                    stats[name]["max_val"],
-                    torch.max(x)
-                )
-                stats[name]["sum"] += torch.sum(x, dim=0)
-                stats[name]["sq_sum"] += torch.sum(x.pow(2), dim=0)
-                stats[name]["count"] += x.size(0)
-            return fn
+                
+                # Process in chunks to save memory
+                chunk_size = 1024  # Adjust based on available memory
+                num_chunks = math.ceil(x.size(0) / chunk_size)
+                
+                for i in range(num_chunks):
+                    chunk = x[i * chunk_size:(i + 1) * chunk_size]
+                    if self.cpu_offload:
+                        chunk = chunk.cpu()
+                    
+                    # Update statistics
+                    stats[name]["min_val"] = torch.min(stats[name]["min_val"], torch.min(chunk))
+                    stats[name]["max_val"] = torch.max(stats[name]["max_val"], torch.max(chunk))
+                    stats[name]["sum"] += torch.sum(chunk, dim=0)
+                    stats[name]["sq_sum"] += torch.sum(chunk ** 2, dim=0)
+                    stats[name]["count"] += chunk.size(0)
+                    
+                    # Clear intermediate tensors
+                    del chunk
+                    if i % 10 == 0:  # Periodic memory cleanup
+                        self._clear_memory()
             
-        # Register hooks
-        handles = []
+            return fn
+        
+        # Register hooks for all linear layers
+        hooks = []
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                handles.append(
-                    module.register_forward_hook(hook_fn(name))
-                )
-                
-        # Run calibration
+                hooks.append(module.register_forward_hook(hook_fn(name)))
+        
+        # Process calibration data in batches
         with torch.no_grad():
-            self.model(data)
-            
+            for i in range(0, len(data), self.batch_size):
+                batch = data[i:i+self.batch_size]
+                self.model(batch)
+                
+                # Periodic memory cleanup
+                if i % (self.batch_size * 10) == 0:
+                    self._clear_memory()
+        
         # Remove hooks
-        for handle in handles:
-            handle.remove()
-            
-        # Process statistics
+        for hook in hooks:
+            hook.remove()
+        
+        # Compute final statistics
         for name in stats:
-            count = stats[name]["count"]
-            mean = stats[name]["sum"] / count
-            var = (stats[name]["sq_sum"] / count) - mean.pow(2)
-            std = torch.sqrt(var + 1e-6)
+            stats[name]["mean"] = stats[name]["sum"] / stats[name]["count"]
+            stats[name]["std"] = torch.sqrt(
+                stats[name]["sq_sum"] / stats[name]["count"] 
+                - stats[name]["mean"] ** 2
+            )
             
-            stats[name] = {
-                "min": stats[name]["min_val"],
-                "max": stats[name]["max_val"],
-                "mean": mean,
-                "std": std
-            }
-            
+            # Clean up intermediate values
+            del stats[name]["sum"]
+            del stats[name]["sq_sum"]
+            del stats[name]["count"]
+        
         return stats
-          def _quantize_layer(
+        
+    def _quantize_layer(
         self,
         layer: nn.Linear,
         stats: Optional[Dict[str, torch.Tensor]] = None
     ) -> QuantizedLinear:
-        """Quantize a single layer to GGUF format."""
+        """Quantize a single layer to GGUF format with memory-efficient processing."""
         device = next(layer.parameters()).device
         
         # Initialize quantized layer
@@ -166,15 +209,22 @@ class GGUFQuantizer:
             )
         )
         
+        # Process in chunks to save memory
+        chunk_size = 1024  # Adjust based on available memory
+        
         # Copy bias if exists
         if layer.bias is not None:
             quantized.bias.data.copy_(layer.bias.data)
             
         # Get weight matrix
         W = layer.weight.data.clone()
+        if self.cpu_offload:
+            W = W.cpu()
         
         # Apply statistics if available
         if stats is not None:
+            if self.cpu_offload:
+                stats = {k: v.cpu() for k, v in stats.items()}
             W = (W - stats["mean"]) / (stats["std"] + 1e-6)
         
         # Compute scales per group if using grouping
@@ -185,13 +235,27 @@ class GGUFQuantizer:
             scales = []
             zero_points = []
             
-            for idx in range(n_groups):
-                group = W_groups[idx]
-                max_abs = torch.max(torch.abs(group))
-                scale = (2 ** (self.bits - 1) - 1) / max_abs
-                scales.append(scale)
-                zero_points.append(torch.zeros_like(scale))
+            # Process groups in chunks
+            for start_idx in range(0, n_groups, chunk_size):
+                end_idx = min(start_idx + chunk_size, n_groups)
+                group_chunk = W_groups[start_idx:end_idx]
                 
+                chunk_scales = []
+                chunk_zero_points = []
+                
+                for group in group_chunk:
+                    max_abs = torch.max(torch.abs(group))
+                    scale = (2 ** (self.bits - 1) - 1) / max_abs
+                    chunk_scales.append(scale)
+                    chunk_zero_points.append(torch.zeros_like(scale))
+                
+                scales.extend(chunk_scales)
+                zero_points.extend(chunk_zero_points)
+                
+                # Clear intermediate tensors
+                del group_chunk, chunk_scales, chunk_zero_points
+                self._clear_memory()
+            
             scales = torch.stack(scales)
             zero_points = torch.stack(zero_points)
         else:
@@ -200,31 +264,53 @@ class GGUFQuantizer:
             scales = torch.full(
                 (W.size(0),),
                 (2 ** (self.bits - 1) - 1) / max_abs,
-                device=device
+                device='cpu' if self.cpu_offload else device
             )
             zero_points = torch.zeros_like(scales)
             
-        # Quantize weights
-        W_quant = torch.round(W * scales.view(-1, 1))
+        # Quantize weights in chunks
+        W_quant = []
+        for start_idx in range(0, W.size(0), chunk_size):
+            end_idx = min(start_idx + chunk_size, W.size(0))
+            chunk = W[start_idx:end_idx]
+            chunk_scales = scales[start_idx:end_idx]
+            
+            chunk_quant = torch.round(chunk * chunk_scales.view(-1, 1))
+            
+            # Pack groups if enabled
+            if self.use_packed and self.group_size > 0:
+                chunk_quant = chunk_quant.view(-1, self.group_size, W.size(1))
+                if self.bits == 4:
+                    # Pack two 4-bit values into one byte
+                    chunk_quant = torch.clamp(chunk_quant, -8, 7)
+                    chunk_packed = (chunk_quant[..., ::2] + 8) | ((chunk_quant[..., 1::2] + 8) << 4)
+                    chunk_quant = chunk_packed.to(torch.uint8)
+                elif self.bits == 2:
+                    # Pack four 2-bit values into one byte
+                    chunk_quant = torch.clamp(chunk_quant, -2, 1)
+                    chunk_packed = (chunk_quant[..., ::4] + 2) | \
+                                ((chunk_quant[..., 1::4] + 2) << 2) | \
+                                ((chunk_quant[..., 2::4] + 2) << 4) | \
+                                ((chunk_quant[..., 3::4] + 2) << 6)
+                    chunk_quant = chunk_packed.to(torch.uint8)
+                elif self.bits == 8:
+                    chunk_quant = chunk_quant.to(torch.int8)
+                
+                chunk_quant = chunk_quant.view(chunk.size(0), -1)
+            
+            W_quant.append(chunk_quant)
+            
+            # Clear intermediate tensors
+            del chunk, chunk_scales, chunk_quant
+            self._clear_memory()
         
-        # Pack groups if enabled
-        if self.use_packed and self.group_size > 0:
-            W_quant = W_quant.view(-1, self.group_size, W.size(1))
-            if self.bits == 4:
-                # Pack two 4-bit values into one byte
-                W_quant = torch.clamp(W_quant, -8, 7)  # -8 to 7 for 4-bit
-                packed = (W_quant[..., ::2] + 8) | ((W_quant[..., 1::2] + 8) << 4)
-                W_quant = packed.to(torch.uint8).view(W.size(0), -1)
-            elif self.bits == 2:
-                # Pack four 2-bit values into one byte
-                W_quant = torch.clamp(W_quant, -2, 1)  # -2 to 1 for 2-bit
-                packed = (W_quant[..., ::4] + 2) | \
-                        ((W_quant[..., 1::4] + 2) << 2) | \
-                        ((W_quant[..., 2::4] + 2) << 4) | \
-                        ((W_quant[..., 3::4] + 2) << 6)
-                W_quant = packed.to(torch.uint8).view(W.size(0), -1)
-            elif self.bits == 8:
-                W_quant = W_quant.to(torch.int8).view(W.size(0), -1)
+        W_quant = torch.cat(W_quant, dim=0)
+        
+        # Move tensors to appropriate device
+        target_device = device if not self.cpu_offload else 'cpu'
+        W_quant = W_quant.to(target_device)
+        scales = scales.to(target_device)
+        zero_points = zero_points.to(target_device)
         
         # Store quantized weights and parameters
         quantized.weight_quantized.copy_(W_quant)
@@ -234,14 +320,16 @@ class GGUFQuantizer:
         # Store additional GGUF-specific information
         if stats is not None:
             if hasattr(quantized, 'input_mean'):
-                quantized.input_mean.copy_(stats["mean"])
+                quantized.input_mean.copy_(stats["mean"].to(target_device))
             if hasattr(quantized, 'input_std'):
-                quantized.input_std.copy_(stats["std"])
+                quantized.input_std.copy_(stats["std"].to(target_device))
         
         return quantized
-        
-    def convert_to_gguf(self, output_path: str):
+          def convert_to_gguf(self, output_path: str):
         """Convert quantized model to GGUF format using CTransformers."""
+        if not CT_AVAILABLE:
+            raise ImportError("CTransformers is required for GGUF conversion")
+            
         try:
             # Extract configuration
             config = {
@@ -259,52 +347,55 @@ class GGUFQuantizer:
                     "group_size": self.group_size,
                     "desc_act": self.desc_act,
                     "desc_ten": self.desc_ten,
-                    "use_packed": self.use_packed
+                    "use_packed": self.use_packed,
+                    "legacy_format": self.legacy_format
                 }
             }
             
-            # Create GGUF file
+            # Save tensors in chunks to avoid memory issues
             with open(output_path, 'wb') as f:
-                # Write magic number and version
-                f.write(b'GGUF')  # Magic
-                f.write(torch.tensor(1, dtype=torch.int32).numpy().tobytes())  # Version
+                # Write config
+                ctransformers.save_config(config, f)
                 
-                # Write model configuration
-                for key, value in config.items():
-                    # Serialize based on type
-                    if isinstance(value, (int, float)):
-                        dtype = torch.int32 if isinstance(value, int) else torch.float32
-                        f.write(torch.tensor(value, dtype=dtype).numpy().tobytes())
-                    elif isinstance(value, str):
-                        bytes_val = value.encode('utf-8')
-                        f.write(torch.tensor(len(bytes_val), dtype=torch.int32).numpy().tobytes())
-                        f.write(bytes_val)
-                    elif isinstance(value, dict):
-                        for k, v in value.items():
-                            dtype = torch.int32 if isinstance(v, int) else torch.float32
-                            f.write(torch.tensor(v, dtype=dtype).numpy().tobytes())
-                            
-                # Write model weights
+                # Save tensors in chunks
                 for name, module in self.model.named_modules():
                     if isinstance(module, QuantizedLinear):
-                        # Write layer name
-                        name_bytes = name.encode('utf-8')
-                        f.write(torch.tensor(len(name_bytes), dtype=torch.int32).numpy().tobytes())
-                        f.write(name_bytes)
+                        # Process weight quantization tensors
+                        for tensor_name in ["weight_quantized", "weight_scale", "weight_zero_point"]:
+                            if hasattr(module, tensor_name):
+                                tensor = getattr(module, tensor_name)
+                                chunk_size = 1024 * 1024  # 1MB chunks
+                                
+                                for start_idx in range(0, tensor.numel(), chunk_size):
+                                    end_idx = min(start_idx + chunk_size, tensor.numel())
+                                    chunk = tensor.view(-1)[start_idx:end_idx]
+                                    
+                                    if self.cpu_offload:
+                                        chunk = chunk.cpu()
+                                    
+                                    ctransformers.save_tensor(
+                                        f"{name}.{tensor_name}",
+                                        chunk,
+                                        start_idx,
+                                        f
+                                    )
+                                    
+                                    del chunk
+                                    self._clear_memory()
                         
-                        # Write quantized weights
-                        f.write(module.weight_quantized.numpy().tobytes())
-                        f.write(module.weight_scale.numpy().tobytes())
-                        f.write(module.weight_zero_point.numpy().tobytes())
-                        
-                        if module.bias is not None:
-                            f.write(module.bias.numpy().tobytes())
-                        
-                        if hasattr(module, 'input_mean'):
-                            f.write(module.input_mean.numpy().tobytes())
-                            f.write(module.input_std.numpy().tobytes())
+                        # Process bias if exists
+                        if hasattr(module, "bias") and module.bias is not None:
+                            bias = module.bias.data
+                            if self.cpu_offload:
+                                bias = bias.cpu()
+                            ctransformers.save_tensor(f"{name}.bias", bias, 0, f)
+                            del bias
                             
+                        self._clear_memory()
+            
+            print(f"Successfully saved GGUF model to {output_path}")
+            
         except Exception as e:
             raise RuntimeError(f"Failed to convert model to GGUF format: {str(e)}")
-        
-        return output_path
+        finally:
+            self._clear_memory()

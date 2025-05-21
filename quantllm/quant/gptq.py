@@ -1,6 +1,7 @@
 """GPTQ (Goyal-Pham-Tan-Quant) implementation for LLM quantization."""
 
 import math
+import gc
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union
@@ -8,7 +9,7 @@ from transformers import PreTrainedModel
 from .quantization_engine import QuantizationConfig, QuantizedLinear
 
 class GPTQQuantizer:
-    """GPTQ quantization implementation."""
+    """GPTQ quantization implementation with memory-efficient processing."""
     
     def __init__(
         self,
@@ -19,7 +20,9 @@ class GPTQQuantizer:
         allow_mixed_bits: bool = False,
         use_triton: bool = False,
         percdamp: float = 0.01,
-        sym: bool = True
+        sym: bool = True,
+        batch_size: int = 4,
+        cpu_offload: bool = False
     ):
         self.model = model
         self.bits = bits
@@ -29,13 +32,21 @@ class GPTQQuantizer:
         self.use_triton = use_triton
         self.percdamp = percdamp
         self.sym = sym
+        self.batch_size = batch_size
+        self.cpu_offload = cpu_offload
         
         # Initialize H matrices for each layer
         self.H = {}
         
+    def _clear_memory(self):
+        """Clear CUDA memory and run garbage collection."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
     def quantize(self, calibration_data: Optional[torch.Tensor] = None) -> PreTrainedModel:
         """
-        Quantize model using GPTQ algorithm.
+        Quantize model using GPTQ algorithm with memory-efficient processing.
         
         Args:
             calibration_data: Optional tensor for computing quantization statistics
@@ -52,11 +63,17 @@ class GPTQQuantizer:
         # Convert all linear layers to quantizable versions
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
+                print(f"Processing layer: {name}")
+                
                 # Compute Hessian approximation for this layer
                 self.H[name] = self._compute_hessian(module, calibration_data)
                 
+                # Move Hessian to CPU if offloading is enabled
+                if self.cpu_offload:
+                    self.H[name] = self.H[name].cpu()
+                
                 # Convert to quantized layer
-                quantized = self._quantize_layer(module, self.H[name])
+                quantized = self._quantize_layer(module, self.H[name].to(module.weight.device) if self.cpu_offload else self.H[name])
                 
                 # Replace layer in model
                 parent_name = '.'.join(name.split('.')[:-1])
@@ -66,42 +83,63 @@ class GPTQQuantizer:
                     setattr(parent, child_name, quantized)
                 else:
                     setattr(self.model, name, quantized)
+                    
+                # Clear memory after processing each layer
+                self._clear_memory()
+                
+                # Remove processed Hessian to free memory
+                del self.H[name]
         
         return self.model
-      def _compute_hessian(self, layer: nn.Linear, data: torch.Tensor) -> torch.Tensor:
-        """Compute Hessian approximation for a layer."""
+        
+    def _compute_hessian(self, layer: nn.Linear, data: torch.Tensor) -> torch.Tensor:
+        """Compute Hessian approximation for a layer with memory-efficient batch processing."""
         device = next(layer.parameters()).device
         
-        # Initialize accumulator
+        # Initialize accumulator on CPU if offloading is enabled
         n = layer.in_features
-        H = torch.zeros((n, n), device=device)
+        H = torch.zeros((n, n), device='cpu' if self.cpu_offload else device)
         
         def hook_fn(module, input, output):
             x = input[0].detach()
             # Reshape input if needed (batch_size * seq_len, hidden_size)
             if len(x.shape) == 3:
                 x = x.view(-1, x.size(-1))
+            
             with torch.no_grad():
-                # Accumulate x^T x for Hessian approximation
-                H.add_(torch.matmul(x.t(), x))
+                # Process in smaller chunks to save memory
+                chunk_size = 1024  # Adjust based on available memory
+                num_chunks = math.ceil(x.size(0) / chunk_size)
+                
+                for i in range(num_chunks):
+                    chunk = x[i * chunk_size:(i + 1) * chunk_size]
+                    # Compute contribution to Hessian
+                    if self.cpu_offload:
+                        chunk_H = torch.matmul(chunk.t(), chunk).cpu()
+                    else:
+                        chunk_H = torch.matmul(chunk.t(), chunk)
+                    H.add_(chunk_H)
+                    
+                    # Clear intermediate tensors
+                    del chunk_H
+                    if i % 10 == 0:  # Periodic memory cleanup
+                        self._clear_memory()
         
         # Register forward hook
         handle = layer.register_forward_hook(hook_fn)
         
-        # Run calibration data through model
+        # Run calibration data through model in batches
         with torch.no_grad():
-            # Process in smaller batches to save memory
-            batch_size = 4  # Adjust based on available memory
-            for i in range(0, len(data), batch_size):
-                batch = data[i:i+batch_size]
+            for i in range(0, len(data), self.batch_size):
+                batch = data[i:i+self.batch_size]
                 self.model(batch)
+                
+                # Periodic memory cleanup
+                if i % (self.batch_size * 10) == 0:
+                    self._clear_memory()
             
         # Remove hook
         handle.remove()
-        
-        # Add dampening and normalize
-        H.div_(data.size(0))
-        H.add_(torch.eye(n, device=device).mul_(self.percdamp))
         
         return H
     
