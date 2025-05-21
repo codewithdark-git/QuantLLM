@@ -6,7 +6,7 @@ import torch
 import pandas as pd
 from typing import Dict, List, Tuple
 from transformers import PreTrainedModel
-from quantllm.quant import (
+from ..quant import (
     GPTQQuantizer,
     AWQQuantizer,
     GGUFQuantizer

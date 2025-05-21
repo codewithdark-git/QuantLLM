@@ -65,5 +65,5 @@ logger = TrainingLogger()
 logger.log_success(f"""
 ✨ QuantLLM v{__version__} initialized successfully ✨
 🚀 Efficient Quantized Language Model Fine-Tuning
-📚 Documentation: https://github.com/yourusername/QuantLLM
+📚 Documentation: https://github.com/codewithdark-git/QuantLLM
 """)
