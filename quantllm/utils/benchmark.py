@@ -2,10 +2,10 @@
 
 import gc
 import time
-import copy
 import torch
+import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 from transformers import PreTrainedModel, AutoConfig, AutoModelForCausalLM
 from ..quant import (
     GPTQQuantizer,
@@ -13,44 +13,6 @@ from ..quant import (
     GGUFQuantizer
 )
 from ..quant.quantization_engine import DeviceManager
-
-class ModelCopier:
-    """Utility for safely copying models with proper device management."""
-    
-    @staticmethod
-    def deep_copy(model: PreTrainedModel, device_manager: DeviceManager) -> PreTrainedModel:
-        """Create a deep copy of a model with proper device handling."""
-        try:
-            # Get model configuration
-            config = AutoConfig.from_pretrained(
-                model.config._name_or_path,
-                trust_remote_code=True
-            )
-            
-            # Create new model instance with same config
-            new_model = AutoModelForCausalLM.from_config(
-                config,
-                trust_remote_code=True
-            )
-            
-            # Copy state dict with proper device management
-            with torch.no_grad():
-                # First collect all parameters on CPU
-                state_dict = {}
-                for name, param in model.state_dict().items():
-                    state_dict[name] = param.detach().cpu()
-                
-                # Load state dict onto new model
-                new_model.load_state_dict(state_dict, strict=True)
-                
-                # Move to appropriate device
-                target_device = device_manager.primary_device
-                new_model = new_model.to(target_device)
-                
-            return new_model
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to copy model: {str(e)}")
 
 class QuantizationBenchmark:
     """Memory-efficient benchmark implementation for quantization methods."""
@@ -67,7 +29,8 @@ class QuantizationBenchmark:
         self.device_manager = DeviceManager(
             torch.device(device) if device else None
         )
-        self.model = model.to("cpu")  # Keep original model on CPU
+        # Keep original model on CPU
+        self.model = model.to("cpu")
         self.calibration_data = calibration_data.to("cpu")
         self.input_shape = input_shape
         self.num_inference_steps = num_inference_steps
@@ -83,7 +46,39 @@ class QuantizationBenchmark:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            self.device_manager.sync()
+            torch.cuda.synchronize()
+            
+    def _copy_model(self) -> PreTrainedModel:
+        """Create a deep copy of the model."""
+        try:
+            print("Creating new model instance...")
+            # Get model configuration
+            config = AutoConfig.from_pretrained(
+                self.model.config._name_or_path,
+                trust_remote_code=True
+            )
+            
+            # Create new model instance
+            new_model = AutoModelForCausalLM.from_config(
+                config,
+                trust_remote_code=True
+            )
+            
+            print("Copying model parameters...")
+            # Copy state dict with proper device handling
+            with torch.no_grad():
+                state_dict = {}
+                for name, param in self.model.state_dict().items():
+                    # Always copy to CPU first
+                    state_dict[name] = param.detach().cpu()
+                
+                # Load state dict
+                new_model.load_state_dict(state_dict, strict=True)
+                
+            return new_model
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to copy model: {str(e)}")
             
     def benchmark_quantizer(
         self,
@@ -98,32 +93,17 @@ class QuantizationBenchmark:
             if torch.cuda.is_available():
                 print(f"GPU memory before {name}: {torch.cuda.memory_allocated() / 1024**2:.1f}MB")
             
-            # Configure quantizer for memory efficiency
-            mem_efficient_args = dict(quantizer_args)
-            if name == "AWQ":
-                mem_efficient_args.update({
-                    "group_size": min(mem_efficient_args.get("group_size", 128), 64),
-                })
-            elif name == "GPTQ":
-                mem_efficient_args.update({
-                    "percdamp": 0.01,
-                    "block_size": 128,
-                })
+            # Get a fresh copy of the model
+            model_copy = self._copy_model()
             
-            print(f"Creating model copy for {name}...")
-            model_clone = ModelCopier.deep_copy(
-                self.model,
-                self.device_manager
-            )
-            
-            # Initialize quantizer
+            # Initialize quantizer with device info
             quantizer = quantizer_class(
-                model=model_clone,
+                model=model_copy,
                 device=self.device_manager.primary_device,
-                **mem_efficient_args
+                **quantizer_args
             )
             
-            # Prepare calibration data
+            # Move calibration data to target device
             cal_data = self.calibration_data.to(self.device_manager.primary_device)
             
             # Measure quantization time
@@ -139,13 +119,11 @@ class QuantizationBenchmark:
                 )
             else:
                 # Direct quantization for others
-                quantized_model = quantizer.quantize(
-                    calibration_data=cal_data
-                )
+                quantized_model = quantizer.quantize(calibration_data=cal_data)
                 
             quant_time = time.time() - start_time
             
-            # Move data back to CPU and clear memory
+            # Move calibration data back to CPU and clear memory
             cal_data = cal_data.cpu()
             self._clear_memory()
             

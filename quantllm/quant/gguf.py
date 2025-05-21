@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union, Tuple
 from transformers import PreTrainedModel
-from .quantization_engine import QuantizationConfig, QuantizedLinear
+from .quantization_engine import BaseQuantizer, QuantizationConfig, QuantizedLinear
 
 try:
     import ctransformers
@@ -14,8 +14,8 @@ try:
 except ImportError:
     CT_AVAILABLE = False
 
-class GGUFQuantizer:
-    """GGUF quantization implementation with CTransformers integration and memory-efficient processing."""
+class GGUFQuantizer(BaseQuantizer):
+    """GGUF quantization implementation with CTransformers integration."""
     
     def __init__(
         self,
@@ -27,41 +27,27 @@ class GGUFQuantizer:
         use_packed: bool = True,
         legacy_format: bool = False,
         batch_size: int = 4,
-        cpu_offload: bool = False
+        device: Optional[Union[str, torch.device]] = None
     ):
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization. Install with: pip install ctransformers")
-        
-        self.model = model
-        self.bits = bits
+            
+        super().__init__(model=model, bits=bits, device=device)
         self.group_size = group_size
         self.desc_act = desc_act
         self.desc_ten = desc_ten
         self.use_packed = use_packed
         self.legacy_format = legacy_format
         self.batch_size = batch_size
-        self.cpu_offload = cpu_offload
         
-    def _clear_memory(self):
-        """Clear CUDA memory and run garbage collection."""
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
     def quantize(
         self,
         calibration_data: Optional[torch.Tensor] = None
     ) -> PreTrainedModel:
-        """
-        Quantize model using GGUF format with memory-efficient processing.
-        
-        Args:
-            calibration_data: Optional tensor for computing quantization statistics
-            
-        Returns:
-            Quantized model
-        """
-        # Prepare model for quantization
+        """Quantize model using GGUF format with memory-efficient processing."""
+        # Prepare model and calibration data
+        if calibration_data is not None:
+            calibration_data = self.prepare_calibration_data(calibration_data)
         self.model.eval()
         
         # Collect statistics if provided
@@ -72,19 +58,11 @@ class GGUFQuantizer:
         # Convert linear layers to quantized versions
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                print(f"Processing layer: {name}")
+                self.logger.info(f"Processing layer: {name}")
                 
                 # Create quantized layer
                 layer_stats = stats.get(name, None)
-                
-                # Move stats to appropriate device
-                if layer_stats is not None and self.cpu_offload:
-                    layer_stats = {k: v.to('cpu') for k, v in layer_stats.items()}
-                
-                quantized = self._quantize_layer(
-                    module,
-                    {k: v.to(module.weight.device) for k, v in layer_stats.items()} if self.cpu_offload and layer_stats else layer_stats
-                )
+                quantized = self._quantize_layer(module, layer_stats)
                 
                 # Replace layer in model
                 parent_name = '.'.join(name.split('.')[:-1])
@@ -95,7 +73,6 @@ class GGUFQuantizer:
                 else:
                     setattr(self.model, name, quantized)
                 
-                # Clear memory after processing each layer
                 self._clear_memory()
         
         return self.model
@@ -325,7 +302,7 @@ class GGUFQuantizer:
                 quantized.input_std.copy_(stats["std"].to(target_device))
         
         return quantized
-          def convert_to_gguf(self, output_path: str):
+    def convert_to_gguf(self, output_path: str):
         """Convert quantized model to GGUF format using CTransformers."""
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF conversion")

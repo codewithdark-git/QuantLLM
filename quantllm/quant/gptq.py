@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union
 from transformers import PreTrainedModel
-from .quantization_engine import QuantizationConfig, QuantizedLinear, DeviceManager
+from .quantization_engine import BaseQuantizer, QuantizationConfig, QuantizedLinear
 
-class GPTQQuantizer:
+class GPTQQuantizer(BaseQuantizer):
     """GPTQ quantization implementation with memory-efficient processing."""
     
     def __init__(
@@ -24,8 +24,7 @@ class GPTQQuantizer:
         batch_size: int = 4,
         device: Optional[Union[str, torch.device]] = None
     ):
-        self.model = model
-        self.bits = bits
+        super().__init__(model=model, bits=bits, device=device)
         self.group_size = group_size
         self.actorder = actorder
         self.allow_mixed_bits = allow_mixed_bits
@@ -33,11 +32,6 @@ class GPTQQuantizer:
         self.percdamp = percdamp
         self.sym = sym
         self.batch_size = batch_size
-        
-        # Initialize device manager
-        self.device_manager = DeviceManager(
-            torch.device(device) if device else None
-        )
         
         # Initialize H matrices for each layer
         self.H = {}
@@ -62,20 +56,14 @@ class GPTQQuantizer:
         if calibration_data is None:
             raise ValueError("GPTQ requires calibration data for quantization")
             
-        device = self.device_manager.primary_device
-        self.model.to(device)
+        # Prepare model and data
+        calibration_data = self.prepare_for_quantization(calibration_data)
         self.model.eval()
-        
-        # Convert calibration data to correct device
-        calibration_data = calibration_data.to(device)
         
         # Process layers
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                print(f"Processing layer: {name}")
-                
-                # Ensure layer is on correct device
-                module.to(device)
+                self.logger.info(f"Processing layer: {name}")
                 
                 # Compute Hessian approximation
                 self.H[name] = self._compute_hessian(module, calibration_data)
@@ -92,8 +80,6 @@ class GPTQQuantizer:
                     
                 # Clear memory after processing each layer
                 self._clear_memory()
-                
-                # Remove processed Hessian
                 del self.H[name]
         
         return self.model

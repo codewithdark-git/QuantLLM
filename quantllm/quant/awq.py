@@ -1,4 +1,4 @@
-"""AWQ (Activation-Aware Weight Quantization) implementation with memory-efficient processing."""
+"""AWQ (Activation-Aware Weight Quantization) implementation."""
 
 import gc
 import torch
@@ -6,10 +6,9 @@ import torch.nn as nn
 import numpy as np
 from typing import Optional, Dict, Any, List, Union, Tuple
 from transformers import PreTrainedModel
-from .quantization_engine import QuantizationConfig, QuantizedLinear
+from .quantization_engine import BaseQuantizer, QuantizationConfig, QuantizedLinear
 
-class AWQQuantizer:
-    """AWQ quantization implementation with memory-efficient processing."""
+class AWQQuantizer(BaseQuantizer):
     """AWQ quantization implementation with memory-efficient processing."""
     
     def __init__(
@@ -21,23 +20,20 @@ class AWQQuantizer:
         scale_dtype: str = "fp32",
         version: str = "v2",
         enable_mnn_kernel: bool = False,
-        batch_size: int = 2,  # Small batch size for memory efficiency
-        cpu_offload: bool = True  # Enable CPU offloading
+        batch_size: int = 2,
+        device: Optional[Union[str, torch.device]] = None
     ):
-        self.model = model
-        self.bits = bits
+        super().__init__(model=model, bits=bits, device=device)
         self.group_size = group_size
         self.zero_point = zero_point
         self.scale_dtype = scale_dtype
         self.version = version
         self.enable_mnn_kernel = enable_mnn_kernel
+        self.batch_size = batch_size
         
         # Initialize activation statistics dictionaries
         self.act_scales = {}
         self.weight_scales = {}
-        
-        self.batch_size = batch_size
-        self.cpu_offload = cpu_offload
         
     def _clear_memory(self):
         """Clear GPU memory and run garbage collection."""
@@ -54,8 +50,8 @@ class AWQQuantizer:
         if calibration_data is None:
             raise ValueError("AWQ requires calibration data for quantization")
             
-        # Keep model on CPU initially
-        self.model.cpu()
+        # Prepare calibration data
+        calibration_data = self.prepare_calibration_data(calibration_data)
         self.model.eval()
         
         # Process calibration data in batches
@@ -68,20 +64,8 @@ class AWQQuantizer:
             end_idx = min(step + self.batch_size, total_steps)
             batch = calibration_data[step:end_idx]
             
-            # Move batch to appropriate device
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            batch = batch.to(device)
-            
-            # Temporarily move model to device
-            if device.type == "cuda":
-                self.model = self.model.cuda()
-            
             # Collect statistics for this batch
             self._collect_activation_stats(batch)
-            
-            # Move model back to CPU if offloading enabled
-            if self.cpu_offload and device.type == "cuda":
-                self.model = self.model.cpu()
             
             # Clean up batch
             del batch
@@ -93,35 +77,25 @@ class AWQQuantizer:
         # Quantize the model layer by layer
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear):
-                # Move layer to device temporarily for quantization
-                if device.type == "cuda":
-                    module = module.cuda()
-                    
+                self.logger.info(f"Processing layer: {name}")
+                
                 # Get activation scale for this layer
                 act_scale = self.act_scales.get(name)
-                if act_scale is not None:
-                    # Quantize layer
-                    quantized = self._quantize_layer(module, act_scale)
-                    
-                    # Move quantized layer back to CPU if offloading
-                    if self.cpu_offload:
-                        quantized = quantized.cpu()
-                        
-                    # Replace layer in model
-                    parent_name = '.'.join(name.split('.')[:-1])
-                    child_name = name.split('.')[-1]
-                    
-                    if parent_name:
-                        parent = self.model.get_submodule(parent_name)
-                        setattr(parent, child_name, quantized)
-                    else:
-                        setattr(self.model, name, quantized)
-                        
-                # Clean up
-                self._clear_memory()
+                quantized = self._quantize_layer(module, act_scale)
                 
+                # Replace layer in model
+                parent_name = '.'.join(name.split('.')[:-1])
+                child_name = name.split('.')[-1]
+                if parent_name:
+                    parent = self.model.get_submodule(parent_name)
+                    setattr(parent, child_name, quantized)
+                else:
+                    setattr(self.model, name, quantized)
+                
+                self._clear_memory()
+        
         return self.model
-      def _collect_activation_stats(
+    def _collect_activation_stats(
         self,
         data: torch.Tensor,
         num_steps: int
