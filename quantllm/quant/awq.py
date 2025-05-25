@@ -116,76 +116,58 @@ class AWQQuantizer(BaseQuantizer):
         
         return self.model
 
-    def _collect_activation_stats(
-        self,
-        data: torch.Tensor # Removed num_steps parameter
-    ):
-        """Collect activation statistics for each layer."""
-        
-        # Register hooks for all linear layers
-        handles = []
-        for name, module in self.model.named_modules():
-            if isinstance(module, nn.Linear):
-                def hook_fn(name):
-                    def fn(module, input, output):
-                        if name not in self.act_scales:
-                            self.act_scales[name] = []
-                        x = input[0].detach()
-                        # Handle both 2D and 3D inputs
-                        if len(x.shape) == 3:
-                            # For 3D input (batch_size, seq_len, hidden_size)
-                            scale = torch.max(torch.abs(x.view(-1, x.size(-1))))
-                        else:
-                            scale = torch.max(torch.abs(x))
-                        self.act_scales[name].append(scale.cpu())  # Move to CPU to save memory
-                    return fn
-                    
-                handles.append(
-                    module.register_forward_hook(hook_fn(name))
-                )
-        
-        # Run calibration (forward pass on the provided data batch)
-        with torch.no_grad():
-            # Ensure data is on the primary device for model processing
-            data_on_device = move_to_device(data, self.device_manager.primary_device)
-            self.model(data_on_device)
-            # Data can be moved back to CPU if it's large and memory is a concern,
-            # but hooks should have already captured necessary info to CPU.
-            # For simplicity here, we assume hooks manage CPU transfer if needed.
-            # del data_on_device # Optionally delete if memory is very tight
-
-        # Remove hooks
-        for handle in handles:
-            handle.remove()
-            
-        # model is already on self.device_manager.primary_device from the quantize method's perspective
-        # or moved by prepare_calibration_data.
-        # The processing of act_scales should happen after all batches are processed.
-        # However, the current structure calls this per batch.
-        # For now, let's keep the quantile calculation here, but ideally, it would be after the main loop in `quantize`.
-        # To avoid issues with model device, let's ensure model is on CPU for this CPU-bound operation,
-        # then move it back if it was on GPU.
-        
-        original_model_device = self.model.device # Store original device
-        self.model = move_to_device(self.model, torch.device('cpu'))
-        self._clear_memory() 
-
-        # Process collected statistics on CPU
-        for name in self.act_scales:
-            if self.act_scales[name]: # Ensure list is not empty
-                scales_list = self.act_scales[name]
-                # If scales_list contains tensors that are not on CPU, move them.
-                # Assuming they are already on CPU due to `scale.cpu()` in hook.
-                scales_tensor = torch.stack(scales_list)
-                self.act_scales[name] = torch.quantile(scales_tensor, 0.999)
-            else:
-                # Handle cases where a layer might not have collected scales (e.g. not used in forward pass)
-                self.logger.log_warning(f"No activation scales collected for layer {name}. Using default scale of 1.0.")
-                self.act_scales[name] = torch.tensor(1.0, device='cpu') # Default to a CPU tensor
-
-        # Restore model to its original device
-        self.model = move_to_device(self.model, original_model_device)
-        # The duplicated block of "Process collected statistics" is now removed.
+    def _collect_activation_stats(self, data: torch.Tensor):
+      """Collect activation statistics for each layer."""
+      # Store temporary scales for this batch
+      batch_scales = {}
+      
+      # Register hooks for all linear layers
+      handles = []
+      for name, module in self.model.named_modules():
+          if isinstance(module, nn.Linear):
+              def hook_fn(name):
+                  def fn(module, input, output):
+                      # Initialize the list for this layer if not exists
+                      if name not in batch_scales:
+                          batch_scales[name] = []
+                      
+                      x = input[0].detach()
+                      # Handle both 2D and 3D inputs
+                      if len(x.shape) == 3:
+                          # For 3D input (batch_size, seq_len, hidden_size)
+                          scale = torch.max(torch.abs(x.view(-1, x.size(-1))))
+                      else:
+                          scale = torch.max(torch.abs(x))
+                      # Store scale in our temporary dictionary
+                      batch_scales[name].append(scale.cpu())
+                  return fn
+              
+              handles.append(
+                  module.register_forward_hook(hook_fn(name))
+              )
+      
+      # Run calibration (forward pass on the provided data batch)
+      with torch.no_grad():
+          data_on_device = move_to_device(data, self.device_manager.primary_device)
+          self.model(data_on_device)
+      
+      # Remove hooks
+      for handle in handles:
+          handle.remove()
+      
+      # Process the collected scales
+      for name in batch_scales:
+          if batch_scales[name]:  # If we collected any scales for this layer
+              scales_tensor = torch.stack(batch_scales[name])
+              # If this is the first batch
+              if name not in self.act_scales:
+                  self.act_scales[name] = []
+              # Add the processed scales to our main storage
+              self.act_scales[name].extend([s.item() for s in scales_tensor])
+      
+      # Clean up
+      del batch_scales
+      self._clear_memory()
             
     def _quantize_layer(
         self,
