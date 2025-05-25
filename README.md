@@ -21,7 +21,7 @@ The goal of QuantLLM is to **democratize LLM training**, especially in low-resou
 
 | Feature                          | Description |
 |----------------------------------|-------------|
-| ✅ Quantized Model Loading       | Load any HuggingFace model in 4-bit or 8-bit precision with customizable quantization settings |
+| ✅ Quantized Model Loading       | Load HuggingFace models with various quantization techniques (including AWQ, GPTQ, GGUF) in 4-bit or 8-bit precision, featuring customizable settings. |
 | ✅ Advanced Dataset Management   | Load, preprocess, and split datasets with flexible configurations |
 | ✅ LoRA / QLoRA Fine-Tuning      | Memory-efficient fine-tuning with customizable LoRA parameters |
 | ✅ Comprehensive Training        | Advanced training loop with mixed precision, gradient accumulation, and early stopping |
@@ -76,7 +76,7 @@ For detailed usage examples and API documentation, please refer to our:
 
 - [ ] Multi-GPU training support
 - [ ] AutoML for hyperparameter tuning
-- [ ] More quantization methods
+- [ ] Integration of additional advanced quantization algorithms and techniques.
 - [ ] Custom model architecture support
 - [ ] Enhanced logging and visualization
 - [ ] Model compression techniques
