@@ -467,7 +467,7 @@ class BaseQuantizer:
 
         if isinstance(model_name, str):
             self.model_name = model_name
-            self.logger.log_info(f"Loading tokenizer from: {self.model_name_or_path}")
+            self.logger.log_info(f"Loading tokenizer from: {self.model_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
 
             self.logger.log_info(f"Loading model from: {self.model_name}")

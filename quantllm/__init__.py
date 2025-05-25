@@ -88,6 +88,6 @@ __all__ = [
 ]
 
 
-# Initialize package-level logger with fancy welcome message
-logger = TrainingLogger()
-logger.log_welcome_message()
+# # Initialize package-level logger with fancy welcome message
+# logger = TrainingLogger()
+# logger.log_welcome_message()

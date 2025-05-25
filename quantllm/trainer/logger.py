@@ -10,19 +10,23 @@ class LogLevel(Enum):
     RESET = "\033[0m"  # Reset color
 
 class TrainingLogger:
+    _welcome_shown = False  # Class-level flag to track if welcome message has been shown
+    
     def __init__(self):
-        """Initialize the training logger and display welcome message."""
-        self.log_welcome_message()
+        """Initialize the training logger and display welcome message once."""
         self.start_time = datetime.datetime.now()
+        if not TrainingLogger._welcome_shown:
+            self.log_welcome_message()
+            TrainingLogger._welcome_shown = True
 
     def log_welcome_message(self):
-        """Display QuantLLM welcome message with ASCII art."""
+        """Display QuantLLM welcome message with ASCII art. Only shown once."""
         from importlib.metadata import version
         try:
             __version__ = version("quantllm")
         except:
             __version__ = "1.1.0"
-              logo = (
+            logo = (
             f"{LogLevel.INFO.value}"
             "╔══════════════════════════════════════════════════════════════════════════════════╗\n"
             "║                                                                                  ║\n"
@@ -41,27 +45,6 @@ class TrainingLogger:
             f"{LogLevel.SUCCESS.value}│  💻 Supports CUDA, CPU, and Apple Silicon                              │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}│                                                                         │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}╰─────────────────────────────────────────────────────────────────────────╯{LogLevel.RESET.value}\n\n"
-            f"{LogLevel.INFO.value}📊 Supported Methods:{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• AWQ (Activation-aware Weight Quantization){LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• GPTQ (Goyal-Pham-Tan Quantization){LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• GGUF (GGML Universal Format){LogLevel.RESET.value}\n\n"
-            f"{LogLevel.INFO.value}🛠️  Features:{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• Advanced 2-8 bit Quantization{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• Memory-Efficient Processing{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• LoRA & QLoRA Integration{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• Real-time Progress Tracking{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• Comprehensive Benchmarking{LogLevel.RESET.value}\n\n"            f"{LogLevel.INFO.value}📚 Resources:{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• Documentation: {LogLevel.RESET.value}https://github.com/codewithdark-git/QuantLLM/wiki\n"
-            f"  {LogLevel.SUCCESS.value}• Source Code:   {LogLevel.RESET.value}https://github.com/codewithdark-git/QuantLLM\n"
-            f"  {LogLevel.SUCCESS.value}• Discord:       {LogLevel.RESET.value}https://discord.gg/quantllm\n"
-            f"  {LogLevel.SUCCESS.value}• Examples:      {LogLevel.RESET.value}https://github.com/codewithdark-git/QuantLLM/examples\n\n"
-            f"{LogLevel.WARNING.value}💡 Get Started:{LogLevel.RESET.value}\n"
-            f"  {LogLevel.SUCCESS.value}• Quick Start:   {LogLevel.RESET.value}https://quantllm.readthedocs.io/quickstart.html\n"
-            f"  {LogLevel.SUCCESS.value}• Tutorials:     {LogLevel.RESET.value}https://quantllm.readthedocs.io/tutorials/\n"
-            f"  {LogLevel.SUCCESS.value}• API Docs:      {LogLevel.RESET.value}https://quantllm.readthedocs.io/api/\n\n"
-            f"{LogLevel.SUCCESS.value}╭─ Let's optimize your LLMs! Type help() for assistance ─╮{LogLevel.RESET.value}\n"
-            f"{LogLevel.SUCCESS.value}│                🚀 Happy Quantizing! 🚀                │{LogLevel.RESET.value}\n"
-            f"{LogLevel.SUCCESS.value}╰───────────────────────────────────────────────────────╯{LogLevel.RESET.value}\n"
         )
         print(logo)
 
