@@ -521,7 +521,7 @@ class BaseQuantizer:
         prepared_model.eval()
         if self.device_manager.primary_device is not None:
             self.logger.log_info(f"Moving model to device: {self.device_manager.primary_device}")
-            prepared_model = move_to_device(prepared_model, self.device_manager.primary_device)
+            prepared_model = prepared_model.to(self.device_manager.primary_device)
         
         self.logger.log_info("Model preparation (copy, eval, device move) completed successfully.")
         return prepared_model
