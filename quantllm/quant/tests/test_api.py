@@ -197,5 +197,61 @@ class TestQuantizerFactory(unittest.TestCase):
     def test_gguf_convert_to_gguf_gpu_layersDevice(self): # Quantizer on GPU, layers on GPU
         self._run_gguf_conversion_test(quantizer_device=self.device, gguf_cpu_offload=False)
 
+# New test class for move_to_device
+from quantllm.quant.quantization_engine import move_to_device
+import torch.nn as nn
+
+class TestMoveToDevice(unittest.TestCase):
+    def test_move_tensor_and_module(self):
+        """Test move_to_device with both torch.Tensor and torch.nn.Module."""
+        target_device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        target_device = torch.device(target_device_str)
+
+        # 1. Create a simple torch.Tensor
+        my_tensor = torch.randn(2, 3, device="cpu") # Start on CPU
+
+        # 2. Create a simple torch.nn.Module
+        my_module = nn.Linear(10, 10).to("cpu") # Start on CPU
+
+        # 4. Call move_to_device for the tensor and the module
+        moved_tensor = move_to_device(my_tensor, target_device)
+        moved_module = move_to_device(my_module, target_device)
+
+        # 5. Assert that the tensor is on the target device
+        self.assertEqual(moved_tensor.device, target_device, "Tensor not moved to target device.")
+
+        # 6. Assert that the module is on the target device
+        self.assertIsInstance(moved_module, nn.Module, "move_to_device did not return a Module.")
+        
+        # Check device of a parameter
+        if list(moved_module.parameters()): # Check if module has parameters
+            self.assertEqual(
+                next(moved_module.parameters()).device, 
+                target_device, 
+                "Module's parameters not moved to target device."
+            )
+        else: # Handle modules with no parameters (e.g. nn.ReLU()) if needed for future tests
+            # For a simple Linear layer, this else block shouldn't be hit.
+            # If testing with modules without parameters, one might check an attribute
+            # or skip device check if not applicable. For nn.Linear, parameters exist.
+            pass
+
+        # Test with force_copy=True for tensors
+        another_tensor = torch.randn(2,3, device=target_device)
+        copied_tensor = move_to_device(another_tensor, target_device, force_copy=True)
+        self.assertEqual(copied_tensor.device, target_device)
+        if target_device_str == "cpu": # On CPU, to() without copy=True might return same object if already on device
+             pass # Data pointer check is more complex and not strictly necessary for device check
+        else: # On CUDA, .to(device) typically creates a new tensor unless it's already there.
+             # force_copy=True should ensure it's a different object.
+             if another_tensor.is_cuda and copied_tensor.is_cuda: # Both on CUDA
+                self.assertNotEqual(another_tensor.data_ptr(), copied_tensor.data_ptr(), "force_copy=True did not create a new tensor copy on CUDA.")
+        
+        # Test moving a module already on the target device
+        module_on_target = nn.Linear(5,5).to(target_device)
+        moved_module_again = move_to_device(module_on_target, target_device)
+        self.assertEqual(next(moved_module_again.parameters()).device, target_device)
+
+
 if __name__ == '__main__':
     unittest.main()

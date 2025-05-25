@@ -15,19 +15,25 @@ def get_device_map(model: PreTrainedModel) -> Dict[str, torch.device]:
     return device_map
 
 def move_to_device(
-    tensor: torch.Tensor,
+    tensor: Union[torch.Tensor, torch.nn.Module],
     device: torch.device,
     force_copy: bool = False
-) -> torch.Tensor:
-    """Safely move tensor to device with proper error handling."""
+) -> Union[torch.Tensor, torch.nn.Module]:
+    """Safely move tensor or module to device with proper error handling."""
     try:
+        if isinstance(tensor, torch.nn.Module):
+            return tensor.to(device)
+        # Existing logic for torch.Tensor
         if force_copy:
             return tensor.to(device, copy=True)
-        if tensor.device == device:
+        if tensor.device == device: # type: ignore[union-attr]
             return tensor
         return tensor.to(device)
     except Exception as e:
-        raise RuntimeError(f"Failed to move tensor to {device}: {str(e)}")
+        # It's good practice to indicate which tensor/module failed if possible,
+        # but tensor name isn't available here.
+        type_str = "module" if isinstance(tensor, torch.nn.Module) else "tensor"
+        raise RuntimeError(f"Failed to move {type_str} to {device}: {str(e)}")
 
 class DeviceManager:
     """Manage device placement and synchronization."""
