@@ -195,7 +195,7 @@ class AWQQuantizer(BaseQuantizer):
         quantized = quantized.to(target_device)
 
         # Ensure layer parameters are on the target_device for computation
-        layer = move_to_device(layer, target_device)
+        layer = layer.to(target_device)
 
         # Copy bias if exists, ensuring it's on the target device
         if layer.bias is not None:
