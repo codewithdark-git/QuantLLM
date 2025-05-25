@@ -45,8 +45,8 @@ class TrainingLogger:
             f"{LogLevel.SUCCESS.value}│  💻 Supports CUDA, CPU, and Apple Silicon                              │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}│                                                                         │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}╰─────────────────────────────────────────────────────────────────────────╯{LogLevel.RESET.value}\n\n"
-        )
-        print(logo)
+            )
+            print(logo)
 
     def _format_message(self, level: LogLevel, message: str) -> str:
         """Format log message with timestamp and color."""

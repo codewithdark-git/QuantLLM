@@ -1,4 +1,4 @@
-from datasets import load_dataset, Dataset, disable_progress_bars
+from datasets import load_dataset, Dataset
 from typing import Optional, Dict, Any, Union
 import os
 from ..trainer.logger import TrainingLogger
@@ -20,7 +20,7 @@ class LoadDataset:
             logger (TrainingLogger, optional): Logger instance
         """
         self.logger = logger or TrainingLogger()
-        disable_progress_bars()  # Disable default progress bars
+        
         
     def load_hf_dataset(
         self,

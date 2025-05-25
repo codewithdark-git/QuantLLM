@@ -352,7 +352,7 @@ class QuantizationBenchmark:
         fig.suptitle('Quantization Method Comparison')
         
         # Latency comparison
-            df['mean_latency_ms'].plot(
+        df['mean_latency_ms'].plot(
             kind='bar', ax=axes[0, 0], rot=45,
             title='Mean Inference Latency (ms)'
         )
