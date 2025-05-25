@@ -202,7 +202,7 @@ class GPTQQuantizer(BaseQuantizer):
                 calibration="gptq"
             )
         )
-        quantized = move_to_device(quantized, target_device)
+        quantized = quantized.to(target_device)
         
         if layer.bias is not None:
             # layer is already on target_device

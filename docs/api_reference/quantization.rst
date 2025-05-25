@@ -173,6 +173,9 @@ Main Parameters of `quantize_from_pretrained`
     -   **AWQ Specific Keys:**
         -   `zero_point (bool)`: Enable/disable zero-point for activations. Default: True.
         -   `awq_version (str)`: AWQ algorithm version (e.g., "v1", "v2"). Default: "v2". (Maps to `version` in `AWQQuantizer`).
+        -   `scale_dtype (str)`: Data type for scales (e.g., "fp32", "bf16"). Default: "fp32". (Passed to `AWQQuantizer`).
+        -   `enable_mnn_kernel (bool)`: Enable MNN kernel optimizations, if applicable. Default: False. (Passed to `AWQQuantizer`).
+        -   Note: `batch_size` from the common keys is used by AWQ for its calibration processing.
     -   **GPTQ Specific Keys:**
         -   `actorder (bool)`: Enable activation-order quantization. Default: True.
         -   `percdamp (float)`: Dampening percentage for Hessian update. Default: 0.01.
@@ -260,10 +263,15 @@ AWQ adapts quantization based on activation patterns.
     :inherited-members:
     :undoc-members:
 
+**Inference with AWQ Quantized Models:** Models quantized using `AWQQuantizer` (or via the high-level API with the 'awq' method) are returned as standard Hugging Face `PreTrainedModel` instances. The quantization is handled transparently by the custom `QuantizedLinear` layers. Therefore, inference can be performed using the usual methods like `.generate()` or by directly calling the model, with no special steps required for AWQ-quantized layers.
+
 **Key `__init__` Parameters for `AWQQuantizer`:**
-- ``group_size (int)``: Group size for quantization.
-- ``zero_point (bool)``: Enable zero-point computation for activations.
-- ``version (str)``: AWQ algorithm version.
+- ``group_size (int)``: Size of the quantization group. Default: 128.
+- ``zero_point (bool)``: Whether to use zero-point quantization for activations. Default: True.
+- ``version (str)``: AWQ algorithm version (e.g., "v1", "v2"). Default: "v2".
+- ``scale_dtype (str)``: Data type for scales (e.g., "fp32", "bf16"). Default: "fp32".
+- ``enable_mnn_kernel (bool)``: Whether to enable MNN kernel optimizations, if applicable. Default: False.
+- ``batch_size (int)``: Batch size for calibration data processing during the `quantize` method. Default: 2.
 
 **Usage Example (Direct):**
 

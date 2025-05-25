@@ -192,7 +192,7 @@ class AWQQuantizer(BaseQuantizer):
                 format="awq"
             )
         )
-        quantized = move_to_device(quantized, target_device)
+        quantized = quantized.to(target_device)
 
         # Ensure layer parameters are on the target_device for computation
         layer = move_to_device(layer, target_device)

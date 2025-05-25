@@ -232,7 +232,7 @@ class GGUFQuantizer(BaseQuantizer):
         chunk_size = 1024  # Adjust based on available memory
         
         
-        quantized = move_to_device(quantized, target_device)
+        quantized = quantized.to(target_device)
 
         # Copy bias if exists
         if layer.bias is not None:
