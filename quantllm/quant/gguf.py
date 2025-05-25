@@ -203,7 +203,7 @@ class GGUFQuantizer(BaseQuantizer):
         """Quantize a single layer to GGUF format with memory-efficient processing."""
         target_device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
         
-        layer = move_to_device(layer, target_device)
+        layer = layer.to(target_device)
 
         # Initialize quantized layer and move to target_device
         quantized = QuantizedLinear(

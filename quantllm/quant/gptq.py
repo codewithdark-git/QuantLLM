@@ -187,7 +187,7 @@ class GPTQQuantizer(BaseQuantizer):
         # Ensure tensors are on the correct device
         H = move_to_device(H, target_device)
         # Original layer's weights should be moved to target_device before processing
-        layer = move_to_device(layer, target_device)
+        layer = layer.to(target_device)
         W = layer.weight.data # W is now on target_device
         
         # Initialize quantized layer
