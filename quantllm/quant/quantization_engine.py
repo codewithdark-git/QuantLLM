@@ -572,9 +572,15 @@ class BaseQuantizer:
 
         return calibration_data
 
+import gc # Moved import to top of file
+
+# ... (other imports and code) ...
+
+class BaseQuantizer:
+    # ... (other methods) ...
+
     def _clear_memory(self):
         """Clear GPU memory and run garbage collection."""
-        import gc
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
