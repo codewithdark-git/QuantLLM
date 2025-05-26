@@ -351,4 +351,4 @@ Resource Requirements
 | GGUF        | Low        | Very Fast   | Good       |
 +-------------+------------+-------------+------------+
 
-For a detailed example of direct quantizer usage, you can adapt the `QuantizerFactory` example by instantiating the chosen quantizer directly and calling its methods.
+For detailed examples of using GGUF quantization, check out the examples in the `examples/` directory or refer to the interactive tutorial in `testing.ipynb`.
