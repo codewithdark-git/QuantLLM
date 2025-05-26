@@ -90,7 +90,30 @@ class AWQQuantizer(BaseQuantizer):
                 self.logger.log_info(f"Processing layer: {name}")
                 
                 # Get activation scale for this layer
-                act_scale = self.act_scales.get(name)
+                act_scale_list_or_tensor = self.act_scales.get(name)
+
+                if act_scale_list_or_tensor is not None:
+                    if isinstance(act_scale_list_or_tensor, list):
+                        if all(isinstance(t, torch.Tensor) for t in act_scale_list_or_tensor):
+                            # Average the list of tensors
+                            act_scale = torch.stack(act_scale_list_or_tensor).mean(dim=0)
+                        else:
+                            # Handle unexpected content in the list
+                            self.logger.log_error(f"Activation scales for {name} contain non-tensor elements. Quantization may be incorrect.")
+                            # Fallback: attempt to use the list directly if _quantize_layer can handle it, or create a default
+                            # For safety, creating a default scale here.
+                            act_scale = torch.ones(module.in_features, device=self.device_manager.primary_device)
+                    elif isinstance(act_scale_list_or_tensor, torch.Tensor):
+                        # If it's already a tensor (e.g., if averaging was done elsewhere or only one batch)
+                        act_scale = act_scale_list_or_tensor
+                    else:
+                        self.logger.log_error(f"Unexpected type for activation scales of {name}: {type(act_scale_list_or_tensor)}. Using default.")
+                        act_scale = torch.ones(module.in_features, device=self.device_manager.primary_device)
+                else:
+                    self.logger.log_warning(f"No activation scales found for {name}. Using default scale of 1.0.")
+                    # module.in_features should correspond to the expected dimension of the scale
+                    act_scale = torch.ones(module.in_features, device=self.device_manager.primary_device)
+                
                 quantized = self._quantize_layer(module, act_scale)
                 
                 # Replace layer in model
@@ -135,10 +158,13 @@ class AWQQuantizer(BaseQuantizer):
                       # Handle both 2D and 3D inputs
                       if len(x.shape) == 3:
                           # For 3D input (batch_size, seq_len, hidden_size)
-                          scale = torch.max(torch.abs(x.view(-1, x.size(-1))))
+                          # Compute scales per hidden channel: (hidden_size,)
+                          scale = torch.amax(torch.abs(x), dim=[0, 1])
                       else:
-                          scale = torch.max(torch.abs(x))
-                      # Store scale in our temporary dictionary
+                          # For 2D input (batch_size, hidden_size)
+                          # Compute scales per hidden channel: (hidden_size,)
+                          scale = torch.amax(torch.abs(x), dim=0)
+                      # Store scale tensor (moved to CPU) in our temporary dictionary
                       batch_scales[name].append(scale.cpu())
                   return fn
               
@@ -150,6 +176,7 @@ class AWQQuantizer(BaseQuantizer):
       with torch.no_grad():
           data_on_device = move_to_device(data, self.device_manager.primary_device)
           self.model(data_on_device)
+          del data_on_device # Free memory after forward pass
       
       # Remove hooks
       for handle in handles:
@@ -158,12 +185,12 @@ class AWQQuantizer(BaseQuantizer):
       # Process the collected scales
       for name in batch_scales:
           if batch_scales[name]:  # If we collected any scales for this layer
-              scales_tensor = torch.stack(batch_scales[name])
-              # If this is the first batch
+              # If this is the first batch for this layer
               if name not in self.act_scales:
                   self.act_scales[name] = []
-              # Add the processed scales to our main storage
-              self.act_scales[name].extend([s.item() for s in scales_tensor])
+              # Extend the list of scale tensors for this layer
+              # batch_scales[name] already contains CPU tensors
+              self.act_scales[name].extend(batch_scales[name])
       
       # Clean up
       del batch_scales
@@ -206,13 +233,43 @@ class AWQQuantizer(BaseQuantizer):
         
         # Ensure act_scale is on the same device as W before division
         act_scale_on_device = move_to_device(act_scale, W.device)
-        W = W / act_scale_on_device.view(1, -1)
+        
+        try:
+            W = W / act_scale_on_device.view(1, -1)
+        except RuntimeError as e:
+            error_message = (
+                f"Failed to scale weights with activation scales in _quantize_layer.\n"
+                f"  Weight (W) shape: {W.shape}\n"
+                f"  Activation scale (act_scale_on_device) shape: {act_scale_on_device.shape}\n"
+                f"  Original error: {str(e)}"
+            )
+            self.logger.log_error(error_message)
+            raise RuntimeError(error_message) from e
         
         # Compute quantization scales per group
         # All computations for scales and zero_points should happen on target_device
         if self.group_size > 0:
+            if W.shape[0] % self.group_size != 0:
+                error_message = (
+                    f"Weight dimension {W.shape[0]} is not divisible by group_size {self.group_size} "
+                    f"in _quantize_layer for layer being processed."
+                )
+                self.logger.log_error(error_message)
+                raise ValueError(error_message) # ValueError is more appropriate here
+
             n_groups = W.shape[0] // self.group_size
-            W_groups = W.view(n_groups, self.group_size, -1)
+            try:
+                W_groups = W.view(n_groups, self.group_size, -1)
+            except RuntimeError as e:
+                error_message = (
+                    f"Failed to create view for grouped weights in _quantize_layer.\n"
+                    f"  Weight (W) shape: {W.shape}\n"
+                    f"  Calculated n_groups: {n_groups}\n"
+                    f"  Group size: {self.group_size}\n"
+                    f"  Original error: {str(e)}"
+                )
+                self.logger.log_error(error_message)
+                raise RuntimeError(error_message) from e
             
             scales_list = [] # Renamed from scales to scales_list
             zero_points_list = [] if self.zero_point else None # Renamed
@@ -246,12 +303,14 @@ class AWQQuantizer(BaseQuantizer):
         # W, scales, zero_points are on target_device
         W_quant = torch.round(W * scales.view(-1, 1) - zero_points.view(-1, 1))
         W_quant = W_quant.to(torch.int8) # Cast to int8
+        del W # Free memory for W as it's no longer needed
         
         # Store quantized weights and parameters
         # quantized module and its buffers are already on target_device
         quantized.weight_quantized.copy_(W_quant) # W_quant is already on target_device and int8
         quantized.weight_scale.copy_(1.0 / scales) # scales is on target_device
         quantized.weight_zero_point.copy_(zero_points) # zero_points is on target_device
+        del scales, zero_points # Free memory for scales and zero_points
         
         # Store additional AWQ-specific information
         # Ensure act_scale is on the same device as the quantized layer's parameters
