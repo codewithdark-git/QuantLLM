@@ -84,28 +84,28 @@ class QuantizationBenchmark:
         """Create a deep copy of the model, ensuring it's on CPU initially."""
         try:
             print("Creating new model instance...")
-        print("Creating new model instance from config...")
-        # Get model configuration
-        config = AutoConfig.from_pretrained(
-            self.model.config._name_or_path, # Use the original model's name or path
-            trust_remote_code=True # Add trust_remote_code=True if needed for custom models
-        )
-        
-        # Create new model instance on CPU
-        new_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True).to("cpu")
-        
-        print("Copying model parameters (state_dict) to CPU...")
-        # Copy state dict from the original self.model (which is on CPU)
-        with torch.no_grad():
-            state_dict_cpu = {k: v.cpu() for k, v in self.model.state_dict().items()}
-            new_model.load_state_dict(state_dict_cpu, assign=True, strict=True)
-            del state_dict_cpu # Free memory
+            print("Creating new model instance from config...")
+            # Get model configuration
+            config = AutoConfig.from_pretrained(
+                self.model.config._name_or_path, # Use the original model's name or path
+                trust_remote_code=True # Add trust_remote_code=True if needed for custom models
+            )
             
-        return new_model
-        
-    except Exception as e:
-        print(f"Detailed error in _copy_model: {type(e).__name__}: {e}")
-        raise RuntimeError(f"Failed to copy model: {str(e)}")
+            # Create new model instance on CPU
+            new_model = AutoModelForCausalLM.from_config(config, trust_remote_code=True).to("cpu")
+            
+            print("Copying model parameters (state_dict) to CPU...")
+            # Copy state dict from the original self.model (which is on CPU)
+            with torch.no_grad():
+                state_dict_cpu = {k: v.cpu() for k, v in self.model.state_dict().items()}
+                new_model.load_state_dict(state_dict_cpu, assign=True, strict=True)
+                del state_dict_cpu # Free memory
+                
+            return new_model
+            
+        except Exception as e:
+            print(f"Detailed error in _copy_model: {type(e).__name__}: {e}")
+            raise RuntimeError(f"Failed to copy model: {str(e)}")
             
     def benchmark_quantizer(
         self,
@@ -541,11 +541,11 @@ class QuantizationBenchmark:
             
         plt.close(fig) # Close the figure to free memory
             # No explicit cleanup for self.model or self.calibration_data here, they are persistent.
-            if self.pynvml_available and self.nvml_handle:
-                 # nvmlShutdown is typically called once when the application exits, not per benchmark.
-                 # For now, do not shut down NVML here to allow multiple calls to benchmark_quantizer or run_all_benchmarks.
-                 # Consider adding a __del__ or close() method to QuantizationBenchmark for global NVML shutdown.
-                 pass
+        if self.pynvml_available and self.nvml_handle:
+                # nvmlShutdown is typically called once when the application exits, not per benchmark.
+                # For now, do not shut down NVML here to allow multiple calls to benchmark_quantizer or run_all_benchmarks.
+                # Consider adding a __del__ or close() method to QuantizationBenchmark for global NVML shutdown.
+                pass
                  
     def __del__(self):
         # Destructor to ensure NVML is shut down when the object is deleted or program exits.
