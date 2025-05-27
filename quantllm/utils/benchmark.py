@@ -72,6 +72,28 @@ class QuantizationBenchmark:
             logger.log_error(f"Model copy failed: {str(e)}")
             raise
 
+    def _get_model_stats(self, model: PreTrainedModel) -> Dict[str, float]:
+        """Get detailed model statistics."""
+        stats = {}
+        
+        # Calculate total parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
+        # Calculate memory usage
+        param_size = sum(p.numel() * p.element_size() for p in model.parameters())
+        buffer_size = sum(b.numel() * b.element_size() for b in model.buffers())
+        
+        stats.update({
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
+            "model_size_mb": (param_size + buffer_size) / (1024 * 1024),
+            "param_size_mb": param_size / (1024 * 1024),
+            "buffer_size_mb": buffer_size / (1024 * 1024)
+        })
+        
+        return stats
+
     def benchmark_quantizer(
         self,
         name: str,
@@ -79,59 +101,67 @@ class QuantizationBenchmark:
         original_model_size_gb: float
     ) -> Dict[str, Union[float, str]]:
         current_results: Dict[str, Union[float, str]] = {}
-        if self.pynvml_available and self.device_manager.primary_device.type == 'cuda':
-            try:
-                nvml_device_index = self.device_manager.primary_device.index or 0
-                self.nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(nvml_device_index)
-            except Exception as e:
-                logger.log_warning(f"Failed to get NVML handle: {e}")
-                self.nvml_handle = None
+        
         try:
             self._clear_memory()
-            logger.log_info(f"Starting benchmark for {name}")
-            time_start_model_copying = time.perf_counter()
+            logger.log_info(f"\n{'='*20} Benchmarking {name} {'='*20}")
+            
+            # Get original model stats
+            original_stats = self._get_model_stats(self.model)
+            logger.log_info("\nOriginal Model Statistics:")
+            logger.log_info(f"Total Parameters: {original_stats['total_parameters']:,}")
+            logger.log_info(f"Model Size: {original_stats['model_size_mb']:.2f} MB")
+            
+            # Copy and quantize model
+            time_start = time.perf_counter()
             model_copy = self._copy_model()
-            current_results["time_model_copying_s"] = time.perf_counter() - time_start_model_copying
             model_copy = model_copy.to(self.device_manager.primary_device)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                current_results["peak_mem_model_copy_gb"] = torch.cuda.max_memory_allocated() / (1024**3)
-                torch.cuda.reset_peak_memory_stats()
-            time_start_quantizer_init = time.perf_counter()
+            
+            # Initialize quantizer
             quantizer = GGUFQuantizer(
                 model_name=model_copy,
                 device=self.device_manager.primary_device,
                 **quantizer_args
             )
-            current_results["time_quantizer_init_s"] = time.perf_counter() - time_start_quantizer_init
-            logger.log_info(f"Starting quantization for {name}")
-            time_start_quantization = time.perf_counter()
+            
+            # Quantize model
+            logger.log_info(f"\nQuantizing model with {quantizer_args.get('bits', 4)} bits...")
             cal_data_device = self.calibration_data.to(self.device_manager.primary_device)
             quantized_model = quantizer.quantize(calibration_data=cal_data_device)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            current_results["quantization_time_s"] = time.perf_counter() - time_start_quantization
-            if torch.cuda.is_available():
-                current_results["peak_mem_quantization_gb"] = torch.cuda.max_memory_allocated() / (1024**3)
-                torch.cuda.reset_peak_memory_stats()
-            del cal_data_device
-            self._clear_memory()
+            quantization_time = time.perf_counter() - time_start
+            
+            # Get quantized model stats
+            quantized_stats = self._get_model_stats(quantized_model)
+            compression_ratio = original_stats['model_size_mb'] / quantized_stats['model_size_mb']
+            
+            logger.log_info("\nQuantized Model Statistics:")
+            logger.log_info(f"Total Parameters: {quantized_stats['total_parameters']:,}")
+            logger.log_info(f"Model Size: {quantized_stats['model_size_mb']:.2f} MB")
+            logger.log_info(f"Compression Ratio: {compression_ratio:.2f}x")
+            logger.log_info(f"Quantization Time: {quantization_time:.2f} seconds")
+            
+            # Run inference benchmarks
+            logger.log_info("\nRunning inference benchmarks...")
             quantized_model = quantized_model.to(self.device_manager.primary_device)
             test_input = torch.randint(
                 0, quantized_model.config.vocab_size,
                 (1, self.input_shape[1]),
                 device=self.device_manager.primary_device
             )
-            logger.log_info(f"Running {self.num_warmup_steps} warmup steps")
+            
+            # Warmup
+            logger.log_info(f"Running {self.num_warmup_steps} warmup steps...")
             for _ in range(self.num_warmup_steps):
                 with torch.no_grad():
                     _ = quantized_model(test_input)
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
-            logger.log_info(f"Running {self.num_inference_steps} inference steps")
+            
+            # Benchmark inference
+            logger.log_info(f"Running {self.num_inference_steps} inference steps...")
             latencies_ms = []
             gpu_utilizations = []
-            time_start_timed_inference = time.perf_counter()
+            
             for _ in range(self.num_inference_steps):
                 step_start_time = time.perf_counter()
                 with torch.no_grad():
@@ -139,40 +169,43 @@ class QuantizationBenchmark:
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 latencies_ms.append((time.perf_counter() - step_start_time) * 1000)
+                
                 gpu_util = self._get_gpu_utilization()
                 if gpu_util is not None:
                     gpu_utilizations.append(gpu_util)
-            total_timed_inference_s = time.perf_counter() - time_start_timed_inference
+            
+            # Calculate metrics
             latencies_tensor = torch.tensor(latencies_ms)
             current_results.update({
-                "time_inference_total_s": total_timed_inference_s,
+                "total_parameters": quantized_stats['total_parameters'],
+                "model_size_mb": quantized_stats['model_size_mb'],
+                "compression_ratio": compression_ratio,
+                "quantization_time_s": quantization_time,
                 "mean_latency_ms": latencies_tensor.mean().item(),
                 "p90_latency_ms": torch.quantile(latencies_tensor, 0.90).item(),
                 "p95_latency_ms": torch.quantile(latencies_tensor, 0.95).item(),
                 "p99_latency_ms": torch.quantile(latencies_tensor, 0.99).item(),
-                "min_latency_ms": latencies_tensor.min().item(),
-                "max_latency_ms": latencies_tensor.max().item(),
-                "throughput_tokens_per_s": (self.num_inference_steps * self.input_shape[1]) / total_timed_inference_s,
-                "throughput_inf_per_s": self.num_inference_steps / total_timed_inference_s
+                "throughput_tokens_per_s": (self.num_inference_steps * self.input_shape[1]) / quantization_time
             })
-            if torch.cuda.is_available():
-                current_results.update({
-                    "peak_mem_inference_gb": torch.cuda.max_memory_allocated() / (1024**3),
-                    "final_mem_allocated_gb": torch.cuda.memory_allocated() / (1024**3)
-                })
+            
             if gpu_utilizations:
                 current_results.update({
                     "mean_gpu_utilization_percent": np.mean(gpu_utilizations),
                     "peak_gpu_utilization_percent": np.max(gpu_utilizations)
                 })
-            quantized_model_size_gb = sum(p.numel() * p.element_size() for p in quantized_model.parameters()) / (1024**3)
-            current_results.update({
-                "model_param_size_gb": quantized_model_size_gb,
-                "compression_ratio_params": original_model_size_gb / quantized_model_size_gb,
-                "memory_efficiency_percent": ((original_model_size_gb - current_results.get("peak_mem_inference_gb", 0.0)) / original_model_size_gb) * 100
-            })
+            
+            logger.log_info("\nBenchmark Results:")
+            logger.log_info(f"Mean Latency: {current_results['mean_latency_ms']:.2f} ms")
+            logger.log_info(f"P90 Latency: {current_results['p90_latency_ms']:.2f} ms")
+            logger.log_info(f"Throughput: {current_results['throughput_tokens_per_s']:.2f} tokens/s")
+            if gpu_utilizations:
+                logger.log_info(f"Mean GPU Utilization: {current_results['mean_gpu_utilization_percent']:.1f}%")
+            
+            logger.log_info(f"\n{'='*60}\n")
+            
             self.results[name] = current_results
             return current_results
+            
         except Exception as e:
             logger.log_error(f"Benchmark failed for {name}: {str(e)}")
             return {"error": str(e), **current_results}
@@ -223,29 +256,35 @@ class QuantizationBenchmark:
     def print_report(self):
         if not self.results:
             self.run_all_benchmarks()
-        df = pd.DataFrame.from_dict(self.results, orient='index')
-        print("\n===== GGUF Quantization Benchmark Report =====")
-        metrics_to_display = [
-            ("model_param_size_gb", "Model Size (GB)", "{:.3f}"),
-            ("compression_ratio_params", "Compression Ratio", "{:.2f}x"),
-            ("mean_latency_ms", "Mean Latency (ms)", "{:.2f}"),
-            ("p90_latency_ms", "P90 Latency (ms)", "{:.2f}"),
-            ("p95_latency_ms", "P95 Latency (ms)", "{:.2f}"),
-            ("p99_latency_ms", "P99 Latency (ms)", "{:.2f}"),
-            ("throughput_inf_per_s", "Throughput (inf/s)", "{:.2f}"),
-            ("peak_mem_inference_gb", "Peak Memory (GB)", "{:.3f}"),
-            ("memory_efficiency_percent", "Memory Efficiency", "{:.1f}%"),
-            ("mean_gpu_utilization_percent", "GPU Utilization", "{:.1f}%")
-        ]
-        for method in df.index:
-            print(f"\n--- {method} ---")
-            for metric, display_name, fmt in metrics_to_display:
-                if metric in df.columns:
-                    value = df.loc[method, metric]
-                    if pd.notna(value) and not isinstance(value, str):
-                        print(f"{display_name:.<30} {fmt.format(value)}")
-                    else:
-                        print(f"{display_name:.<30} {value}")
+        
+        print("\n===== GGUF Quantization Benchmark Summary =====")
+        
+        for method, results in self.results.items():
+            print(f"\n{method}:")
+            print("-" * 40)
+            
+            if "error" in results:
+                print(f"Error: {results['error']}")
+                continue
+                
+            metrics = [
+                ("Total Parameters", results.get("total_parameters", "N/A"), "{:,}"),
+                ("Model Size", results.get("model_size_mb", "N/A"), "{:.2f} MB"),
+                ("Compression Ratio", results.get("compression_ratio", "N/A"), "{:.2f}x"),
+                ("Mean Latency", results.get("mean_latency_ms", "N/A"), "{:.2f} ms"),
+                ("P90 Latency", results.get("p90_latency_ms", "N/A"), "{:.2f} ms"),
+                ("Throughput", results.get("throughput_tokens_per_s", "N/A"), "{:.2f} tokens/s"),
+                ("GPU Utilization", results.get("mean_gpu_utilization_percent", "N/A"), "{:.1f}%")
+            ]
+            
+            for metric, value, fmt in metrics:
+                if value != "N/A":
+                    try:
+                        print(f"{metric:.<30} {fmt.format(value)}")
+                    except (ValueError, TypeError):
+                        print(f"{metric:.<30} {value}")
+                else:
+                    print(f"{metric:.<30} N/A")
 
     def plot_comparison(self, save_path: Optional[str] = None):
         try:

@@ -24,19 +24,66 @@ class QuantLLM:
         calibration_data: Optional[torch.Tensor] = None,
         benchmark: bool = True,
         benchmark_input_shape: Optional[Tuple[int, ...]] = None,
-        benchmark_steps: int = 100
+        benchmark_steps: int = 100,
+        gradient_checkpointing: bool = False,
+        chunk_size: int = 1000,
+        auto_device: bool = True
     ) -> Tuple[PreTrainedModel, Any]:
         """
-        Quantize a model using GGUF format with optional benchmarking.
-        Returns (quantized_model, benchmark_results)
+        Quantize a model using GGUF format with optional benchmarking and memory optimizations.
+        
+        Args:
+            model_name_or_path: Model identifier or instance
+            bits: Number of bits for quantization
+            group_size: Size of quantization groups
+            quant_type: GGUF quantization type
+            use_packed: Whether to use packed format
+            cpu_offload: Whether to offload to CPU during quantization
+            desc_act: Whether to use activation descriptors
+            desc_ten: Whether to use tensor descriptors
+            legacy_format: Whether to use legacy format
+            batch_size: Batch size for processing
+            device: Target device for quantization
+            calibration_data: Data for calibration
+            benchmark: Whether to run benchmarks
+            benchmark_input_shape: Shape for benchmark inputs
+            benchmark_steps: Number of benchmark steps
+            gradient_checkpointing: Whether to use gradient checkpointing
+            chunk_size: Size of chunks for processing
+            auto_device: Automatically determine optimal device
+            
+        Returns:
+            Tuple of (quantized_model, benchmark_results)
         """
         try:
             logger.log_info(f"Starting GGUF quantization with {bits} bits")
             memory_tracker.log_memory("quantization_start")
+            
             if bits not in SUPPORTED_GGUF_BITS:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
             if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, []):
                 raise ValueError(f"Unsupported quant_type: {quant_type} for {bits} bits")
+                
+            # Auto-determine device if requested
+            if auto_device and device is None:
+                if torch.cuda.is_available():
+                    # Check available GPU memory
+                    gpu_mem = torch.cuda.get_device_properties(0).total_memory
+                    model_size = 0
+                    if isinstance(model_name_or_path, PreTrainedModel):
+                        model_size = sum(p.numel() * p.element_size() for p in model_name_or_path.parameters())
+                    
+                    # If model is too large for GPU, use CPU offloading
+                    if model_size > gpu_mem * 0.7:  # Leave 30% margin
+                        logger.log_info("Model too large for GPU memory. Enabling CPU offloading.")
+                        cpu_offload = True
+                        device = "cpu"
+                    else:
+                        device = "cuda"
+                else:
+                    device = "cpu"
+                logger.log_info(f"Auto-selected device: {device}")
+            
             quantizer = GGUFQuantizer(
                 model_name=model_name_or_path,
                 bits=bits,
@@ -48,11 +95,15 @@ class QuantLLM:
                 desc_ten=desc_ten,
                 legacy_format=legacy_format,
                 batch_size=batch_size,
-                device=device
+                device=device,
+                gradient_checkpointing=gradient_checkpointing,
+                chunk_size=chunk_size
             )
+            
             logger.log_info("Starting quantization process")
             quantized_model = quantizer.quantize(calibration_data)
             memory_tracker.log_memory("quantization_complete")
+            
             benchmark_results = {}
             if benchmark:
                 logger.log_info("Running benchmarks")
@@ -62,21 +113,27 @@ class QuantLLM:
                     else:
                         seq_len = 32
                     benchmark_input_shape = (1, seq_len)
+                    
                 benchmarker = QuantizationBenchmark(
                     model=quantized_model,
                     calibration_data=calibration_data,
                     input_shape=benchmark_input_shape,
                     num_inference_steps=benchmark_steps,
-                    device=device
+                    device=device,
+                    num_warmup_steps=10
                 )
+                
                 benchmark_results = benchmarker.run_all_benchmarks()
                 memory_tracker.log_memory("benchmarking_complete")
+                
                 logger.log_info("Benchmark Results:")
                 if hasattr(benchmark_results, 'to_dict'):
                     benchmark_results = benchmark_results.to_dict()
                 for metric, value in (benchmark_results.items() if isinstance(benchmark_results, dict) else []):
                     logger.log_info(f"{metric}: {value}")
+                    
             return quantized_model, benchmark_results
+            
         except Exception as e:
             logger.log_error(f"Quantization failed: {str(e)}")
             raise
