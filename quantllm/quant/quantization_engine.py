@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 from transformers import PreTrainedModel, AutoConfig, AutoModelForCausalLM, AutoTokenizer
 import numpy as np
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
+import gc
 
 def get_device_map(model: PreTrainedModel) -> Dict[str, torch.device]:
     """Get device mapping for model parameters."""
@@ -170,11 +171,10 @@ class QuantizationEngine:
     def __init__(
         self,
         config: QuantizationConfig,
-        logger: Optional[TrainingLogger] = None,
         device: Optional[Union[str, torch.device]] = None
     ):
         self.config = config
-        self.logger = logger or TrainingLogger()
+        self.logger = logger
         self.device_manager = DeviceManager(
             torch.device(device) if device else None
         )
@@ -465,7 +465,7 @@ class BaseQuantizer:
         self.device_manager = DeviceManager(
             primary_device=torch.device(device) if device else None
         )
-        self.logger = TrainingLogger()
+        self.logger = logger
         self.tokenizer = None
         self._model: Optional[PreTrainedModel] = None # Internal attribute for the property
         self.model_name: Optional[str] = None
@@ -571,13 +571,6 @@ class BaseQuantizer:
             calibration_data = move_to_device(calibration_data, self.device_manager.primary_device)
 
         return calibration_data
-
-import gc # Moved import to top of file
-
-# ... (other imports and code) ...
-
-class BaseQuantizer:
-    # ... (other methods) ...
 
     def _clear_memory(self):
         """Clear GPU memory and run garbage collection."""

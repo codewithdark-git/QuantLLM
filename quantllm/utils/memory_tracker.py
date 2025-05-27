@@ -59,8 +59,8 @@ class MemoryTracker:
             }
         except Exception as e:
             logger.log_warning(f"Failed to get GPU memory info: {e}")
-            return None
-    
+        return None
+
     def get_torch_memory(self, device: Optional[Union[str, torch.device]] = None) -> Optional[float]:
         """Get PyTorch allocated memory in GB."""
         if device is None and torch.cuda.is_available():

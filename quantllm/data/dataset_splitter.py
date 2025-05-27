@@ -1,7 +1,7 @@
 from datasets import Dataset, DatasetDict
 from typing import Optional, Tuple, Union
 import numpy as np
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
 from tqdm.auto import tqdm
 import logging
 
@@ -9,9 +9,9 @@ import logging
 logging.getLogger("datasets").setLevel(logging.WARNING)
 
 class DatasetSplitter:
-    def __init__(self, logger: Optional[TrainingLogger] = None):
+    def __init__(self):
         """Initialize dataset splitter."""
-        self.logger = logger or TrainingLogger()
+        self.logger = logger 
 
     def _get_dataset_from_dict(self, dataset: Union[Dataset, DatasetDict], split: str = "train") -> Dataset:
         """Extract dataset from DatasetDict if needed."""

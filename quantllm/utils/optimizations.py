@@ -1,8 +1,6 @@
 import torch
 from typing import Dict, Any
-from ..trainer.logger import TrainingLogger
-
-logger = TrainingLogger()
+from .logger import logger
 
 def get_optimal_training_settings() -> Dict[str, Any]:
     """
