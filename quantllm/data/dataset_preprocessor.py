@@ -1,7 +1,7 @@
 from datasets import Dataset
 from typing import Optional, Dict, Any, Callable, Tuple
 from transformers import PreTrainedTokenizer
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
 from tqdm.auto import tqdm
 import logging
 import warnings
@@ -11,9 +11,9 @@ logging.getLogger("tokenizers").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 
 class DatasetPreprocessor:
-    def __init__(self, tokenizer: PreTrainedTokenizer, logger: Optional[TrainingLogger] = None):
+    def __init__(self, tokenizer: PreTrainedTokenizer):
         self.tokenizer = tokenizer
-        self.logger = logger or TrainingLogger()
+        self.logger = logger
         
         # Set pad token if not set
         if self.tokenizer.pad_token is None:

@@ -1,7 +1,7 @@
 from datasets import load_dataset, Dataset
 from typing import Optional, Dict, Any, Union
 import os
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
 from tqdm.auto import tqdm
 import logging
 import warnings
@@ -12,14 +12,11 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 warnings.filterwarnings("ignore")
 
 class LoadDataset:
-    def __init__(self, logger: Optional[TrainingLogger] = None):
+    def __init__(self):
         """
         Initialize the dataset loader.
-        
-        Args:
-            logger (TrainingLogger, optional): Logger instance
         """
-        self.logger = logger or TrainingLogger()
+        self.logger = logger 
         
         
     def load_hf_dataset(

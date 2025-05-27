@@ -1,125 +1,171 @@
-from typing import Optional, Dict, Any, Tuple
-from transformers import PreTrainedModel
-from ..quant.awq import AWQQuantizer
-from ..quant.gptq import GPTQQuantizer
-from ..quant.gguf import GGUFQuantizer
-from ..trainer.logger import TrainingLogger
+from typing import Optional, Dict, Any, Union, Tuple
+import torch
+from transformers import PreTrainedModel, AutoTokenizer
+from ..quant.gguf import GGUFQuantizer, SUPPORTED_GGUF_BITS, SUPPORTED_GGUF_TYPES
+from ..utils.logger import logger
+from ..utils.memory_tracker import memory_tracker
+from ..utils.benchmark import QuantizationBenchmark
 
 class QuantLLM:
-    """High-level API for quantizing models using various methods."""
+    """High-level API for GGUF model quantization."""
     @staticmethod
     def quantize_from_pretrained(
-        model_name: str,
-        method: str,
-        quant_config_dict: Optional[Dict[str, Any]] = None,
-        calibration_data: Optional[Any] = None, # Typically torch.Tensor or similar
-        calibration_steps: Optional[int] = 100, # Specific to AWQ's quantize method
-        device: Optional[str] = None # Explicit device control
-    ) -> Tuple[PreTrainedModel, Any]: # Returns (quantized_model, tokenizer)
+        model_name_or_path: Union[str, PreTrainedModel],
+        bits: int = 4,
+        group_size: int = 128,
+        quant_type: Optional[str] = None,
+        use_packed: bool = True,
+        cpu_offload: bool = False,
+        desc_act: bool = False,
+        desc_ten: bool = False,
+        legacy_format: bool = False,
+        batch_size: int = 4,
+        device: Optional[str] = None,
+        calibration_data: Optional[torch.Tensor] = None,
+        benchmark: bool = True,
+        benchmark_input_shape: Optional[Tuple[int, ...]] = None,
+        benchmark_steps: int = 100
+    ) -> Tuple[PreTrainedModel, Any]:
         """
-        Loads a model from Hugging Face, quantizes it using the specified method,
-        and returns the quantized model and its tokenizer.
-
-        Args:
-            model_name_or_path (str): Hugging Face model ID or local path.
-            method (str): Quantization method to use ('awq', 'gptq', 'gguf').
-            quant_config_dict (Optional[Dict[str, Any]]): Dictionary with quantization parameters.
-                Common keys: 'bits', 'group_size', 'batch_size' (for quantizer init).
-                AWQ specific: 'zero_point', 'awq_version' (maps to 'version' in AWQQuantizer).
-                GPTQ specific: 'actorder', 'percdamp', 'sym'.
-                GGUF specific: 'use_packed', 'cpu_offload', 'desc_act', 'desc_ten', 'legacy_format'.
-            calibration_data (Optional[Any]): Calibration data required for quantization.
-            calibration_steps (Optional[int]): Number of calibration steps, primarily for AWQ's
-                                              quantize() method. Defaults to 100.
-            device (Optional[str]): Device to run quantization on ('cpu', 'cuda', 'cuda:x'). 
-                                    If None, default device selection logic in BaseQuantizer is used.
-        
-        Returns:
-            Tuple[PreTrainedModel, Any]: The quantized model and its associated tokenizer.
-        
-        Raises:
-            ValueError: If an unsupported quantization method is specified or essential parameters are missing.
-            RuntimeError: If quantization fails for some reason.
+        Quantize a model using GGUF format with optional benchmarking.
+        Returns (quantized_model, benchmark_results)
         """
-        logger = TrainingLogger() 
-        if quant_config_dict is None:
-            quant_config_dict = {}
-
-        method_lower = method.lower()
-        logger.log_info(f"Attempting to quantize model '{model_name}' using method: {method_lower}")
-
-        bits = quant_config_dict.get('bits', 4)
-        group_size = quant_config_dict.get('group_size', 128)
-        quantizer_batch_size = quant_config_dict.get('batch_size', 4) 
-        
-        quantizer = None
-
-        if method_lower == 'awq':
-            awq_zero_point = quant_config_dict.get('zero_point', True)
-            awq_version = quant_config_dict.get('awq_version', 'v2')
-
-            quantizer = AWQQuantizer(
-                model_name=model_name,
-                bits=bits,
-                group_size=group_size,
-                zero_point=awq_zero_point,
-                version=awq_version,
-                batch_size=quantizer_batch_size,
-                device=device
-            )
-            logger.log_info(f"Quantizing with AWQ... Bits: {bits}, Group Size: {group_size}, Zero Point: {awq_zero_point}, Version: {awq_version}")
-            quantizer.quantize( # Call quantize, model is updated in place
-                calibration_data=calibration_data,
-                calibration_steps=calibration_steps
-            )
-
-        elif method_lower == 'gptq':
-            gptq_actorder = quant_config_dict.get('actorder', True)
-            gptq_percdamp = quant_config_dict.get('percdamp', 0.01)
-            gptq_sym = quant_config_dict.get('sym', True)
-            
-            quantizer = GPTQQuantizer(
-                model_name=model_name,
-                bits=bits,
-                group_size=group_size,
-                actorder=gptq_actorder,
-                percdamp=gptq_percdamp,
-                sym=gptq_sym,
-                batch_size=quantizer_batch_size,
-                device=device
-            )
-            logger.log_info(f"Quantizing with GPTQ... Bits: {bits}, Group Size: {group_size}, ActOrder: {gptq_actorder}, Sym: {gptq_sym}")
-            quantizer.quantize(calibration_data=calibration_data) # Model updated in place
-
-        elif method_lower == 'gguf':
-            gguf_use_packed = quant_config_dict.get('use_packed', True)
-            gguf_cpu_offload = quant_config_dict.get('cpu_offload', False)
-            gguf_desc_act = quant_config_dict.get('desc_act', False)
-            gguf_desc_ten = quant_config_dict.get('desc_ten', False)
-            gguf_legacy_format = quant_config_dict.get('legacy_format', False)
-
+        try:
+            logger.log_info(f"Starting GGUF quantization with {bits} bits")
+            memory_tracker.log_memory("quantization_start")
+            if bits not in SUPPORTED_GGUF_BITS:
+                raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
+            if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, []):
+                raise ValueError(f"Unsupported quant_type: {quant_type} for {bits} bits")
             quantizer = GGUFQuantizer(
-                model_name=model_name,
+                model_name=model_name_or_path,
                 bits=bits,
                 group_size=group_size,
-                use_packed=gguf_use_packed,
-                cpu_offload=gguf_cpu_offload,
-                desc_act=gguf_desc_act,
-                desc_ten=gguf_desc_ten,
-                legacy_format=gguf_legacy_format,
-                batch_size=quantizer_batch_size,
+                quant_type=quant_type,
+                use_packed=use_packed,
+                cpu_offload=cpu_offload,
+                desc_act=desc_act,
+                desc_ten=desc_ten,
+                legacy_format=legacy_format,
+                batch_size=batch_size,
                 device=device
             )
-            logger.log_info(f"Quantizing with GGUF... Bits: {bits}, Group Size: {group_size}, Packed: {gguf_use_packed}, CPU Offload: {gguf_cpu_offload}")
-            quantizer.quantize(calibration_data=calibration_data) # Model updated in place
+            logger.log_info("Starting quantization process")
+            quantized_model = quantizer.quantize(calibration_data)
+            memory_tracker.log_memory("quantization_complete")
+            benchmark_results = {}
+            if benchmark:
+                logger.log_info("Running benchmarks")
+                if not benchmark_input_shape:
+                    if hasattr(quantized_model.config, 'max_position_embeddings'):
+                        seq_len = min(32, quantized_model.config.max_position_embeddings)
+                    else:
+                        seq_len = 32
+                    benchmark_input_shape = (1, seq_len)
+                benchmarker = QuantizationBenchmark(
+                    model=quantized_model,
+                    calibration_data=calibration_data,
+                    input_shape=benchmark_input_shape,
+                    num_inference_steps=benchmark_steps,
+                    device=device
+                )
+                benchmark_results = benchmarker.run_all_benchmarks()
+                memory_tracker.log_memory("benchmarking_complete")
+                logger.log_info("Benchmark Results:")
+                if hasattr(benchmark_results, 'to_dict'):
+                    benchmark_results = benchmark_results.to_dict()
+                for metric, value in (benchmark_results.items() if isinstance(benchmark_results, dict) else []):
+                    logger.log_info(f"{metric}: {value}")
+            return quantized_model, benchmark_results
+        except Exception as e:
+            logger.log_error(f"Quantization failed: {str(e)}")
+            raise
+        finally:
+            memory_tracker.clear_memory()
 
-        else:
-            logger.log_error(f"Unsupported quantization method: {method}")
-            raise ValueError(f"Unsupported quantization method: {method}. Supported methods are 'awq', 'gptq', 'gguf'.")
 
-        if quantizer is None or quantizer.model is None:
-             logger.log_error(f"Failed to initialize quantizer or obtain quantized model for method: {method}")
-             raise RuntimeError(f"Quantization failed for method: {method}. Quantizer or model is None.")
         
-        logger.log_info(f"Successfully quantized model with method: {method_lower}")
-        return quantizer.model, quantizer.tokenizer
+    @staticmethod
+    def save_quantized_model(
+        model: PreTrainedModel,
+        output_path: str,
+        save_tokenizer: bool = True
+    ):
+        """
+        Save a quantized model and optionally its tokenizer.
+        
+        Args:
+            model: Quantized model to save
+            output_path: Path to save the model
+            save_tokenizer: Whether to save the tokenizer
+        """
+        try:
+            logger.log_info(f"Saving quantized model to {output_path}")
+            memory_tracker.log_memory("save_start")
+            
+            # Save model
+            model.save_pretrained(output_path)
+            
+            # Save tokenizer if requested
+            if save_tokenizer and hasattr(model, 'config'):
+                if hasattr(model.config, '_name_or_path'):
+                    try:
+                        tokenizer = AutoTokenizer.from_pretrained(
+                            model.config._name_or_path,
+                            trust_remote_code=True
+                        )
+                        tokenizer.save_pretrained(output_path)
+                        logger.log_info("Tokenizer saved successfully")
+                    except Exception as e:
+                        logger.log_warning(f"Failed to save tokenizer: {e}")
+            
+            memory_tracker.log_memory("save_complete")
+            logger.log_info("Model saved successfully")
+            
+        except Exception as e:
+            logger.log_error(f"Failed to save model: {str(e)}")
+            raise
+        finally:
+            memory_tracker.clear_memory()
+    
+    @staticmethod
+    def convert_to_gguf(
+        model: PreTrainedModel,
+        output_path: str,
+        quant_config: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Convert a quantized model to GGUF format.
+        
+        Args:
+            model: Model to convert
+            output_path: Path to save GGUF file
+            quant_config: Optional quantization configuration
+        """
+        try:
+            logger.log_info(f"Converting model to GGUF format: {output_path}")
+            memory_tracker.log_memory("conversion_start")
+            
+            # Get quantization config from model if not provided
+            if not quant_config and hasattr(model.config, 'quantization_config'):
+                quant_config = model.config.quantization_config
+            
+            # Create quantizer with existing or default config
+            quantizer = GGUFQuantizer(
+                model_name=model,
+                bits=quant_config.get('bits', 4) if quant_config else 4,
+                group_size=quant_config.get('group_size', 128) if quant_config else 128,
+                quant_type=quant_config.get('quant_type', None) if quant_config else None,
+                use_packed=quant_config.get('use_packed', True) if quant_config else True
+            )
+            
+            # Convert to GGUF
+            quantizer.convert_to_gguf(output_path)
+            memory_tracker.log_memory("conversion_complete")
+            logger.log_info("GGUF conversion completed successfully")
+            
+        except Exception as e:
+            logger.log_error(f"GGUF conversion failed: {str(e)}")
+            raise
+        finally:
+            memory_tracker.clear_memory() 

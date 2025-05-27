@@ -58,7 +58,7 @@ class GGUFQuantizer(BaseQuantizer):
         
         super().__init__(model_name=model_name, bits=bits, device=device)
 
-        self.group_size = group_size
+        self.group_size = group_size 
         self.desc_act = desc_act
         self.desc_ten = desc_ten
         self.use_packed = use_packed
@@ -66,7 +66,7 @@ class GGUFQuantizer(BaseQuantizer):
         self.batch_size = batch_size
         self.cpu_offload = cpu_offload
         self.quant_type = quant_type or self._get_default_quant_type(bits)
-        
+
         if self.device_manager.primary_device is None:
             self.device_manager.determine_primary_device()
             logger.log_info(f"Primary device for GGUF operations: {self.device_manager.primary_device}")
@@ -105,9 +105,9 @@ class GGUFQuantizer(BaseQuantizer):
             memory_tracker.log_memory("gguf_quantization_start")
             
             # Prepare model for quantization
-            if not hasattr(self.model, '_prepared_for_quantization'):
-                self.model = self._prepare_model(self.model)
-
+            if not hasattr(self.model, '_prepared_for_quantization'): 
+                self.model = self._prepare_model(self.model) 
+            
             # Move model to appropriate device
             device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
             if self.model.device != device:
@@ -115,7 +115,7 @@ class GGUFQuantizer(BaseQuantizer):
                 self.model.to(device)
                 self._clear_memory()
                 memory_tracker.log_memory("model_moved_to_device")
-
+            
             self.model.eval()
             
             # Process layers
@@ -142,7 +142,7 @@ class GGUFQuantizer(BaseQuantizer):
                         setattr(parent, child_name, quantized_layer)
                     else:
                         setattr(self.model, name, quantized_layer)
-                        
+                    
                     self._clear_memory()
                     memory_tracker.log_memory(f"after_layer_{idx}")
                     
@@ -158,8 +158,8 @@ class GGUFQuantizer(BaseQuantizer):
                 "group_size": self.group_size,
                 "quant_type": self.quant_type,
                 "format_config": {
-                    "desc_act": self.desc_act,
-                    "desc_ten": self.desc_ten,
+                "desc_act": self.desc_act,
+                "desc_ten": self.desc_ten,
                     "use_packed": self.use_packed,
                     "legacy_format": self.legacy_format
                 }
@@ -170,12 +170,12 @@ class GGUFQuantizer(BaseQuantizer):
             logger.log_info("GGUF quantization completed successfully")
             return self.model
 
-        except Exception as e:
+        except Exception as e: 
             logger.log_error(f"GGUF quantization failed: {str(e)}")
             raise RuntimeError(f"GGUF quantization failed: {str(e)}") from e
         finally:
             self._clear_memory()
-
+        
     def _quantize_layer(
         self,
         layer: nn.Linear,
@@ -311,7 +311,7 @@ class GGUFQuantizer(BaseQuantizer):
             raise RuntimeError(f"Failed to convert model to GGUF: {str(e)}") from e
         finally:
             self._clear_memory()
-
+    
     def _clear_memory(self):
         """Enhanced memory cleanup for GGUF operations."""
         torch.cuda.empty_cache()
