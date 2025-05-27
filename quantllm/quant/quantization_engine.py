@@ -97,7 +97,7 @@ class QuantizationConfig:
     def validate(self):
         """Validate configuration parameters."""
         valid_schemes = {"symmetric", "asymmetric", "power_of_2"}
-        valid_granularity = {"per-tensor", "per-channel"}
+        valid_granularity = {"per-tensor", "per-channel", "per-group"}
         valid_calibration = {"minmax", "histogram", "entropy"}
         valid_dtypes = {"int8", "uint8", "int4", "uint4", "int2", "uint2"}
         valid_formats = {None, "gguf", "gptq", "awq"}

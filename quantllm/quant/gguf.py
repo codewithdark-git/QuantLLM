@@ -9,6 +9,7 @@ from transformers import PreTrainedModel
 from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConfig, QuantizedLinear
 from ..utils.logger import logger
 from ..utils.memory_tracker import memory_tracker
+import time
 
 try:
     import ctransformers
@@ -44,7 +45,9 @@ class GGUFQuantizer(BaseQuantizer):
         batch_size: int = 4,
         device: Optional[Union[str, torch.device]] = None,
         cpu_offload: bool = False,
-        quant_type: Optional[str] = None
+        quant_type: Optional[str] = None,
+        gradient_checkpointing: bool = False,
+        chunk_size: int = 1000
     ):
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization. Install with: pip install ctransformers")
@@ -66,10 +69,17 @@ class GGUFQuantizer(BaseQuantizer):
         self.batch_size = batch_size
         self.cpu_offload = cpu_offload
         self.quant_type = quant_type or self._get_default_quant_type(bits)
+        self.gradient_checkpointing = gradient_checkpointing
+        self.chunk_size = chunk_size
 
         if self.device_manager.primary_device is None:
             self.device_manager.determine_primary_device()
             logger.log_info(f"Primary device for GGUF operations: {self.device_manager.primary_device}")
+            
+        # Enable gradient checkpointing for large models if requested
+        if self.gradient_checkpointing and hasattr(self.model, "gradient_checkpointing_enable"):
+            self.model.gradient_checkpointing_enable()
+            logger.log_info("Gradient checkpointing enabled for memory efficiency")
 
     def _get_default_quant_type(self, bits: int) -> str:
         """Select optimal GGUF quantization type based on bit width."""
@@ -79,95 +89,125 @@ class GGUFQuantizer(BaseQuantizer):
             return types[len(types)//2] if len(types) > 1 else types[0]
         raise ValueError(f"No supported GGUF types for {bits} bits")
 
+    def _log_model_stats(self, model: PreTrainedModel, stage: str = ""):
+        """Log meaningful model statistics."""
+        total_params = sum(p.numel() for p in model.parameters())
+        param_size = sum(p.numel() * p.element_size() for p in model.parameters())
+        buffer_size = sum(b.numel() * b.element_size() for b in model.buffers())
+        total_size = (param_size + buffer_size) / (1024 * 1024)  # MB
+        
+        prefix = f"{stage} " if stage else ""
+        logger.log_info(f"\n{prefix}Model Statistics:")
+        logger.log_info(f"Total Parameters: {total_params:,}")
+        logger.log_info(f"Model Size: {total_size:.2f} MB")
+        if torch.cuda.is_available():
+            logger.log_info(f"GPU Memory Allocated: {torch.cuda.memory_allocated() / (1024 * 1024):.2f} MB")
+            logger.log_info(f"GPU Memory Reserved: {torch.cuda.memory_reserved() / (1024 * 1024):.2f} MB")
+
     def quantize(
         self,
         calibration_data: Optional[torch.Tensor] = None
     ) -> PreTrainedModel:
-        """
-        Quantize model using GGUF format with optimized memory handling.
-        Focuses exclusively on GGUF quantization, removing AWQ/GPTQ specific logic.
-
-        Args:
-            calibration_data: Optional tensor for calibration (not typically needed for GGUF).
-
-        Returns:
-            PreTrainedModel: Quantized model with GGUF-specific parameters.
-
-        Raises:
-            ImportError: If ctransformers is not available.
-            RuntimeError: If quantization fails.
-        """
+        """Quantize model using GGUF format with optimized memory handling."""
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF quantization")
 
         try:
-            logger.log_info("Starting GGUF quantization process...")
-            memory_tracker.log_memory("gguf_quantization_start")
+            logger.log_info("\n" + "="*60)
+            logger.log_info("Starting GGUF Quantization Process")
+            logger.log_info("="*60)
+            
+            # Log initial model stats
+            self._log_model_stats(self.model, "Original")
             
             # Prepare model for quantization
             if not hasattr(self.model, '_prepared_for_quantization'): 
-                self.model = self._prepare_model(self.model) 
+                self.model = self._prepare_model_instance(self.model, make_copy=True)
+                self.model._prepared_for_quantization = True
             
-            # Move model to appropriate device
+            # Determine device strategy
             device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
-            if self.model.device != device:
-                logger.log_info(f"Moving model to {device} for quantization")
+            logger.log_info(f"\nUsing device {device} for quantization")
+            
+            # Move model to appropriate device if not already there
+            if next(self.model.parameters()).device != device:
+                logger.log_info(f"Moving model to {device}")
                 self.model.to(device)
                 self._clear_memory()
-                memory_tracker.log_memory("model_moved_to_device")
             
             self.model.eval()
             
-            # Process layers
-            logger.log_info("Starting layer-by-layer GGUF quantization...")
+            # Process layers in chunks
+            logger.log_info("\nStarting layer-by-layer quantization...")
             modules_to_quantize = [
                 (name, module) for name, module in self.model.named_modules() 
                 if isinstance(module, nn.Linear)
             ]
             
             total_layers = len(modules_to_quantize)
-            for idx, (name, module) in enumerate(modules_to_quantize, 1):
-                try:
-                    logger.log_info(f"Quantizing layer {idx}/{total_layers}: {name}")
-                    memory_tracker.log_memory(f"before_layer_{idx}")
-                    
-                    quantized_layer = self._quantize_layer(module)
-                    
-                    # Update model with quantized layer
-                    parent_name = '.'.join(name.split('.')[:-1])
-                    child_name = name.split('.')[-1]
-                    
-                    if parent_name:
-                        parent = self.model.get_submodule(parent_name)
-                        setattr(parent, child_name, quantized_layer)
-                    else:
-                        setattr(self.model, name, quantized_layer)
-                    
-                    self._clear_memory()
-                    memory_tracker.log_memory(f"after_layer_{idx}")
-                    
-                except Exception as e:
-                    logger.log_error(f"Failed to quantize layer {name}: {str(e)}")
-                    raise RuntimeError(f"GGUF quantization failed at layer {name}: {str(e)}") from e
+            chunks = [modules_to_quantize[i:i + self.chunk_size] 
+                     for i in range(0, total_layers, self.chunk_size)]
+            
+            start_time = time.perf_counter()
+            for chunk_idx, chunk in enumerate(chunks):
+                logger.log_info(f"\nProcessing chunk {chunk_idx + 1}/{len(chunks)}")
+                
+                for idx, (name, module) in enumerate(chunk, 1):
+                    try:
+                        current_layer = idx + chunk_idx * self.chunk_size
+                        logger.log_info(f"\nQuantizing layer {current_layer}/{total_layers}: {name}")
+                        logger.log_info(f"Layer shape: {list(module.weight.shape)}")
+                        
+                        # Move layer to target device if needed
+                        if module.weight.device != device:
+                            module = module.to(device)
+                        
+                        quantized_layer = self._quantize_layer(module)
+                        
+                        # Update model with quantized layer
+                        parent_name = '.'.join(name.split('.')[:-1])
+                        child_name = name.split('.')[-1]
+                        
+                        if parent_name:
+                            parent = self.model.get_submodule(parent_name)
+                            setattr(parent, child_name, quantized_layer)
+                        else:
+                            setattr(self.model, name, quantized_layer)
+                        
+                        # Log progress
+                        elapsed_time = time.perf_counter() - start_time
+                        progress = current_layer / total_layers
+                        eta = elapsed_time / progress - elapsed_time if progress > 0 else 0
+                        logger.log_info(f"Progress: {progress*100:.1f}% | ETA: {eta:.1f}s")
+                        
+                        self._clear_memory()
+                        
+                    except Exception as e:
+                        logger.log_error(f"Failed to quantize layer {name}: {str(e)}")
+                        raise RuntimeError(f"GGUF quantization failed at layer {name}: {str(e)}") from e
+                
+                # Clear memory after each chunk
+                if not self.cpu_offload:
+                    torch.cuda.empty_cache()
+                gc.collect()
 
-            # Update model config with GGUF parameters
-            logger.log_info("Updating model configuration with GGUF parameters...")
-            gguf_config = {
-                "format": "gguf",
-                "bits": self.bits,
-                "group_size": self.group_size,
-                "quant_type": self.quant_type,
-                "format_config": {
-                "desc_act": self.desc_act,
-                "desc_ten": self.desc_ten,
-                    "use_packed": self.use_packed,
-                    "legacy_format": self.legacy_format
-                }
-            }
-            self._update_model_config_with_quant_params("gguf", gguf_config)
+            # Log final statistics
+            total_time = time.perf_counter() - start_time
+            logger.log_info("\n" + "="*60)
+            logger.log_info("Quantization Complete")
+            logger.log_info(f"Total time: {total_time:.2f} seconds")
+            logger.log_info(f"Average time per layer: {total_time/total_layers:.2f} seconds")
+            
+            # Log quantized model stats
+            self._log_model_stats(self.model, "Quantized")
+            
+            # Calculate compression ratio
+            original_size = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024 * 1024)
+            quantized_size = sum(p.numel() * (self.bits / 8) for p in self.model.parameters()) / (1024 * 1024)
+            compression_ratio = original_size / quantized_size
+            logger.log_info(f"Compression Ratio: {compression_ratio:.2f}x")
+            logger.log_info("="*60 + "\n")
 
-            memory_tracker.log_memory("gguf_quantization_complete")
-            logger.log_info("GGUF quantization completed successfully")
             return self.model
 
         except Exception as e: 
@@ -175,15 +215,14 @@ class GGUFQuantizer(BaseQuantizer):
             raise RuntimeError(f"GGUF quantization failed: {str(e)}") from e
         finally:
             self._clear_memory()
-        
+
     def _quantize_layer(
         self,
         layer: nn.Linear,
         stats: Optional[Dict[str, torch.Tensor]] = None
     ) -> QuantizedLinear:
         """
-        Quantize a single linear layer to GGUF format.
-        Implements GGUF-specific quantization with improved memory handling.
+        Quantize a single linear layer to GGUF format with device-aware processing.
         """
         if not isinstance(layer, nn.Linear):
             raise TypeError(f"Expected nn.Linear layer, got {type(layer)}")
@@ -192,8 +231,10 @@ class GGUFQuantizer(BaseQuantizer):
         memory_tracker.log_memory("layer_quantization_start")
         
         try:
-            # Move layer to processing device
-            layer = move_to_device(layer, device)
+            # Get layer device and ensure it's on the correct device
+            layer_device = next(layer.parameters()).device
+            if layer_device != device:
+                layer = layer.to(device)
             memory_tracker.log_memory("layer_moved_to_device")
             
             # Get weight tensor
@@ -241,7 +282,7 @@ class GGUFQuantizer(BaseQuantizer):
                         "is_packed": self.use_packed
                     }
                 )
-            )
+            ).to(device)
 
             # Store quantized weights and parameters
             qlayer.weight_quantized = qweight
@@ -258,9 +299,10 @@ class GGUFQuantizer(BaseQuantizer):
             raise RuntimeError(f"GGUF layer quantization failed: {str(e)}") from e
         finally:
             # Clean up original layer if it was moved
-            if layer.device != device:
+            if layer_device != device:
                 del layer
-            torch.cuda.empty_cache()
+            if not self.cpu_offload:
+                torch.cuda.empty_cache()
             gc.collect()
 
     def convert_to_gguf(self, output_path: str):
@@ -314,9 +356,9 @@ class GGUFQuantizer(BaseQuantizer):
     
     def _clear_memory(self):
         """Enhanced memory cleanup for GGUF operations."""
-        torch.cuda.empty_cache()
         gc.collect()
-        if torch.cuda.is_available():
+        if not self.cpu_offload and torch.cuda.is_available():
+            torch.cuda.empty_cache()
             torch.cuda.synchronize()
         memory_tracker.clear_memory()
 

@@ -18,29 +18,37 @@ class GlobalLogger:
     """Global logger with enhanced functionality for QuantLLM."""
     
     _instance = None
-    _welcome_shown = False  # Class-level flag to track if welcome message has been shown
+    _initialized = False
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(GlobalLogger, cls).__new__(cls)
-            cls._instance._initialize_logger()
-            if not cls._welcome_shown:
-                cls._instance.log_welcome_message()
-                cls._welcome_shown = True
         return cls._instance
+    
+    def __init__(self):
+        if not self._initialized:
+            self._initialize_logger()
+            self._initialized = True
     
     def _initialize_logger(self):
         """Initialize the logger with both file and console handlers."""
         self.logger = logging.getLogger('QuantLLM')
+        
+        # Clear any existing handlers
+        if self.logger.handlers:
+            self.logger.handlers.clear()
+            
         self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False  # Prevent propagation to avoid duplicate logs
         
         # Create formatters
         console_formatter = logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s',
             datefmt='%H:%M:%S'
         )
+        
         file_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+            '[%(asctime)s] %(levelname)s: %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         
@@ -52,11 +60,11 @@ class GlobalLogger:
         # File handler
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_handler = logging.FileHandler(
-            log_dir / f"quantllm_{timestamp}.log",
-            encoding='utf-8'
-        )
+        
+        current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"quantllm_{current_time}.log"
+        
+        file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
         
@@ -104,8 +112,7 @@ class GlobalLogger:
                          for k, v in metrics.items()])
 
     def log_info(self, message: str):
-        """Log info message."""
-        print(self._format_message(LogLevel.INFO, message))
+        """Log info level message."""
         self.logger.info(message)
 
     def log_success(self, message: str):
@@ -114,17 +121,15 @@ class GlobalLogger:
         self.logger.info(message)
 
     def log_warning(self, message: str):
-        """Log warning message."""
-        print(self._format_message(LogLevel.WARNING, message))
+        """Log warning level message."""
         self.logger.warning(message)
 
     def log_error(self, message: str):
-        """Log error message."""
-        print(self._format_message(LogLevel.ERROR, message))
+        """Log error level message."""
         self.logger.error(message)
 
     def log_debug(self, message: str):
-        """Log debug message."""
+        """Log debug level message."""
         self.logger.debug(message)
 
     def log_critical(self, message: str):
@@ -201,5 +206,5 @@ class GlobalLogger:
         """Clear memory logs."""
         self.memory_logs = []
 
-# Global logger instance
+# Create global logger instance
 logger = GlobalLogger()
