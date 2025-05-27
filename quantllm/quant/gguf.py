@@ -10,9 +10,11 @@ from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConf
 from ..utils.logger import logger
 from ..utils.memory_tracker import memory_tracker
 import time
+from tqdm.auto import tqdm
 
 try:
     import ctransformers
+    from ctransformers import AutoModelForCausalLM as CTAutoModel
     CT_AVAILABLE = True
 except ImportError:
     CT_AVAILABLE = False
@@ -149,14 +151,18 @@ class GGUFQuantizer(BaseQuantizer):
                      for i in range(0, total_layers, self.chunk_size)]
             
             start_time = time.perf_counter()
-            for chunk_idx, chunk in enumerate(chunks):
-                logger.log_info(f"\nProcessing chunk {chunk_idx + 1}/{len(chunks)}")
+            
+            # Create progress bar for chunks
+            chunk_pbar = tqdm(chunks, desc="Processing chunks", position=0)
+            layer_pbar = tqdm(total=total_layers, desc="Quantizing layers", position=1, leave=True)
+            
+            for chunk_idx, chunk in enumerate(chunk_pbar):
+                chunk_pbar.set_description(f"Processing chunk {chunk_idx + 1}/{len(chunks)}")
                 
                 for idx, (name, module) in enumerate(chunk, 1):
                     try:
                         current_layer = idx + chunk_idx * self.chunk_size
-                        logger.log_info(f"\nQuantizing layer {current_layer}/{total_layers}: {name}")
-                        logger.log_info(f"Layer shape: {list(module.weight.shape)}")
+                        layer_pbar.set_description(f"Layer {current_layer}/{total_layers}: {name}")
                         
                         # Move layer to target device if needed
                         if module.weight.device != device:
@@ -174,11 +180,11 @@ class GGUFQuantizer(BaseQuantizer):
                         else:
                             setattr(self.model, name, quantized_layer)
                         
-                        # Log progress
+                        # Update progress
+                        layer_pbar.update(1)
                         elapsed_time = time.perf_counter() - start_time
-                        progress = current_layer / total_layers
-                        eta = elapsed_time / progress - elapsed_time if progress > 0 else 0
-                        logger.log_info(f"Progress: {progress*100:.1f}% | ETA: {eta:.1f}s")
+                        eta = elapsed_time / (current_layer / total_layers) - elapsed_time if current_layer > 0 else 0
+                        layer_pbar.set_postfix({"ETA": f"{eta:.1f}s"})
                         
                         self._clear_memory()
                         
@@ -190,6 +196,10 @@ class GGUFQuantizer(BaseQuantizer):
                 if not self.cpu_offload:
                     torch.cuda.empty_cache()
                 gc.collect()
+
+            # Close progress bars
+            layer_pbar.close()
+            chunk_pbar.close()
 
             # Log final statistics
             total_time = time.perf_counter() - start_time
@@ -322,28 +332,31 @@ class GGUFQuantizer(BaseQuantizer):
                 self.model.to('cpu')
                 memory_tracker.log_memory("model_moved_to_cpu")
             
-            # Prepare GGUF conversion config
-            config = {
-                "quantization": {
-                    "bits": self.bits,
-                    "type": self.quant_type,
-                    "group_size": self.group_size if self.group_size > 0 else None,
-                },
-                "metadata": {
-                    "description": "Model quantized using QuantLLM GGUF quantizer",
-                    "format_version": "legacy" if self.legacy_format else "latest",
-                    "has_act_desc": self.desc_act,
-                    "has_tensor_desc": self.desc_ten
-                }
-            }
+            # Save model in HF format first
+            temp_dir = f"{output_path}_temp_hf"
+            self.model.save_pretrained(temp_dir)
             
             # Convert using ctransformers
-            ctransformers.convert(
-                self.model,
-                output_path,
-                config=config,
-                legacy=self.legacy_format
-            )
+            try:
+                # Use ctransformers to load and save in GGUF format
+                ct_model = CTAutoModel.from_pretrained(
+                    temp_dir,
+                    model_type="llama",  # Default to llama, can be parameterized later
+                    model_file=None,
+                    config={
+                        "max_new_tokens": 2048,
+                        "context_length": 2048,
+                        "gpu_layers": 0  # CPU conversion
+                    }
+                )
+                ct_model.save_pretrained(output_path)
+                
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+            except Exception as e:
+                logger.log_error(f"CTTransformers conversion failed: {str(e)}")
+                raise
             
             memory_tracker.log_memory("gguf_conversion_complete")
             logger.log_info("GGUF conversion completed successfully")
@@ -362,3 +375,4 @@ class GGUFQuantizer(BaseQuantizer):
             torch.cuda.synchronize()
         memory_tracker.clear_memory()
 
+    
