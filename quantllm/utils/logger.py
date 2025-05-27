@@ -1,4 +1,9 @@
-from typing import Any, Dict
+"""Global logger for QuantLLM project."""
+
+import logging
+import sys
+from typing import Optional, Dict, Any
+from pathlib import Path
 import datetime
 from enum import Enum
 
@@ -9,24 +14,63 @@ class LogLevel(Enum):
     ERROR = "\033[91m"  # Red
     RESET = "\033[0m"  # Reset color
 
-class TrainingLogger:
+class GlobalLogger:
+    """Global logger with enhanced functionality for QuantLLM."""
+    
+    _instance = None
     _welcome_shown = False  # Class-level flag to track if welcome message has been shown
     
-    def __init__(self):
-        """Initialize the training logger and display welcome message once."""
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(GlobalLogger, cls).__new__(cls)
+            cls._instance._initialize_logger()
+            if not cls._welcome_shown:
+                cls._instance.log_welcome_message()
+                cls._welcome_shown = True
+        return cls._instance
+    
+    def _initialize_logger(self):
+        """Initialize the logger with both file and console handlers."""
+        self.logger = logging.getLogger('QuantLLM')
+        self.logger.setLevel(logging.INFO)
+        
+        # Create formatters
+        console_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        # Console handler
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(console_formatter)
+        self.logger.addHandler(console_handler)
+        
+        # File handler
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_handler = logging.FileHandler(
+            log_dir / f"quantllm_{timestamp}.log",
+            encoding='utf-8'
+        )
+        file_handler.setFormatter(file_formatter)
+        self.logger.addHandler(file_handler)
+        
+        self.memory_logs = []
         self.start_time = datetime.datetime.now()
-        if not TrainingLogger._welcome_shown:
-            self.log_welcome_message()
-            TrainingLogger._welcome_shown = True
 
     def log_welcome_message(self):
-        """Display QuantLLM welcome message with ASCII art. Only shown once."""
+        """Display QuantLLM welcome message with ASCII art."""
         from importlib.metadata import version
         try:
             __version__ = version("quantllm")
         except:
             __version__ = "1.1.0"
-            logo = (
+        logo = (
             f"{LogLevel.INFO.value}"
             "╔══════════════════════════════════════════════════════════════════════════════════╗\n"
             "║                                                                                  ║\n"
@@ -37,7 +81,8 @@ class TrainingLogger:
             "║   ╚██████╔╝╚██████╔╝ ██║  ██║ ██║ ╚████║    ██║    ███████╗███████╗██║ ╚═╝ ██║║\n"
             "║    ╚══▀▀═╝  ╚═════╝  ╚═╝  ╚═╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝╚══════╝╚═╝     ╚═╝║\n"
             "║                                                                                  ║\n"
-            "╚══════════════════════════════════════════════════════════════════════════════════╝\n"            f"{LogLevel.RESET.value}\n"
+            "╚══════════════════════════════════════════════════════════════════════════════════╝\n"
+            f"{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}╭────────────────── Welcome to QuantLLM v{__version__} ───────────────────╮{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}│                                                                         │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}│  🎯 State-of-the-Art Model Quantization & Efficient Training           │{LogLevel.RESET.value}\n"
@@ -45,8 +90,8 @@ class TrainingLogger:
             f"{LogLevel.SUCCESS.value}│  💻 Supports CUDA, CPU, and Apple Silicon                              │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}│                                                                         │{LogLevel.RESET.value}\n"
             f"{LogLevel.SUCCESS.value}╰─────────────────────────────────────────────────────────────────────────╯{LogLevel.RESET.value}\n\n"
-            )
-            print(logo)
+        )
+        print(logo)
 
     def _format_message(self, level: LogLevel, message: str) -> str:
         """Format log message with timestamp and color."""
@@ -61,24 +106,51 @@ class TrainingLogger:
     def log_info(self, message: str):
         """Log info message."""
         print(self._format_message(LogLevel.INFO, message))
+        self.logger.info(message)
 
     def log_success(self, message: str):
         """Log success message."""
         print(self._format_message(LogLevel.SUCCESS, message))
+        self.logger.info(message)
 
     def log_warning(self, message: str):
         """Log warning message."""
         print(self._format_message(LogLevel.WARNING, message))
+        self.logger.warning(message)
 
     def log_error(self, message: str):
         """Log error message."""
         print(self._format_message(LogLevel.ERROR, message))
+        self.logger.error(message)
 
-    def log_metrics(self, metrics: dict, step: int = None):
+    def log_debug(self, message: str):
+        """Log debug message."""
+        self.logger.debug(message)
+
+    def log_critical(self, message: str):
+        """Log critical message."""
+        self.logger.critical(message)
+
+    def log_memory(self, operation: str, memory_used: Optional[float] = None, device: Optional[str] = None):
+        """Log memory usage information."""
+        device_str = f" on {device}" if device else ""
+        message = f"Memory usage{device_str} after {operation}"
+        if memory_used is not None:
+            message += f": {memory_used:.2f} GB"
+        self.logger.info(message)
+        self.memory_logs.append({
+            'timestamp': datetime.datetime.now(),
+            'operation': operation,
+            'memory_used': memory_used,
+            'device': device
+        })
+
+    def log_metrics(self, metrics: dict, step: Optional[int] = None):
         """Log training metrics."""
         step_str = f" (Step {step})" if step is not None else ""
         message = f"Metrics{step_str}: {self._format_metrics(metrics)}"
         print(self._format_message(LogLevel.INFO, message))
+        self.logger.info(message)
 
     def log_training_start(self, model_name: str, dataset_name: str, config: Dict[str, Any]):
         """Log training start with configuration details."""
@@ -120,3 +192,14 @@ class TrainingLogger:
         """Log checkpoint saving."""
         self.log_success(f"Saved checkpoint to: {path}")
         self.log_metrics(metrics)
+
+    def get_memory_logs(self):
+        """Get all memory logs."""
+        return self.memory_logs
+
+    def clear_memory_logs(self):
+        """Clear memory logs."""
+        self.memory_logs = []
+
+# Global logger instance
+logger = GlobalLogger()

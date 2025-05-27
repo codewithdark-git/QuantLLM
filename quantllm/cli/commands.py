@@ -4,11 +4,10 @@ from ..data import DatasetLoader
 from ..training import FineTuningTrainer, ModelEvaluator
 from ..config import ModelConfig, TrainingConfig, DatasetConfig
 from ..runtime import DeviceManager
-from ..utils.monitoring import TrainingLogger
+from ..utils.logger import logger
 
 def train(args: Namespace):
     """Execute model training command."""
-    logger = TrainingLogger()
     device_manager = DeviceManager()
     
     try:
@@ -44,12 +43,11 @@ def train(args: Namespace):
         trainer.train()
         
     except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
+        logger.log_error(f"Training failed: {str(e)}")
         raise
 
 def evaluate(args: Namespace):
     """Execute model evaluation command."""
-    logger = TrainingLogger()
     device_manager = DeviceManager()
     
     try:
@@ -78,7 +76,7 @@ def evaluate(args: Namespace):
             evaluator.save_results(results, args.output_file)
             
     except Exception as e:
-        logger.error(f"Evaluation failed: {str(e)}")
+        logger.log_error(f"Evaluation failed: {str(e)}")
         raise
 
 def quantize(args: Namespace):
