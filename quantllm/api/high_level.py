@@ -139,8 +139,6 @@ class QuantLLM:
             raise
         finally:
             memory_tracker.clear_memory()
-
-
         
     @staticmethod
     def save_quantized_model(

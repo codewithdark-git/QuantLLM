@@ -6,3 +6,4 @@ myst-parser>=0.18.1
 # Only include minimal package dependencies for docs building
 torch>=2.0.0
 transformers>=4.30.0
+tqdm>=4.65.0
