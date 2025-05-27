@@ -1,17 +1,17 @@
-# QuantLLM: Advanced Model Quantization
+# QuantLLM: GGUF Model Quantization
 ===================================
 
 💫 Introduction
 ------------
-QuantLLM is a powerful library that provides state-of-the-art quantization methods to compress large language models while maintaining their performance. Supporting multiple quantization methods (AWQ, GPTQ, GGUF), it enables efficient model deployment in production environments.
+QuantLLM provides efficient model quantization using the GGUF (GGML Universal Format) method, enabling memory-efficient deployment of large language models. The library focuses on providing robust quantization with comprehensive progress tracking and benchmarking capabilities.
 
 🚀 Getting Started
 ---------------
-QuantLLM offers multiple quantization methods, each optimized for different use cases. The high-level `QuantLLM` API provides a simple interface to quantize models while the low-level API gives you fine-grained control over the quantization process.
+QuantLLM offers both high-level and low-level APIs for GGUF quantization. The high-level `QuantLLM` API provides a simple interface, while the low-level `GGUFQuantizer` gives you fine-grained control over the quantization process.
 
 Key Features:
-- Multiple quantization methods (AWQ, GPTQ, GGUF)
-- Memory-efficient processing
+- Multiple GGUF quantization types (Q2_K to Q8_0)
+- Memory-efficient chunk-based processing
 - Hardware-specific optimizations
 - Comprehensive metrics and logging
 - Easy model export and deployment
@@ -26,18 +26,17 @@ Complete Example
     from transformers import AutoTokenizer
     import time
 
-    # 1. Model and Method Selection
+    # 1. Model Selection
     model_name = "facebook/opt-125m"  # Any Hugging Face model
-    method = "awq"  # Choose: 'awq', 'gptq', or 'gguf'
 
-    # 2. Configure Quantization
+    # 2. Configure GGUF Quantization
     quant_config = {
         "bits": 4,                # Quantization bits (2-8)
-        "group_size": 128,        # Size of quantization groups
-        "zero_point": True,       # Zero-point quantization (AWQ)
-        "version": "v2",          # AWQ algorithm version
-        "scale_dtype": "fp32",    # Scale factor data type
-        "batch_size": 4          # Processing batch size
+        "group_size": 32,        # Size of quantization groups
+        "quant_type": "Q4_K_M",  # GGUF quantization type
+        "use_packed": True,      # Use packed format
+        "cpu_offload": False,    # CPU offloading for large models
+        "chunk_size": 1000      # Chunk size for memory efficiency
     }
 
     # 3. Prepare Calibration Data
@@ -63,16 +62,19 @@ Complete Example
 
     # 4. Model Quantization with Error Handling
     try:
-        print("Starting quantization process...")
+        print("Starting GGUF quantization process...")
         start_time = time.time()
         
         # Perform quantization
-        quantized_model, tokenizer = QuantLLM.quantize_from_pretrained(
-            model_name=model_name,
-            method=method,
-            quant_config_dict=quant_config,
+        quantized_model, benchmark_results = QuantLLM.quantize_from_pretrained(
+            model_name_or_path=model_name,
+            bits=4,
+            group_size=32,
+            quant_type="Q4_K_M",
             calibration_data=inputs["input_ids"],
-            calibration_steps=50,
+            benchmark=True,
+            benchmark_input_shape=(1, 32),
+            benchmark_steps=50,
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
         
@@ -93,262 +95,138 @@ Complete Example
         result = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"Test Output: {result}")
         
-        # 6. Save Quantized Model (Optional)
-        save_path = "./quantized_model"
-        quantized_model.save_pretrained(save_path)
-        tokenizer.save_pretrained(save_path)
-        print(f"Model saved to {save_path}")
+        # 6. Save and Convert to GGUF
+        QuantLLM.save_quantized_model(
+            model=quantized_model,
+            output_path="./quantized_model",
+            save_tokenizer=True
+        )
+        
+        QuantLLM.convert_to_gguf(
+            model=quantized_model,
+            output_path="model.gguf"
+        )
+        print("Model saved and converted to GGUF format")
         
     except Exception as e:
         print(f"Error during quantization: {str(e)}")
         raise
 
-    # Define quantization configuration
-    quant_config = {
-        "bits": 4,
-        "group_size": 128,
-        "zero_point": True, # AWQ specific
-        "awq_version": "v2"   # AWQ specific (maps to 'version')
-    }
-
-    # Prepare dummy calibration data (replace with your actual data)
-    # For demonstration, creating random data.
-    # The shape and content should be representative of your model's input.
-    # Tokenizer is usually needed to prepare real calibration data.
-    # For this example, let's assume calibration data is a tensor.
-    # If the model needs input_ids, it should be shaped like (num_samples, seq_len)
-    # If the model's first layer takes features directly, it might be (num_samples, feature_dim)
-    # The factory passes this data to the specific quantizer.
-    # BaseQuantizer's prepare_calibration_data expects a torch.Tensor.
-    
-    # For opt-125m, tokenizer.model_max_length is 2048, hidden_size is 768.
-    # A simple approach for dummy calibration data:
-    num_calibration_samples = 10
-    sequence_length = 32 # A shorter sequence length for dummy data
-    # Assuming calibration data is a tensor of input features for simplicity here.
-    # In a real scenario, this would be tokenized input_ids.
-    # The DummyModel in tests uses calibration_data as direct input if last dim matches.
-    # Actual models need tokenized input_ids. The factory itself doesn't tokenize.
-    # The user must provide calibration_data in the format expected by the model.
-    # For now, we'll create a simple tensor.
-    # For a real LLM, this should be tokenized sequences.
-    # Let's create dummy input_ids as calibration data
-    dummy_input_ids = torch.randint(0, 30000, (num_calibration_samples, sequence_length))
-
-
-    try:
-        quantized_model, tokenizer = QuantizerFactory.quantize_from_pretrained(
-            model_name_or_path=model_name,
-            method=method,
-            quant_config_dict=quant_config,
-            calibration_data=dummy_input_ids, # Pass input_ids directly
-            calibration_steps=50, # For AWQ
-            device="cpu" # Specify 'cuda' for GPU
-        )
-        print(f"Model {model_name} quantized with {method} successfully.")
-        print(f"Quantized model: {quantized_model}")
-        print(f"Tokenizer: {tokenizer}")
-
-        # You can now use the quantized_model and tokenizer for inference
-        # For example:
-        # if tokenizer:
-        #     inputs = tokenizer("Hello, world!", return_tensors="pt").to(quantized_model.device)
-        #     with torch.no_grad():
-        #         outputs = quantized_model(**inputs)
-        #     print("Inference output:", outputs)
-
-    except Exception as e:
-        print(f"An error occurred during quantization: {e}")
-
 Main Parameters of `quantize_from_pretrained`
 ---------------------------------------------
 
 -   ``model_name_or_path (str)``: Hugging Face model ID (e.g., "facebook/opt-125m") or a local path to a pretrained model.
--   ``method (str)``: The quantization method to use. Supported values are ``'awq'``, ``'gptq'``, or ``'gguf'``.
--   ``quant_config_dict (Optional[Dict[str, Any]])``: A dictionary containing parameters for the chosen quantization method.
-    -   **Common Keys (can be used for most methods, defaults may apply):**
-        -   `bits (int)`: Number of bits for quantization (e.g., 4, 8). Default: 4.
-        -   `group_size (int)`: Size of quantization groups. Default: 128.
-        -   `batch_size (int)`: Batch size used internally by the quantizer during its initialization/calibration steps. Default: 4.
-    -   **AWQ Specific Keys:**
-        -   `zero_point (bool)`: Enable/disable zero-point for activations. Default: True.
-        -   `awq_version (str)`: AWQ algorithm version (e.g., "v1", "v2"). Default: "v2". (Maps to `version` in `AWQQuantizer`).
-        -   `scale_dtype (str)`: Data type for scales (e.g., "fp32", "bf16"). Default: "fp32". (Passed to `AWQQuantizer`).
-        -   `enable_mnn_kernel (bool)`: Enable MNN kernel optimizations, if applicable. Default: False. (Passed to `AWQQuantizer`).
-        -   Note: `batch_size` from the common keys is used by AWQ for its calibration processing.
-    -   **GPTQ Specific Keys:**
-        -   `actorder (bool)`: Enable activation-order quantization. Default: True.
-        -   `percdamp (float)`: Dampening percentage for Hessian update. Default: 0.01.
-        -   `sym (bool)`: Use symmetric quantization for weights. Default: True.
-    -   **GGUF Specific Keys:**
-        -   `use_packed (bool)`: Enable weight packing for GGUF. Default: True.
-        -   `cpu_offload (bool)`: Offload quantized layers to CPU. Default: False.
-        -   `desc_act (bool)`: Describe activations in GGUF metadata. Default: False.
-        -   `desc_ten (bool)`: Describe tensors in GGUF metadata. Default: False.
-        -   `legacy_format (bool)`: Use legacy GGUF format. Default: False.
-    Refer to the docstring of `QuantizerFactory.quantize_from_pretrained` and individual quantizer classes for more details on all available parameters.
--   ``calibration_data (Optional[Any])``: Data required for quantization, typically a `torch.Tensor`. The format depends on the model's input requirements (e.g., tokenized `input_ids`). This data is passed to the underlying quantizer.
--   ``calibration_steps (Optional[int])``: Number of calibration steps. This is particularly relevant for methods like AWQ that use it in their `quantize()` method. Default: 100.
--   ``device (Optional[str])``: The device to run the quantization on (e.g., "cpu", "cuda", "cuda:0"). If `None`, the default device selection logic within the quantizers (usually prioritizing CUDA if available) will be used.
+-   ``bits (int)``: Number of bits for quantization (2-8). Default: 4.
+-   ``group_size (int)``: Size of quantization groups. Default: 32.
+-   ``quant_type (str)``: GGUF quantization type (e.g., "Q4_K_M"). Optional.
+-   ``use_packed (bool)``: Enable weight packing. Default: True.
+-   ``cpu_offload (bool)``: Offload layers to CPU for memory efficiency. Default: False.
+-   ``chunk_size (int)``: Size of processing chunks. Default: 1000.
+-   ``calibration_data (torch.Tensor)``: Input IDs for calibration.
+-   ``benchmark (bool)``: Whether to run benchmarks. Default: False.
+-   ``benchmark_input_shape (tuple)``: Shape for benchmark inputs.
+-   ``benchmark_steps (int)``: Number of benchmark steps.
+-   ``device (str)``: Device for quantization ("cpu" or "cuda").
 
-The method returns a tuple containing the quantized ``PreTrainedModel`` and its associated tokenizer (if loadable).
+GGUF Quantization Types
+----------------------
 
-For a full example demonstrating quantization and pushing to the Hugging Face Hub, see the script in ``examples/01_quantize_and_push_to_hub.py``.
+============  ================  ====================
+Bits          Types            Description
+============  ================  ====================
+2-bit         Q2_K             Extreme compression
+3-bit         Q3_K_S           Small size
+3-bit         Q3_K_M           Medium accuracy
+3-bit         Q3_K_L           Better accuracy
+4-bit         Q4_K_S           Standard quality
+4-bit         Q4_K_M           Better quality
+5-bit         Q5_K_S           High quality
+5-bit         Q5_K_M           Higher quality
+6-bit         Q6_K             Very high quality
+8-bit         Q8_0             Best quality
+============  ================  ====================
 
-Advanced: Direct Quantizer Usage
-================================
+Direct GGUFQuantizer Usage
+=========================
 
-While `QuantizerFactory` is recommended for ease of use, you can also use the individual quantizer classes directly for more fine-grained control or custom workflows.
-
-Common Parameters for Direct Initialization
--------------------------------------------
-
-All quantizers share a common set of parameters in their `__init__` method, inherited from `BaseQuantizer`:
-
--   ``model_or_model_name_or_path (Union[str, PreTrainedModel])``: A Hugging Face model ID, a local path to a model, or an already loaded `PreTrainedModel` instance.
--   ``bits (int)``: Number of quantization bits (e.g., 2-8).
--   ``device (Optional[Union[str, torch.device]])``: Specifies the primary computation device ('cpu' or 'cuda') for the quantizer and the prepared model.
-
-Individual Quantizer Details
-----------------------------
-
-Below are details specific to each quantization method when used directly.
-
-### 1. GPTQ (`GPTQQuantizer`)
-
-GPTQ offers Hessian-based quantization with activation ordering for high accuracy.
-
-.. automodule:: quantllm.quant.gptq
-    :noindex:
-
-.. autoclass:: quantllm.quant.gptq.GPTQQuantizer
-    :members: __init__, quantize
-    :show-inheritance:
-    :inherited-members:
-    :undoc-members:
-
-**Key `__init__` Parameters for `GPTQQuantizer`:**
-- ``group_size (int)``: Size of quantization groups.
-- ``actorder (bool)``: Enables activation ordering.
-- ``sym (bool)``: Use symmetric quantization for weights.
-- ``percdamp (float)``: Dampening for Hessian update.
-- ``use_triton (bool)``: Note: Custom GPTQ Triton kernels are not yet fully integrated for core quantization steps.
-
-**Usage Example (Direct):**
-
-.. code-block:: python
-
-    from quantllm.quant import GPTQQuantizer
-    # Assuming 'model' is a loaded PreTrainedModel instance
-    # and 'calibration_data' is prepared
-    
-    quantizer = GPTQQuantizer(
-        model_or_model_name_or_path=model, # Can also be model name/path
-        bits=4,
-        group_size=128,
-        actorder=True
-    )
-    quantized_model = quantizer.quantize(calibration_data=calibration_data)
-
-### 2. AWQ (`AWQQuantizer`)
-
-AWQ adapts quantization based on activation patterns.
-
-.. automodule:: quantllm.quant.awq
-    :noindex:
-
-.. autoclass:: quantllm.quant.awq.AWQQuantizer
-    :members: __init__, quantize
-    :show-inheritance:
-    :inherited-members:
-    :undoc-members:
-
-**Inference with AWQ Quantized Models:** Models quantized using `AWQQuantizer` (or via the high-level API with the 'awq' method) are returned as standard Hugging Face `PreTrainedModel` instances. The quantization is handled transparently by the custom `QuantizedLinear` layers. Therefore, inference can be performed using the usual methods like `.generate()` or by directly calling the model, with no special steps required for AWQ-quantized layers.
-
-**Key `__init__` Parameters for `AWQQuantizer`:**
-- ``group_size (int)``: Size of the quantization group. Default: 128.
-- ``zero_point (bool)``: Whether to use zero-point quantization for activations. Default: True.
-- ``version (str)``: AWQ algorithm version (e.g., "v1", "v2"). Default: "v2".
-- ``scale_dtype (str)``: Data type for scales (e.g., "fp32", "bf16"). Default: "fp32".
-- ``enable_mnn_kernel (bool)``: Whether to enable MNN kernel optimizations, if applicable. Default: False.
-- ``batch_size (int)``: Batch size for calibration data processing during the `quantize` method. Default: 2.
-
-**Usage Example (Direct):**
-
-.. code-block:: python
-
-    from quantllm.quant import AWQQuantizer
-    # Assuming 'model' is a loaded PreTrainedModel instance
-    # and 'calibration_data' is prepared
-    
-    quantizer = AWQQuantizer(
-        model_or_model_name_or_path=model,
-        bits=4,
-        group_size=128,
-        zero_point=True
-    )
-    quantized_model = quantizer.quantize(
-        calibration_data=calibration_data,
-        calibration_steps=100 # AWQ's quantize method takes this
-    )
-
-### 3. GGUF (`GGUFQuantizer`)
-
-GGUF provides an efficient format with CTransformers integration. It can also offload quantized layers to CPU.
-
-.. automodule:: quantllm.quant.gguf
-    :noindex:
-
-.. autoclass:: quantllm.quant.gguf.GGUFQuantizer
-    :members: __init__, quantize, convert_to_gguf
-    :show-inheritance:
-    :inherited-members:
-    :undoc-members:
-
-**Key `__init__` Parameters for `GGUFQuantizer`:**
-- ``group_size (int)``: Group size.
-- ``use_packed (bool)``: Enable weight packing.
-- ``cpu_offload (bool)``: If True, quantized layers are placed on CPU.
-- ``desc_act (bool)``, ``desc_ten (bool)``, ``legacy_format (bool)``: GGUF format-specific flags.
-
-**Usage Example (Direct):**
+For more fine-grained control, you can use the `GGUFQuantizer` class directly:
 
 .. code-block:: python
 
     from quantllm.quant import GGUFQuantizer
-    # Assuming 'model' is a loaded PreTrainedModel instance
     
+    # Initialize quantizer
     quantizer = GGUFQuantizer(
-        model_or_model_name_or_path=model,
+        model_name="facebook/opt-125m",
         bits=4,
         group_size=32,
+        quant_type="Q4_K_M",
         use_packed=True,
-        cpu_offload=False 
+        cpu_offload=False,
+        chunk_size=1000,
+        device="cuda" if torch.cuda.is_available() else "cpu"
     )
-    # Calibration data is optional for GGUF's quantize method but can be beneficial
-    quantized_model = quantizer.quantize(calibration_data=calibration_data) 
     
-    # Export to GGUF format
-    quantizer.convert_to_gguf("model-q4.gguf")
+    # Quantize model
+    quantized_model = quantizer.quantize(calibration_data=calibration_data)
+    
+    # Convert to GGUF format
+    quantizer.convert_to_gguf("model.gguf")
 
-Choosing the Right Method
-------------------------
+Memory-Efficient Processing
+-------------------------
 
-- **GPTQ**: Best for highest accuracy with slightly slower quantization. The GPTQ method in QuantLLM involves computing Hessian matrix information. This information is primarily used for activation-based weight reordering when `actorder=True`. Users should note that the detailed iterative weight updates using the full Hessian inverse, as found in some canonical GPTQ literature, may not be fully implemented in the current layer quantization step. The system logs warnings if the Hessian is computed but not fully utilized in this manner.
-- **AWQ**: Best balance of speed and accuracy, good for general use.
-- **GGUF**: Best for deployment and inference with CTransformers.
+For large models, QuantLLM provides several memory optimization features:
 
-Resource Requirements
-------------------
+1. **Chunk-based Processing**
+   
+   .. code-block:: python
 
-+-------------+------------+-------------+------------+
-| Method      | Memory     | Speed       | Accuracy   |
-+=============+============+=============+============+
-| GPTQ        | High       | Slow        | Highest    |
-+-------------+------------+-------------+------------+
-| AWQ         | Medium     | Fast        | High       |
-+-------------+------------+-------------+------------+
-| GGUF        | Low        | Very Fast   | Good       |
-+-------------+------------+-------------+------------+
+       quantizer = GGUFQuantizer(
+           model_name="large-model",
+           chunk_size=500,  # Process in smaller chunks
+           cpu_offload=True  # Offload to CPU when needed
+       )
 
-For detailed examples of using GGUF quantization, check out the examples in the `examples/` directory or refer to the interactive tutorial in `testing.ipynb`.
+2. **Progress Tracking**
+   
+   The quantization process provides detailed progress information:
+   - Layer-wise quantization progress
+   - Memory usage statistics
+   - Estimated time remaining
+   - Layer shape information
+
+3. **Benchmarking**
+   
+   .. code-block:: python
+
+       from quantllm.utils.benchmark import QuantizationBenchmark
+       
+       benchmark = QuantizationBenchmark(
+           model=model,
+           calibration_data=calibration_data,
+           input_shape=(1, 32),
+           num_inference_steps=100
+       )
+       results = benchmark.run_all_benchmarks()
+       benchmark.print_report()
+
+Best Practices
+-------------
+
+1. **Memory Management**
+   - Use `cpu_offload=True` for models larger than 70% of GPU memory
+   - Adjust `chunk_size` based on available memory
+   - Monitor memory usage with benchmarking tools
+
+2. **Quantization Type Selection**
+   - Use Q4_K_M for general use cases
+   - Use Q2_K for extreme compression needs
+   - Use Q8_0 for quality-critical applications
+
+3. **Performance Optimization**
+   - Run benchmarks to find optimal settings
+   - Use appropriate batch sizes
+   - Enable progress tracking for monitoring
+
+For detailed examples, check out the `examples/` directory or refer to the getting started guide.

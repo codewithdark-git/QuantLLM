@@ -5,10 +5,10 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="quantllm",
-    version="1.1.0",
+    version="1.2.0",
     author="Dark Coder",
     author_email="codewithdark90@gmail.com",
-    description="A lightweight library for quantized LLM fine-tuning and deployment",
+    description="A lightweight library for quantized LLM fine-tuning and deployment with GGUF support",
     long_description=long_description,
     long_description_content_type="text/markdown",
     project_urls={
@@ -43,7 +43,10 @@ setup(
             "protobuf>=3.20.0",
             "einops>=0.6.1",
             "evaluate>=0.4.0",
-            "tensorboard>=2.13.0"
+            "tensorboard>=2.13.0",
+            "llama-cpp-python>=0.2.0",
+            "psutil>=5.9.0",
+            "pandas>=1.5.0",
     ],
     extras_require={
         "dev": [
@@ -57,6 +60,9 @@ setup(
             "black>=22.0.0",
             "isort>=5.10.0",
             "flake8>=4.0.0",
+        ],
+        "gguf": [
+            "ctransformers>=0.2.0",
         ],
     },
     include_package_data=True,

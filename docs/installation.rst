@@ -4,75 +4,152 @@ Installation Guide
 Requirements
 -----------
 
-Before installing QuantLLM, ensure your system meets these requirements:
+QuantLLM requires Python 3.10 or later. The following are the core dependencies:
 
-* Python >= 3.8
-* PyTorch >= 2.0
-* CUDA >= 11.7 (for GPU support)
-* 16GB RAM (minimum)
-* 8GB VRAM (recommended for GPU training)
+* PyTorch >= 2.0.0
+* Transformers >= 4.30.0
+* CUDA Toolkit (optional, but recommended for GPU support)
 
-Basic Installation
-----------------
+Installation Methods
+------------------
 
-You can install QuantLLM using pip:
+1. From PyPI (Recommended)
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Basic installation:
 
 .. code-block:: bash
 
     pip install quantllm
 
+With GGUF support (recommended for deployment):
+
+.. code-block:: bash
+
+    pip install quantllm[gguf]
+
+With development tools:
+
+.. code-block:: bash
+
+    pip install quantllm[dev]
+
+2. From Source
+~~~~~~~~~~~~
+
+.. code-block:: bash
+
+    git clone https://github.com/codewithdark-git/DiffusionLM.git
+    cd DiffusionLM
+    pip install -e .
+
 For development installation:
 
 .. code-block:: bash
 
-    git clone https://github.com/codewithdark-git/QuantLLM.git
-    cd QuantLLM
-    pip install -e ".[dev]"
+    pip install -e .[dev,gguf]
 
-GPU Support
+Hardware Requirements
+------------------
+
+Minimum Requirements:
+~~~~~~~~~~~~~~~~~~
+
+* CPU: 4+ cores
+* RAM: 16GB+
+* Storage: 10GB+ free space
+* Python: 3.10+
+
+Recommended for Large Models:
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* CPU: 8+ cores
+* RAM: 32GB+
+* GPU: NVIDIA GPU with 8GB+ VRAM
+* CUDA: 11.7 or later
+* Storage: 20GB+ free space
+
+GGUF Support
 ----------
 
-For GPU acceleration, install with CUDA support:
+GGUF (GGML Universal Format) support requires additional dependencies:
+
+* llama-cpp-python >= 0.2.0
+* ctransformers >= 0.2.0 (optional)
+
+These are automatically installed with:
 
 .. code-block:: bash
 
-    pip install quantllm[gpu]
+    pip install quantllm[gguf]
 
-This will install additional dependencies like:
+Verify Installation
+----------------
 
-* bitsandbytes
-* accelerate
-* Flash Attention 2 (where supported)
+You can verify your installation by running:
 
-Apple Silicon (M1/M2)
---------------------
+.. code-block:: python
 
-For Apple Silicon Macs:
+    import quantllm
+    from quantllm.quant import GGUFQuantizer
+    
+    # Check GGUF support
+    print(f"GGUF Support: {GGUFQuantizer.CT_AVAILABLE}")
+    
+    # Check CUDA availability
+    import torch
+    print(f"CUDA Available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"GPU Device: {torch.cuda.get_device_name(0)}")
 
-.. code-block:: bash
+Common Issues
+-----------
 
-    pip install quantllm[mps]
+1. CUDA Compatibility
+~~~~~~~~~~~~~~~~~~
 
-CPU-Only
---------
-
-For CPU-only installations:
-
-.. code-block:: bash
-
-    pip install quantllm[cpu]
-
-Optional Dependencies
--------------------
-
-Weights & Biases integration:
-
-.. code-block:: bash
-
-    pip install quantllm[wandb]
-
-Full installation with all features:
+If you encounter CUDA errors:
 
 .. code-block:: bash
 
-    pip install quantllm[all]
+    # Install PyTorch with specific CUDA version
+    pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+2. Memory Issues
+~~~~~~~~~~~~~
+
+For large models, enable memory optimization:
+
+.. code-block:: python
+
+    quantizer = GGUFQuantizer(
+        model_name="large-model",
+        cpu_offload=True,
+        chunk_size=500,
+        gradient_checkpointing=True
+    )
+
+3. GGUF Conversion Issues
+~~~~~~~~~~~~~~~~~~~~~~
+
+If GGUF conversion fails:
+
+1. Ensure llama-cpp-python is installed:
+   
+   .. code-block:: bash
+
+       pip install llama-cpp-python --upgrade
+
+2. Check system compatibility:
+   
+   .. code-block:: bash
+
+       python -c "from ctransformers import AutoModelForCausalLM; print('GGUF support available')"
+
+Next Steps
+---------
+
+* Read the :doc:`getting_started` guide
+* Check out :doc:`tutorials/index`
+* See :doc:`advanced_usage/index` for advanced features

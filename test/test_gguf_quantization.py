@@ -4,31 +4,18 @@ import gc
 import os
 import tempfile
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
-from quantllm.quant.gguf import GGUFQuantizer
-from quantllm.quant.quantization_engine import QuantizedLinear
+from quantllm.quant import GGUFQuantizer
+from quantllm.quantization_engine import QuantizedLinear
 from quantllm.utils.benchmark import QuantizationBenchmark
-from quantllm.utils.memory_tracker import MemoryTracker
+from quantllm.utils.logger import logger
 
 # Define model names for testing
 TEST_MODEL_NAME_SMALL = "facebook/opt-125m" # Small model for quick unit tests
 TEST_MODEL_NAME_MEDIUM = "facebook/opt-350m" # Slightly larger model for integration tests
 
-def _get_dummy_calibration_data(batch_size=1, seq_len=128, vocab_size=1000, num_samples=32) -> torch.Tensor:
-    """
-    Generates a random tensor for calibration data.
-
-    Args:
-        batch_size (int): Batch size (typically 1 for calibration samples if processed one by one).
-                          This function generates `num_samples` total, so batch_size here is for shape convention.
-        seq_len (int): Sequence length of the calibration data.
-        vocab_size (int): Vocabulary size to sample token IDs from.
-        num_samples (int): Number of calibration samples to generate.
-
-    Returns:
-        torch.Tensor: A tensor of shape (num_samples, seq_len) with random integer token IDs.
-    """
-    # Simple random integer data
-    return torch.randint(0, vocab_size, (num_samples, seq_len))
+def _get_dummy_calibration_data(vocab_size: int = 32000, seq_len: int = 32, batch_size: int = 4):
+    """Helper function to generate dummy calibration data."""
+    return torch.randint(0, vocab_size, (batch_size, seq_len))
 
 def _load_model_and_tokenizer(model_name, trust_remote_code=True):
     """Helper to load a Hugging Face model and tokenizer."""
