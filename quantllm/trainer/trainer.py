@@ -18,7 +18,7 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 from ..config.training_config import TrainingConfig
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
 from ..hub.checkpoint_manager import CheckpointManager
 from ..hub.hub_manager import HubManager
 
@@ -29,7 +29,6 @@ class FineTuningTrainer:
         training_config: TrainingConfig,
         train_dataloader: DataLoader,
         eval_dataloader: Optional[DataLoader] = None,
-        logger: Optional[TrainingLogger] = None,
         checkpoint_manager: Optional[CheckpointManager] = None,
         hub_manager: Optional[HubManager] = None,
         device: Optional[Union[str, torch.device]] = None,
@@ -44,7 +43,6 @@ class FineTuningTrainer:
             training_config (TrainingConfig): Training configuration
             train_dataloader (DataLoader): Training data loader
             eval_dataloader (DataLoader, optional): Evaluation data loader
-            logger (TrainingLogger, optional): Logger instance
             checkpoint_manager (CheckpointManager, optional): Checkpoint manager
             hub_manager (HubManager, optional): Hub manager for model pushing
             device (str or torch.device, optional): Device to train on
@@ -55,7 +53,6 @@ class FineTuningTrainer:
         self.config = training_config
         self.train_dataloader = train_dataloader
         self.eval_dataloader = eval_dataloader
-        self.logger = logger or TrainingLogger()
         self.checkpoint_manager = checkpoint_manager
         self.hub_manager = hub_manager
         self.use_wandb = use_wandb and WANDB_AVAILABLE
@@ -67,7 +64,7 @@ class FineTuningTrainer:
         else:
             self.device = torch.device(device)
             
-        self.logger.log_info(f"Using device: {self.device}")
+        logger.log_info(f"Using device: {self.device}")
         self.model.to(self.device)
         
         # Initialize optimizer
@@ -155,17 +152,17 @@ class FineTuningTrainer:
         """Setup Weights & Biases logging."""
         try:
             if wandb.login(key=self.wandb_token, relogin=True):
-                self.logger.log_info("Logged in to Weights & Biases")
+                logger.log_info("Logged in to Weights & Biases")
                 wandb.init(
                     project=self.wandb_config.get("project", "quantllm"),
                     name=self.wandb_config.get("name", f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
                     config=self.config.to_dict()
                 )
             else:
-                self.logger.log_warning("Failed to log in to Weights & Biases. Continuing without wandb logging.")
+                logger.log_warning("Failed to log in to Weights & Biases. Continuing without wandb logging.")
                 self.use_wandb = False
         except Exception as e:
-            self.logger.log_warning(f"Error setting up Weights & Biases: {str(e)}. Continuing without wandb logging.")
+            logger.log_warning(f"Error setting up Weights & Biases: {str(e)}. Continuing without wandb logging.")
             self.use_wandb = False
             
     def _compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -226,14 +223,14 @@ class FineTuningTrainer:
             return loss.item()
             
         except Exception as e:
-            self.logger.log_error(f"Error in training step: {str(e)}")
+            logger.log_error(f"Error in training step: {str(e)}")
             raise
 
     def train(self):
         """Train the model."""
         try:
             # Log training start
-            self.logger.log_training_start(
+            logger.log_training_start(
                 model_name=self.model.config.name_or_path,
                 dataset_name=self.train_dataloader.dataset.__class__.__name__,
                 config=self.config.to_dict()
@@ -242,7 +239,7 @@ class FineTuningTrainer:
             # Disable model caching when using gradient checkpointing
             if hasattr(self.model.config, 'gradient_checkpointing') and self.model.config.gradient_checkpointing:
                 self.model.config.use_cache = False
-                self.logger.log_info("Disabled model caching due to gradient checkpointing")
+                logger.log_info("Disabled model caching due to gradient checkpointing")
                 
             scaler = torch.cuda.amp.GradScaler()
             
@@ -251,7 +248,7 @@ class FineTuningTrainer:
                 total_loss = 0
                 
                 # Log epoch start
-                self.logger.log_epoch_start(epoch + 1, self.config.num_epochs)
+                logger.log_epoch_start(epoch + 1, self.config.num_epochs)
                 
                 # Training loop
                 with tqdm(total=len(self.train_dataloader), desc=f"Epoch {epoch + 1}/{self.config.num_epochs}") as pbar:
@@ -266,7 +263,7 @@ class FineTuningTrainer:
                         # Log steps if configured
                         if step > 0 and self.config.logging_steps > 0 and step % self.config.logging_steps == 0:
                             avg_loss = total_loss / (step + 1)
-                            self.logger.log_metrics({"loss": avg_loss}, step=step)
+                            logger.log_metrics({"loss": avg_loss}, step=step)
                         
                         # Save checkpoint if configured
                         if self.config.save_steps > 0 and (step + 1) % self.config.save_steps == 0:
@@ -276,12 +273,12 @@ class FineTuningTrainer:
                 # Epoch end processing
                 avg_loss = total_loss / len(self.train_dataloader)
                 epoch_metrics = {"avg_loss": avg_loss}
-                self.logger.log_epoch_complete(epoch + 1, epoch_metrics)
+                logger.log_epoch_complete(epoch + 1, epoch_metrics)
                 
                 # Run evaluation if configured
                 if self.config.eval_epochs > 0 and (epoch + 1) % self.config.eval_epochs == 0:
                     eval_metrics = self._evaluate()
-                    self.logger.log_evaluation_complete(eval_metrics)
+                    logger.log_evaluation_complete(eval_metrics)
                 
                 # Save epoch checkpoint if configured
                 if self.config.save_epochs > 0 and (epoch + 1) % self.config.save_epochs == 0:
@@ -294,10 +291,10 @@ class FineTuningTrainer:
                 "total_epochs": self.config.num_epochs,
                 "total_steps": self.global_step
             }
-            self.logger.log_training_complete(final_metrics)
+            logger.log_training_complete(final_metrics)
             
         except Exception as e:
-            self.logger.log_error(f"Training error: {str(e)}")
+            logger.log_error(f"Training error: {str(e)}")
             raise
 
     def _evaluate(self) -> Dict[str, float]:
@@ -305,7 +302,7 @@ class FineTuningTrainer:
         if self.eval_dataloader is None:
             return {}
             
-        self.logger.log_evaluation_start()
+        logger.log_evaluation_start()
         self.model.eval()
         total_loss = 0
         num_batches = 0
@@ -318,7 +315,7 @@ class FineTuningTrainer:
                 
         avg_loss = total_loss / num_batches
         metrics = {"eval_loss": avg_loss}
-        self.logger.log_evaluation_complete(metrics)
+        logger.log_evaluation_complete(metrics)
         return metrics
 
     def _save_checkpoint(self, epoch: int, step: Optional[int] = None, metrics: Optional[Dict[str, float]] = None):
@@ -340,7 +337,7 @@ class FineTuningTrainer:
             metrics=checkpoint_metrics
         )
         
-        self.logger.log_checkpoint_save(path, checkpoint_metrics)
+        logger.log_checkpoint_save(path, checkpoint_metrics)
 
     def save_model(self, output_dir: Union[str, Path]):
         """Save the model and training state."""

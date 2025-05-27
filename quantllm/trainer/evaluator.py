@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List, Union, Callable
 from pathlib import Path
 import numpy as np
 from tqdm import tqdm
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
 
 class ModelEvaluator:
     def __init__(
@@ -13,7 +13,6 @@ class ModelEvaluator:
         model: nn.Module,
         eval_dataloader: DataLoader,
         metrics: Optional[List[Callable]] = None,
-        logger: Optional[TrainingLogger] = None,
         device: Optional[str] = None
     ):
         """
@@ -23,13 +22,11 @@ class ModelEvaluator:
             model (nn.Module): The model to evaluate
             eval_dataloader (DataLoader): Evaluation data loader
             metrics (List[Callable], optional): List of metric functions
-            logger (TrainingLogger, optional): Logger instance
             device (str, optional): Device to evaluate on
         """
         self.model = model
         self.eval_dataloader = eval_dataloader
         self.metrics = metrics or []
-        self.logger = logger or TrainingLogger()
         
         # Set device
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,7 +56,7 @@ class ModelEvaluator:
                 metric_value = metric_fn(predictions, labels, batch)
                 metrics_dict[metric_fn.__name__] = metric_value
             except Exception as e:
-                self.logger.log_warning(f"Failed to compute metric {metric_fn.__name__}: {str(e)}")
+                logger.log_warning(f"Failed to compute metric {metric_fn.__name__}: {str(e)}")
                 
         return metrics_dict
         

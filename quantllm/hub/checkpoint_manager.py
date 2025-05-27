@@ -2,7 +2,7 @@ import os
 import shutil
 from typing import Optional, Dict, Any
 from datetime import datetime
-from ..trainer.logger import TrainingLogger
+from ..utils.logger import logger
 
 class CheckpointManager:
     def __init__(self, checkpoint_dir: str = "./checkpoints", save_total_limit: int = None):
@@ -16,7 +16,6 @@ class CheckpointManager:
         self.checkpoint_dir = checkpoint_dir
         self.save_total_limit = save_total_limit
         os.makedirs(checkpoint_dir, exist_ok=True)
-        self.logger = TrainingLogger()
         
     def save_checkpoint(
         self,
@@ -64,11 +63,11 @@ class CheckpointManager:
                     for checkpoint in checkpoints[:-self.save_total_limit]:
                         self.delete_checkpoint(checkpoint)
                     
-            self.logger.log_info(f"Checkpoint saved to {checkpoint_path}")
+            logger.info(f"Checkpoint saved to {checkpoint_path}")
             return checkpoint_path
             
         except Exception as e:
-            self.logger.log_error(f"Error saving checkpoint: {str(e)}")
+            logger.error(f"Error saving checkpoint: {str(e)}")
             raise
             
     def load_checkpoint(
@@ -97,11 +96,11 @@ class CheckpointManager:
             # Load tokenizer
             tokenizer = tokenizer_class.from_pretrained(checkpoint_path, **kwargs)
             
-            self.logger.log_info(f"Checkpoint loaded from {checkpoint_path}")
+            logger.info(f"Checkpoint loaded from {checkpoint_path}")
             return model, tokenizer
             
         except Exception as e:
-            self.logger.log_error(f"Error loading checkpoint: {str(e)}")
+            logger.error(f"Error loading checkpoint: {str(e)}")
             raise
             
     def list_checkpoints(self):
@@ -122,10 +121,10 @@ class CheckpointManager:
         try:
             if os.path.exists(checkpoint_path):
                 shutil.rmtree(checkpoint_path)
-                self.logger.log_info(f"Deleted checkpoint: {checkpoint_path}")
+                logger.info(f"Deleted checkpoint: {checkpoint_path}")
             else:
-                self.logger.log_warning(f"Checkpoint not found: {checkpoint_path}")
+                logger.warning(f"Checkpoint not found: {checkpoint_path}")
                 
         except Exception as e:
-            self.logger.log_error(f"Error deleting checkpoint: {str(e)}")
+            logger.error(f"Error deleting checkpoint: {str(e)}")
             raise
