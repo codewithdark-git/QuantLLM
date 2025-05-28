@@ -35,12 +35,12 @@ from .config import (
 # Configure package-wide logging
 configure_logging()
 
-__version__ = "0.1.0"
+__version__ = "1.2.0"
 
 # Package metadata
 __title__ = "QuantLLM"
 __description__ = "Efficient Quantized LLM Fine-Tuning Library"
-__author__ = "QuantLLM Team"
+__author__ = "Dark Coder"
 
 __all__ = [
     

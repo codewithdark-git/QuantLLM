@@ -3,7 +3,6 @@ import torch
 from transformers import PreTrainedModel, AutoTokenizer
 from ..quant.gguf import GGUFQuantizer, SUPPORTED_GGUF_BITS, SUPPORTED_GGUF_TYPES
 from ..utils.logger import logger
-from ..utils.memory_tracker import memory_tracker
 from ..utils.benchmark import QuantizationBenchmark
 
 class QuantLLM:
@@ -57,7 +56,6 @@ class QuantLLM:
         """
         try:
             logger.log_info(f"Starting GGUF quantization with {bits} bits")
-            memory_tracker.log_memory("quantization_start")
             
             if bits not in SUPPORTED_GGUF_BITS:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
@@ -102,7 +100,6 @@ class QuantLLM:
             
             logger.log_info("Starting quantization process")
             quantized_model = quantizer.quantize(calibration_data)
-            memory_tracker.log_memory("quantization_complete")
             
             benchmark_results = {}
             if benchmark:
@@ -124,7 +121,6 @@ class QuantLLM:
                 )
                 
                 benchmark_results = benchmarker.run_all_benchmarks()
-                memory_tracker.log_memory("benchmarking_complete")
                 
                 logger.log_info("Benchmark Results:")
                 if hasattr(benchmark_results, 'to_dict'):
@@ -138,7 +134,8 @@ class QuantLLM:
             logger.log_error(f"Quantization failed: {str(e)}")
             raise
         finally:
-            memory_tracker.clear_memory()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
     @staticmethod
     def save_quantized_model(
@@ -156,7 +153,6 @@ class QuantLLM:
         """
         try:
             logger.log_info(f"Saving quantized model to {output_path}")
-            memory_tracker.log_memory("save_start")
             
             # Save model
             model.save_pretrained(output_path)
@@ -174,14 +170,14 @@ class QuantLLM:
                     except Exception as e:
                         logger.log_warning(f"Failed to save tokenizer: {e}")
             
-            memory_tracker.log_memory("save_complete")
             logger.log_info("Model saved successfully")
             
         except Exception as e:
             logger.log_error(f"Failed to save model: {str(e)}")
             raise
         finally:
-            memory_tracker.clear_memory()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     
     @staticmethod
     def convert_to_gguf(
@@ -199,7 +195,6 @@ class QuantLLM:
         """
         try:
             logger.log_info(f"Converting model to GGUF format: {output_path}")
-            memory_tracker.log_memory("conversion_start")
             
             # Get quantization config from model if not provided
             if not quant_config and hasattr(model.config, 'quantization_config'):
@@ -216,11 +211,11 @@ class QuantLLM:
             
             # Convert to GGUF
             quantizer.convert_to_gguf(output_path)
-            memory_tracker.log_memory("conversion_complete")
             logger.log_info("GGUF conversion completed successfully")
             
         except Exception as e:
             logger.log_error(f"GGUF conversion failed: {str(e)}")
             raise
         finally:
-            memory_tracker.clear_memory() 
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache() 

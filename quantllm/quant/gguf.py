@@ -8,7 +8,6 @@ from typing import Optional, Dict, Any, List, Union, Tuple
 from transformers import PreTrainedModel
 from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConfig, QuantizedLinear
 from ..utils.logger import logger
-from ..utils.memory_tracker import memory_tracker
 import time
 from tqdm.auto import tqdm
 
@@ -152,7 +151,7 @@ class GGUFQuantizer(BaseQuantizer):
             
             start_time = time.perf_counter()
             
-            # Create progress bar for chunks
+            # Create progress bars
             chunk_pbar = tqdm(chunks, desc="Processing chunks", position=0)
             layer_pbar = tqdm(total=total_layers, desc="Quantizing layers", position=1, leave=True)
             
@@ -162,7 +161,10 @@ class GGUFQuantizer(BaseQuantizer):
                 for idx, (name, module) in enumerate(chunk, 1):
                     try:
                         current_layer = idx + chunk_idx * self.chunk_size
-                        layer_pbar.set_description(f"Layer {current_layer}/{total_layers}: {name}")
+                        layer_shape = list(module.weight.shape)
+                        layer_pbar.set_description(
+                            f"Layer {current_layer}/{total_layers}: {name} {layer_shape}"
+                        )
                         
                         # Move layer to target device if needed
                         if module.weight.device != device:
@@ -220,7 +222,7 @@ class GGUFQuantizer(BaseQuantizer):
 
             return self.model
 
-        except Exception as e: 
+        except Exception as e:
             logger.log_error(f"GGUF quantization failed: {str(e)}")
             raise RuntimeError(f"GGUF quantization failed: {str(e)}") from e
         finally:
@@ -238,14 +240,12 @@ class GGUFQuantizer(BaseQuantizer):
             raise TypeError(f"Expected nn.Linear layer, got {type(layer)}")
 
         device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
-        memory_tracker.log_memory("layer_quantization_start")
         
         try:
             # Get layer device and ensure it's on the correct device
             layer_device = next(layer.parameters()).device
             if layer_device != device:
                 layer = layer.to(device)
-            memory_tracker.log_memory("layer_moved_to_device")
             
             # Get weight tensor
             weight = layer.weight.data
@@ -265,16 +265,12 @@ class GGUFQuantizer(BaseQuantizer):
                 scales = scale.expand(1)
                 zeros = torch.zeros_like(scales)
 
-            memory_tracker.log_memory("scales_computed")
-
             # Quantize weights
             qweight = torch.clamp(
                 torch.round(weight_scaled * (2**(self.bits-1) - 1)),
                 -2**(self.bits-1),
                 2**(self.bits-1) - 1
             ).to(torch.int8)
-
-            memory_tracker.log_memory("weights_quantized")
 
             # Create quantized layer
             qlayer = QuantizedLinear(
@@ -301,7 +297,6 @@ class GGUFQuantizer(BaseQuantizer):
             if layer.bias is not None:
                 qlayer.bias = layer.bias.data.clone()
 
-            memory_tracker.log_memory("layer_quantization_complete")
             return qlayer
 
         except Exception as e:
@@ -317,49 +312,107 @@ class GGUFQuantizer(BaseQuantizer):
 
     def convert_to_gguf(self, output_path: str):
         """
-        Convert quantized model to GGUF format using ctransformers.
+        Convert quantized model to GGUF format using llama.cpp conversion tools.
         """
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF conversion")
         
         try:
-            logger.log_info(f"Converting model to GGUF format: {output_path}")
+            logger.log_info(f"\nConverting model to GGUF format: {output_path}")
             logger.log_info(f"Using quantization type: {self.quant_type}")
-            memory_tracker.log_memory("gguf_conversion_start")
             
             # Ensure model is on CPU for conversion
             if not self.cpu_offload:
                 self.model.to('cpu')
-                memory_tracker.log_memory("model_moved_to_cpu")
             
             # Save model in HF format first
             temp_dir = f"{output_path}_temp_hf"
-            self.model.save_pretrained(temp_dir)
+            logger.log_info(f"Saving temporary HF checkpoint to: {temp_dir}")
+            self.model.save_pretrained(temp_dir, safe_serialization=True)
             
-            # Convert using ctransformers
-            try:
-                # Use ctransformers to load and save in GGUF format
-                ct_model = CTAutoModel.from_pretrained(
-                    temp_dir,
-                    model_type="llama",  # Default to llama, can be parameterized later
-                    model_file=None,
-                    config={
-                        "max_new_tokens": 2048,
-                        "context_length": 2048,
-                        "gpu_layers": 0  # CPU conversion
-                    }
+            # Prepare conversion command
+            import subprocess
+            import sys
+            import os
+            
+            # Try to find convert.py from llama.cpp
+            convert_script = None
+            potential_paths = [
+                "llama.cpp/convert.py",
+                os.path.join(os.path.dirname(sys.executable), "llama.cpp/convert.py"),
+                os.path.expanduser("~/.local/lib/python*/site-packages/llama_cpp_python/convert.py"),
+                "/usr/local/lib/python*/site-packages/llama_cpp_python/convert.py"
+            ]
+            
+            for path in potential_paths:
+                if "*" in path:
+                    import glob
+                    matches = glob.glob(path)
+                    if matches:
+                        convert_script = matches[0]
+                        break
+                elif os.path.exists(path):
+                    convert_script = path
+                    break
+            
+            if not convert_script:
+                raise RuntimeError(
+                    "Could not find llama.cpp convert.py script. Please install llama-cpp-python: "
+                    "pip install llama-cpp-python"
                 )
-                ct_model.save_pretrained(output_path)
-                
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                
-            except Exception as e:
-                logger.log_error(f"CTTransformers conversion failed: {str(e)}")
-                raise
             
-            memory_tracker.log_memory("gguf_conversion_complete")
-            logger.log_info("GGUF conversion completed successfully")
+            # Build conversion command
+            cmd = [
+                sys.executable,
+                convert_script,
+                temp_dir,
+                "--outfile", output_path,
+                "--outtype", "f16" if self.bits <= 16 else "f32",
+            ]
+            
+            # Add model type specific args
+            model_type = self.model.config.model_type if hasattr(self.model, 'config') else "llama"
+            if model_type in ["llama", "mistral"]:
+                cmd.extend(["--model-type", model_type])
+            
+            # Execute conversion
+            logger.log_info("Running GGUF conversion...")
+            logger.log_info(f"Command: {' '.join(cmd)}")
+            
+            with tqdm(total=100, desc="Converting to GGUF", unit="%") as pbar:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True
+                )
+                
+                # Monitor conversion progress
+                while True:
+                    output = process.stdout.readline()
+                    if output == '' and process.poll() is not None:
+                        break
+                    if output:
+                        if "Converting" in output:
+                            try:
+                                progress = int(output.split("%")[0].split()[-1])
+                                pbar.n = progress
+                                pbar.refresh()
+                            except:
+                                pass
+                
+                # Get return code and output
+                return_code = process.wait()
+                if return_code != 0:
+                    error_output = process.stderr.read()
+                    raise RuntimeError(f"GGUF conversion failed with error:\n{error_output}")
+            
+            # Cleanup temporary files
+            import shutil
+            logger.log_info("Cleaning up temporary files...")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            logger.log_info(f"Successfully saved model in GGUF format to: {output_path}")
             
         except Exception as e:
             logger.log_error(f"GGUF conversion failed: {str(e)}")
@@ -373,6 +426,5 @@ class GGUFQuantizer(BaseQuantizer):
         if not self.cpu_offload and torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-        memory_tracker.clear_memory()
 
     

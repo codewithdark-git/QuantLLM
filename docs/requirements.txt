@@ -7,3 +7,4 @@ myst-parser>=0.18.1
 torch>=2.0.0
 transformers>=4.30.0
 tqdm>=4.65.0
+llama-cpp-python>=0.2.0
