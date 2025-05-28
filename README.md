@@ -128,7 +128,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📫 Contact & Support
 
-- GitHub Issues: [Create an issue](https://github.com/yourusername/QuantLLM/issues)
+- GitHub Issues: [Create an issue](https://github.com/codewithdark-git/QuantLLM/issues)
 - Documentation: [Read the docs](https://quantllm.readthedocs.io/)
-- Discord: [Join our community](https://discord.gg/quantllm)
-- Email: support@quantllm.ai
+- Email: codewithdark90@gmail.com

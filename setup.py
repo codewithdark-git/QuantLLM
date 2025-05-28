@@ -47,6 +47,7 @@ setup(
             "llama-cpp-python>=0.2.0",
             "psutil>=5.9.0",
             "pandas>=1.5.0",
+            "pynvml>=12.0.0"
     ],
     extras_require={
         "dev": [
