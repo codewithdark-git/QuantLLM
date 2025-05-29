@@ -9,7 +9,7 @@ class QuantLLM:
     """High-level API for GGUF model quantization."""
     @staticmethod
     def quantize_from_pretrained(
-        model_name Union[str, PreTrainedModel],
+        model_name: Union[str, PreTrainedModel],
         bits: int = 4,
         group_size: int = 128,
         quant_type: Optional[str] = None,
