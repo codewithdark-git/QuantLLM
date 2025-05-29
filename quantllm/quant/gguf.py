@@ -367,7 +367,7 @@ class GGUFQuantizer(BaseQuantizer):
                 convert_script,
                 temp_dir,
                 "--outfile", output_path,
-                "--outtype", "f16" if self.bits <= 16 else "f32",
+                "--outtype", f"q{self.bits}" if self.bits < 16 else "f16" if self.bits == 16 else "f32",
             ]
             
             # Add model type specific args

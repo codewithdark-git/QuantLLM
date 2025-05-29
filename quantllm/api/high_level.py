@@ -9,7 +9,7 @@ class QuantLLM:
     """High-level API for GGUF model quantization."""
     @staticmethod
     def quantize_from_pretrained(
-        model_name_or_path: Union[str, PreTrainedModel],
+        model_name Union[str, PreTrainedModel],
         bits: int = 4,
         group_size: int = 128,
         quant_type: Optional[str] = None,
@@ -21,9 +21,6 @@ class QuantLLM:
         batch_size: int = 4,
         device: Optional[str] = None,
         calibration_data: Optional[torch.Tensor] = None,
-        benchmark: bool = True,
-        benchmark_input_shape: Optional[Tuple[int, ...]] = None,
-        benchmark_steps: int = 100,
         gradient_checkpointing: bool = False,
         chunk_size: int = 1000,
         auto_device: bool = True
@@ -32,7 +29,7 @@ class QuantLLM:
         Quantize a model using GGUF format with optional benchmarking and memory optimizations.
         
         Args:
-            model_name_or_path: Model identifier or instance
+            model_name: Model identifier or instance
             bits: Number of bits for quantization
             group_size: Size of quantization groups
             quant_type: GGUF quantization type
@@ -44,9 +41,6 @@ class QuantLLM:
             batch_size: Batch size for processing
             device: Target device for quantization
             calibration_data: Data for calibration
-            benchmark: Whether to run benchmarks
-            benchmark_input_shape: Shape for benchmark inputs
-            benchmark_steps: Number of benchmark steps
             gradient_checkpointing: Whether to use gradient checkpointing
             chunk_size: Size of chunks for processing
             auto_device: Automatically determine optimal device
@@ -68,8 +62,8 @@ class QuantLLM:
                     # Check available GPU memory
                     gpu_mem = torch.cuda.get_device_properties(0).total_memory
                     model_size = 0
-                    if isinstance(model_name_or_path, PreTrainedModel):
-                        model_size = sum(p.numel() * p.element_size() for p in model_name_or_path.parameters())
+                    if isinstance(model_name, PreTrainedModel):
+                        model_size = sum(p.numel() * p.element_size() for p in model_name.parameters())
                     
                     # If model is too large for GPU, use CPU offloading
                     if model_size > gpu_mem * 0.7:  # Leave 30% margin
@@ -83,7 +77,7 @@ class QuantLLM:
                 logger.log_info(f"Auto-selected device: {device}")
             
             quantizer = GGUFQuantizer(
-                model_name=model_name_or_path,
+                model_name=model_name,
                 bits=bits,
                 group_size=group_size,
                 quant_type=quant_type,
@@ -100,35 +94,7 @@ class QuantLLM:
             
             logger.log_info("Starting quantization process")
             quantized_model = quantizer.quantize(calibration_data)
-            
-            benchmark_results = {}
-            if benchmark:
-                logger.log_info("Running benchmarks")
-                if not benchmark_input_shape:
-                    if hasattr(quantized_model.config, 'max_position_embeddings'):
-                        seq_len = min(32, quantized_model.config.max_position_embeddings)
-                    else:
-                        seq_len = 32
-                    benchmark_input_shape = (1, seq_len)
-                    
-                benchmarker = QuantizationBenchmark(
-                    model=quantized_model,
-                    calibration_data=calibration_data,
-                    input_shape=benchmark_input_shape,
-                    num_inference_steps=benchmark_steps,
-                    device=device,
-                    num_warmup_steps=10
-                )
-                
-                benchmark_results = benchmarker.run_all_benchmarks()
-                
-                logger.log_info("Benchmark Results:")
-                if hasattr(benchmark_results, 'to_dict'):
-                    benchmark_results = benchmark_results.to_dict()
-                for metric, value in (benchmark_results.items() if isinstance(benchmark_results, dict) else []):
-                    logger.log_info(f"{metric}: {value}")
-                    
-            return quantized_model, benchmark_results
+            return quantized_model, 
             
         except Exception as e:
             logger.log_error(f"Quantization failed: {str(e)}")
@@ -141,7 +107,8 @@ class QuantLLM:
     def save_quantized_model(
         model: PreTrainedModel,
         output_path: str,
-        save_tokenizer: bool = True
+        save_tokenizer: bool = True,
+        quant_config: Optional[Dict[str, Any]] = None
     ):
         """
         Save a quantized model and optionally its tokenizer.
@@ -150,12 +117,27 @@ class QuantLLM:
             model: Quantized model to save
             output_path: Path to save the model
             save_tokenizer: Whether to save the tokenizer
+            quant_config: Optional quantization configuration
         """
         try:
-            logger.log_info(f"Saving quantized model to {output_path}")
+            logger.log_info(f"Converting model to GGUF format: {output_path}")
             
-            # Save model
-            model.save_pretrained(output_path)
+            # Get quantization config from model if not provided
+            if not quant_config and hasattr(model.config, 'quantization_config'):
+                quant_config = model.config.quantization_config
+            
+            # Create quantizer with existing or default config
+            quantizer = GGUFQuantizer(
+                model_name=model,
+                bits=quant_config.get('bits', 4) if quant_config else 4,
+                group_size=quant_config.get('group_size', 128) if quant_config else 128,
+                quant_type=quant_config.get('quant_type', None) if quant_config else None,
+                use_packed=quant_config.get('use_packed', True) if quant_config else True
+            )
+            
+            # Convert to GGUF
+            quantizer.convert_to_gguf(output_path)
+            logger.log_info("GGUF conversion completed successfully")
             
             # Save tokenizer if requested
             if save_tokenizer and hasattr(model, 'config'):
@@ -179,43 +161,4 @@ class QuantLLM:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
     
-    @staticmethod
-    def convert_to_gguf(
-        model: PreTrainedModel,
-        output_path: str,
-        quant_config: Optional[Dict[str, Any]] = None
-    ):
-        """
-        Convert a quantized model to GGUF format.
-        
-        Args:
-            model: Model to convert
-            output_path: Path to save GGUF file
-            quant_config: Optional quantization configuration
-        """
-        try:
-            logger.log_info(f"Converting model to GGUF format: {output_path}")
-            
-            # Get quantization config from model if not provided
-            if not quant_config and hasattr(model.config, 'quantization_config'):
-                quant_config = model.config.quantization_config
-            
-            # Create quantizer with existing or default config
-            quantizer = GGUFQuantizer(
-                model_name=model,
-                bits=quant_config.get('bits', 4) if quant_config else 4,
-                group_size=quant_config.get('group_size', 128) if quant_config else 128,
-                quant_type=quant_config.get('quant_type', None) if quant_config else None,
-                use_packed=quant_config.get('use_packed', True) if quant_config else True
-            )
-            
-            # Convert to GGUF
-            quantizer.convert_to_gguf(output_path)
-            logger.log_info("GGUF conversion completed successfully")
-            
-        except Exception as e:
-            logger.log_error(f"GGUF conversion failed: {str(e)}")
-            raise
-        finally:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache() 
+    
