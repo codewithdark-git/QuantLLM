@@ -20,45 +20,96 @@ class LlamaCppConverter:
         "gpt_neox", "pythia", "stablelm", "phi"
     ]
     
+    LLAMA_CPP_REPO = "https://github.com/ggerganov/llama.cpp.git"
+    CONVERT_SCRIPTS = [
+        "convert_hf_to_gguf.py",
+        "convert_hf_to_gguf_update.py",
+        "convert_llama_to_gguf.py",
+        "convert_lora_to_gguf.py"
+    ]
+    
     def __init__(self):
+        self.llama_cpp_path = None
+        self.convert_script = None
         self._setup_paths()
     
     def _setup_paths(self):
         """Setup llama.cpp paths and environment."""
-        self.llama_cpp_path = None
-        self.convert_script = None
+        # First check if we already have llama.cpp cloned
+        potential_paths = [
+            Path.cwd() / "llama.cpp",
+            Path.home() / "llama.cpp",
+            Path(os.getenv("LLAMA_CPP_DIR", "")) if os.getenv("LLAMA_CPP_DIR") else None
+        ]
         
-        # Try to find llama.cpp installation
-        try:
-            import llama_cpp
-            self.llama_cpp_path = Path(llama_cpp.__file__).parent
-            potential_paths = [
-                self.llama_cpp_path / "convert.py",
-                self.llama_cpp_path / "llama_cpp" / "convert.py",
-                Path(sys.prefix) / "llama_cpp_python" / "convert.py",
-            ]
-            
-            for path in potential_paths:
-                if path.exists():
-                    self.convert_script = str(path)
-                    break
+        for path in potential_paths:
+            if path and path.exists():
+                # Check for any of the conversion scripts
+                for script in self.CONVERT_SCRIPTS:
+                    script_path = path / script
+                    if script_path.exists():
+                        self.llama_cpp_path = path
+                        self.convert_script = str(script_path)
+                        logger.log_info(f"✓ Found existing llama.cpp installation at: {path}")
+                        logger.log_info(f"✓ Using conversion script: {script}")
+                        return
                     
-        except ImportError:
-            pass
+        # If not found, we'll clone it
+        self._clone_llama_cpp()
     
-    def _install_llama_cpp(self) -> bool:
-        """Install llama-cpp-python package."""
+    def _clone_llama_cpp(self):
+        """Clone llama.cpp from GitHub."""
         try:
-            logger.log_info("📦 Installing llama-cpp-python...")
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", 
-                "--upgrade", "llama-cpp-python"
-            ])
-            self._setup_paths()
-            return self.convert_script is not None
+            logger.log_info("\n🔄 Setting up llama.cpp:")
+            logger.log_info("-" * 40)
+            
+            # Create a directory for llama.cpp
+            self.llama_cpp_path = Path.cwd() / "llama.cpp"
+            if self.llama_cpp_path.exists():
+                logger.log_info("• Cleaning existing llama.cpp directory...")
+                shutil.rmtree(self.llama_cpp_path)
+            
+            # Clone the repository
+            logger.log_info("• Cloning llama.cpp repository...")
+            subprocess.run(
+                ["git", "clone", self.LLAMA_CPP_REPO],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            # Verify the clone
+            if not self.llama_cpp_path.exists():
+                raise RuntimeError("Failed to clone llama.cpp repository")
+            
+            # Find appropriate conversion script
+            for script in self.CONVERT_SCRIPTS:
+                script_path = self.llama_cpp_path / script
+                if script_path.exists():
+                    self.convert_script = str(script_path)
+                    logger.log_info(f"• Found conversion script: {script}")
+                    break
+            
+            if not self.convert_script:
+                # List available files for debugging
+                available_files = list(self.llama_cpp_path.glob("convert*.py"))
+                logger.log_info("• Available conversion scripts:")
+                for file in available_files:
+                    logger.log_info(f"  - {file.name}")
+                raise RuntimeError(
+                    "Could not find appropriate conversion script in llama.cpp. "
+                    f"Available scripts: {[f.name for f in available_files]}"
+                )
+            
+            logger.log_info("• Successfully set up llama.cpp")
+            logger.log_info(f"• Convert script location: {self.convert_script}")
+            
         except Exception as e:
-            logger.log_error(f"Failed to install llama-cpp-python: {e}")
-            return False
+            logger.log_error(f"Failed to clone/setup llama.cpp: {e}")
+            raise RuntimeError(
+                "Could not set up llama.cpp. Please clone manually:\n"
+                "git clone https://github.com/ggerganov/llama.cpp.git"
+            )
     
     def _detect_model_type(self, model: PreTrainedModel) -> str:
         """Detect model architecture type."""
@@ -99,7 +150,28 @@ class LlamaCppConverter:
         
         # Add quantization info if available
         if hasattr(model.config, 'quantization_config'):
-            minimal_config['quantization_config'] = model.config.quantization_config
+            quant_config = model.config.quantization_config
+            if isinstance(quant_config, dict):
+                minimal_config['quantization_config'] = quant_config
+            else:
+                # Convert BitsAndBytesConfig to dict
+                minimal_config['quantization_config'] = {
+                    'bits': quant_config.bits if hasattr(quant_config, 'bits') else None,
+                    'group_size': quant_config.group_size if hasattr(quant_config, 'group_size') else None,
+                    'quant_method': quant_config.quant_method if hasattr(quant_config, 'quant_method') else None,
+                    'load_in_4bit': quant_config.load_in_4bit if hasattr(quant_config, 'load_in_4bit') else False,
+                    'load_in_8bit': quant_config.load_in_8bit if hasattr(quant_config, 'load_in_8bit') else False,
+                    'llm_int8_threshold': quant_config.llm_int8_threshold if hasattr(quant_config, 'llm_int8_threshold') else 6.0,
+                    'llm_int8_has_fp16_weight': quant_config.llm_int8_has_fp16_weight if hasattr(quant_config, 'llm_int8_has_fp16_weight') else False,
+                    'bnb_4bit_compute_dtype': str(quant_config.bnb_4bit_compute_dtype) if hasattr(quant_config, 'bnb_4bit_compute_dtype') else None,
+                    'bnb_4bit_quant_type': quant_config.bnb_4bit_quant_type if hasattr(quant_config, 'bnb_4bit_quant_type') else None,
+                    'bnb_4bit_use_double_quant': quant_config.bnb_4bit_use_double_quant if hasattr(quant_config, 'bnb_4bit_use_double_quant') else False
+                }
+                # Remove None values
+                minimal_config['quantization_config'] = {
+                    k: v for k, v in minimal_config['quantization_config'].items() 
+                    if v is not None
+                }
             
         config_path = os.path.join(save_dir, "config.json")
         with open(config_path, 'w') as f:
@@ -132,11 +204,10 @@ class LlamaCppConverter:
             # Create output directory
             os.makedirs(output_dir, exist_ok=True)
             
-            # Setup paths
-            if not self.convert_script and not self._install_llama_cpp():
+            # Ensure llama.cpp is available
+            if not self.convert_script:
                 raise RuntimeError(
-                    "Could not find or install llama-cpp-python. "
-                    "Please install manually: pip install llama-cpp-python"
+                    "llama.cpp conversion script not found. Please ensure llama.cpp is properly set up."
                 )
             
             # Detect model type
@@ -145,7 +216,7 @@ class LlamaCppConverter:
             
             # Create temporary directory for minimal checkpoint
             with tempfile.TemporaryDirectory() as temp_dir:
-                logger.log_info("💾 Preparing model for conversion:")
+                logger.log_info("\n💾 Preparing model for conversion:")
                 logger.log_info("-" * 40)
                 
                 # Save minimal checkpoint

@@ -297,13 +297,25 @@ class QuantLLM:
     def save_quantized_model(
         model: PreTrainedModel,
         output_path: str,
+        save_format: str = "gguf",
         save_tokenizer: bool = True,
-        quant_config: Optional[Dict[str, Any]] = None
+        quant_config: Optional[Dict[str, Any]] = None,
+        safe_serialization: bool = True
     ):
-        """Save a quantized model in GGUF format."""
+        """
+        Save a quantized model in either GGUF or safetensors format.
+        
+        Args:
+            model: The quantized model to save
+            output_path: Path to save the model
+            save_format: Format to save in ("gguf" or "safetensors")
+            save_tokenizer: Whether to save the tokenizer
+            quant_config: Optional quantization configuration
+            safe_serialization: Whether to use safe serialization for safetensors format
+        """
         try:
             logger.log_info("\n" + "="*80)
-            logger.log_info("Starting GGUF Export Process".center(80))
+            logger.log_info(f"Starting Model Export Process ({save_format.upper()})".center(80))
             logger.log_info("="*80 + "\n")
             
             # Log model details
@@ -315,6 +327,7 @@ class QuantLLM:
             logger.log_info(f"• Architecture: {model.config.model_type}")
             logger.log_info(f"• Total Parameters: {total_params:,}")
             logger.log_info(f"• Model Size: {model_size_gb:.2f} GB")
+            logger.log_info(f"• Export Format: {save_format.upper()}")
             logger.log_info("")
             
             # Get quantization info
@@ -350,23 +363,43 @@ class QuantLLM:
             output_dir = os.path.dirname(output_path) or "."
             os.makedirs(output_dir, exist_ok=True)
             
-            # Convert to GGUF using the new converter
-            from ..quant.llama_cpp_utils import LlamaCppConverter
+            if save_format.lower() == "gguf":
+                # Convert to GGUF using the converter
+                from ..quant.llama_cpp_utils import LlamaCppConverter
+                
+                converter = LlamaCppConverter()
+                gguf_path = converter.convert_to_gguf(
+                    model=model,
+                    output_dir=output_dir,
+                    bits=quant_config['bits'],
+                    group_size=quant_config.get('group_size', 128),
+                    save_tokenizer=save_tokenizer
+                )
+                
+                logger.log_info("\n✨ GGUF export completed successfully!")
+                
+            else:  # safetensors format
+                logger.log_info("\n💾 Saving model in safetensors format:")
+                logger.log_info("-"*40)
+                
+                # Save the model
+                model.save_pretrained(
+                    output_dir,
+                    safe_serialization=safe_serialization
+                )
+                logger.log_info("• Model weights saved successfully")
+                
+                # Save tokenizer if requested
+                if save_tokenizer and hasattr(model, 'tokenizer'):
+                    logger.log_info("• Saving tokenizer...")
+                    model.tokenizer.save_pretrained(output_dir)
+                
+                logger.log_info("\n✨ Safetensors export completed successfully!")
             
-            converter = LlamaCppConverter()
-            gguf_path = converter.convert_to_gguf(
-                model=model,
-                output_dir=output_dir,
-                bits=quant_config['bits'],
-                group_size=quant_config.get('group_size', 128),
-                save_tokenizer=save_tokenizer
-            )
-            
-            logger.log_info("\n✨ Model export completed successfully!")
             logger.log_info("="*80)
             
         except Exception as e:
-            logger.log_error(f"Failed to save model: {str(e)}")
+            logger.log_error(f"\n❌ Failed to save model: {str(e)}")
             raise
         finally:
             if torch.cuda.is_available():
