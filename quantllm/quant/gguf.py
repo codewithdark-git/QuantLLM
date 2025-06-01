@@ -5,13 +5,18 @@ import math
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, Any, List, Union, Tuple
-from transformers import PreTrainedModel, AutoModelForCausalLM, AutoTokenizer
+from transformers import PreTrainedModel, AutoModelForCausalLM, AutoTokenizer, AutoConfig, BitsAndBytesConfig
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 import bitsandbytes as bnb
-from .quantization_engine import move_to_device, BaseQuantizer, QuantizationConfig
 from ..utils.logger import logger
 import time
 from tqdm.auto import tqdm
+import os
+import sys
+import shutil
+import subprocess
+import glob
+from pathlib import Path
 
 try:
     import ctransformers
@@ -135,11 +140,8 @@ SUPPORTED_GGUF_TYPES = {
 # List of supported bits
 SUPPORTED_GGUF_BITS = list(SUPPORTED_GGUF_TYPES.keys())
 
-class GGUFQuantizer(BaseQuantizer):
-    """
-    GGUF-specific quantizer implementation using BitsAndBytes for efficient loading
-    and direct GGUF conversion.
-    """
+class GGUFQuantizer:
+    """GGUF-specific quantizer implementation."""
     
     def __init__(
         self,
@@ -149,17 +151,14 @@ class GGUFQuantizer(BaseQuantizer):
         use_packed: bool = True,
         device: Optional[Union[str, torch.device]] = None,
         quant_type: Optional[str] = None,
-        load_in_8bit: bool = False,
-        load_in_4bit: bool = True,
-        bnb_4bit_quant_type: str = "nf4",
-        bnb_4bit_compute_dtype: torch.dtype = torch.float16,
-        bnb_4bit_use_double_quant: bool = True,
+        quantization_config: Optional[BitsAndBytesConfig] = None,
         use_gradient_checkpointing: bool = True,
         device_map: Optional[Union[str, Dict[str, Union[int, str, torch.device]]]] = "auto",
         max_memory: Optional[Dict[Union[int, str], Union[int, str]]] = None,
         offload_folder: Optional[str] = None,
         offload_state_dict: bool = False,
-        torch_dtype: Optional[torch.dtype] = torch.float16
+        torch_dtype: Optional[torch.dtype] = torch.float16,
+        cpu_offload: bool = False
     ):
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF conversion. Install with: pip install ctransformers")
@@ -176,16 +175,10 @@ class GGUFQuantizer(BaseQuantizer):
         self.use_packed = use_packed
         self.quant_type = quant_type or self._get_default_quant_type(bits)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.cpu_offload = cpu_offload
         
         # Get tensor-specific quantization configuration
         self.tensor_configs = SUPPORTED_GGUF_TYPES[bits][self.quant_type]["tensor_configs"]
-        
-        # BitsAndBytes config
-        self.load_in_8bit = load_in_8bit
-        self.load_in_4bit = load_in_4bit
-        self.bnb_4bit_quant_type = bnb_4bit_quant_type
-        self.bnb_4bit_compute_dtype = bnb_4bit_compute_dtype
-        self.bnb_4bit_use_double_quant = bnb_4bit_use_double_quant
         
         # Accelerate config
         self.device_map = device_map
@@ -194,6 +187,7 @@ class GGUFQuantizer(BaseQuantizer):
         self.offload_state_dict = offload_state_dict
         self.torch_dtype = torch_dtype
         self.use_gradient_checkpointing = use_gradient_checkpointing
+        self.quantization_config = quantization_config
 
         # Initialize model and tokenizer
         self._initialize_model_and_tokenizer(model_name)
@@ -234,34 +228,54 @@ class GGUFQuantizer(BaseQuantizer):
 
     def _initialize_model_and_tokenizer(self, model_name: Union[str, PreTrainedModel]):
         """Initialize model and tokenizer using BitsAndBytes."""
-        if isinstance(model_name, str):
-            # Load model and tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            with init_empty_weights():
-                self.model = AutoModelForCausalLM.from_config(model_name)
-            self.model.tie_weights()
-            self.model = load_checkpoint_and_dispatch(
-                self.model,
-                model_name,
-                device_map=self.device_map,
-                no_split_module_classes=["BloomBlock"],
-                dtype=self.torch_dtype,
-                load_in_8bit=self.load_in_8bit,
-                load_in_4bit=self.load_in_4bit,
-                bnb_4bit_quant_type=self.bnb_4bit_quant_type,
-                bnb_4bit_compute_dtype=self.bnb_4bit_compute_dtype,
-                bnb_4bit_use_double_quant=self.bnb_4bit_use_double_quant
-            )
-        elif isinstance(model_name, PreTrainedModel):
-            self.model = model_name
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model.config._name_or_path)
-        else:
-            raise TypeError("model_name must be a string or a PreTrainedModel")
+        try:
+            if isinstance(model_name, str):
+                logger.log_info(f"Loading tokenizer from: {model_name}")
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+                
+                logger.log_info(f"Loading model with BitsAndBytes configuration")
+                
+                # Load model with quantization settings
+                load_kwargs = {
+                    "device_map": self.device_map,
+                    "max_memory": self.max_memory,
+                    "offload_folder": self.offload_folder,
+                    "offload_state_dict": self.offload_state_dict,
+                    "torch_dtype": self.torch_dtype,
+                    "trust_remote_code": True,
+                }
+                
+                # Add quantization config if provided
+                if self.quantization_config:
+                    load_kwargs["quantization_config"] = self.quantization_config
+                
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    **load_kwargs
+                )
+            elif isinstance(model_name, PreTrainedModel):
+                self.model = model_name
+                if hasattr(model_name.config, '_name_or_path') and model_name.config._name_or_path:
+                    try:
+                        self.tokenizer = AutoTokenizer.from_pretrained(
+                            model_name.config._name_or_path,
+                            trust_remote_code=True
+                        )
+                    except Exception as e:
+                        logger.log_warning(f"Could not load tokenizer: {e}")
+            else:
+                raise TypeError("model_name must be a string or PreTrainedModel instance")
 
-        # Enable gradient checkpointing if requested
-        if self.use_gradient_checkpointing and hasattr(self.model, "gradient_checkpointing_enable"):
-            self.model.gradient_checkpointing_enable()
-            logger.log_info("Gradient checkpointing enabled for memory efficiency")
+            # Enable gradient checkpointing if requested
+            if self.use_gradient_checkpointing and hasattr(self.model, "gradient_checkpointing_enable"):
+                self.model.gradient_checkpointing_enable()
+                logger.log_info("Gradient checkpointing enabled for memory efficiency")
+
+            self._log_model_stats(self.model, "Initial")
+
+        except Exception as e:
+            logger.log_error(f"Failed to initialize model: {str(e)}")
+            raise
 
     def _log_model_stats(self, model: PreTrainedModel, stage: str = ""):
         """Log meaningful model statistics."""
@@ -278,260 +292,67 @@ class GGUFQuantizer(BaseQuantizer):
             logger.log_info(f"GPU Memory Allocated: {torch.cuda.memory_allocated() / (1024 * 1024):.2f} MB")
             logger.log_info(f"GPU Memory Reserved: {torch.cuda.memory_reserved() / (1024 * 1024):.2f} MB")
 
-    def quantize(
-        self,
-        calibration_data: Optional[torch.Tensor] = None
-    ) -> PreTrainedModel:
-        """Quantize model using GGUF format with optimized memory handling."""
-        if not CT_AVAILABLE:
-            raise ImportError("CTransformers is required for GGUF quantization")
-
-        try:
-            logger.log_info("\n" + "="*60)
-            logger.log_info("Starting GGUF Quantization Process")
-            logger.log_info("="*60)
-            
-            # Log initial model stats
-            self._log_model_stats(self.model, "Original")
-            
-            # Prepare model for quantization
-            if not hasattr(self.model, '_prepared_for_quantization'): 
-                self.model = self._prepare_model_instance(self.model, make_copy=True)
-                self.model._prepared_for_quantization = True
-            
-            # Determine device strategy
-            device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
-            logger.log_info(f"\nUsing device {device} for quantization")
-            
-            # Move model to appropriate device if not already there
-            if next(self.model.parameters()).device != device:
-                logger.log_info(f"Moving model to {device}")
-                self.model.to(device)
-                self._clear_memory()
-            
-            self.model.eval()
-            
-            # Process layers in chunks
-            logger.log_info("\nStarting layer-by-layer quantization...")
-            modules_to_quantize = [
-                (name, module) for name, module in self.model.named_modules() 
-                if isinstance(module, nn.Linear)
-            ]
-            
-            total_layers = len(modules_to_quantize)
-            chunks = [modules_to_quantize[i:i + self.chunk_size] 
-                     for i in range(0, total_layers, self.chunk_size)]
-            
-            start_time = time.perf_counter()
-            
-            # Create progress bars
-            chunk_pbar = tqdm(chunks, desc="Processing chunks", position=0)
-            layer_pbar = tqdm(total=total_layers, desc="Quantizing layers", position=1, leave=True)
-            
-            for chunk_idx, chunk in enumerate(chunk_pbar):
-                chunk_pbar.set_description(f"Processing chunk {chunk_idx + 1}/{len(chunks)}")
-                
-                for idx, (name, module) in enumerate(chunk, 1):
-                    try:
-                        current_layer = idx + chunk_idx * self.chunk_size
-                        layer_shape = list(module.weight.shape)
-                        layer_pbar.set_description(
-                            f"Layer {current_layer}/{total_layers}: {name} {layer_shape}"
-                        )
-                        
-                        # Move layer to target device if needed
-                        if module.weight.device != device:
-                            module = module.to(device)
-                        
-                        quantized_layer = self._quantize_layer(module)
-                        
-                        # Update model with quantized layer
-                        parent_name = '.'.join(name.split('.')[:-1])
-                        child_name = name.split('.')[-1]
-                        
-                        if parent_name:
-                            parent = self.model.get_submodule(parent_name)
-                            setattr(parent, child_name, quantized_layer)
-                        else:
-                            setattr(self.model, name, quantized_layer)
-                        
-                        # Update progress
-                        layer_pbar.update(1)
-                        elapsed_time = time.perf_counter() - start_time
-                        eta = elapsed_time / (current_layer / total_layers) - elapsed_time if current_layer > 0 else 0
-                        layer_pbar.set_postfix({"ETA": f"{eta:.1f}s"})
-                        
-                        self._clear_memory()
-                        
-                    except Exception as e:
-                        logger.log_error(f"Failed to quantize layer {name}: {str(e)}")
-                        raise RuntimeError(f"GGUF quantization failed at layer {name}: {str(e)}") from e
-                
-                # Clear memory after each chunk
-                if not self.cpu_offload:
-                    torch.cuda.empty_cache()
-                gc.collect()
-
-            # Close progress bars
-            layer_pbar.close()
-            chunk_pbar.close()
-
-            # Log final statistics
-            total_time = time.perf_counter() - start_time
-            logger.log_info("\n" + "="*60)
-            logger.log_info("Quantization Complete")
-            logger.log_info(f"Total time: {total_time:.2f} seconds")
-            logger.log_info(f"Average time per layer: {total_time/total_layers:.2f} seconds")
-            
-            # Log quantized model stats
-            self._log_model_stats(self.model, "Quantized")
-            
-            # Calculate compression ratio
-            original_size = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024 * 1024)
-            quantized_size = sum(p.numel() * (self.bits / 8) for p in self.model.parameters()) / (1024 * 1024)
-            compression_ratio = original_size / quantized_size
-            logger.log_info(f"Compression Ratio: {compression_ratio:.2f}x")
-            logger.log_info("="*60 + "\n")
-
-            return self.model
-
-        except Exception as e:
-            logger.log_error(f"GGUF quantization failed: {str(e)}")
-            raise RuntimeError(f"GGUF quantization failed: {str(e)}") from e
-        finally:
-            self._clear_memory()
-
-    def _quantize_layer(
-        self,
-        layer: nn.Linear,
-        stats: Optional[Dict[str, torch.Tensor]] = None
-    ) -> QuantizedLinear:
-        """
-        Quantize a single linear layer to GGUF format with device-aware processing.
-        """
-        if not isinstance(layer, nn.Linear):
-            raise TypeError(f"Expected nn.Linear layer, got {type(layer)}")
-
-        device = torch.device('cpu') if self.cpu_offload else self.device_manager.primary_device
-        
-        try:
-            # Get layer device and ensure it's on the correct device
-            layer_device = next(layer.parameters()).device
-            if layer_device != device:
-                layer = layer.to(device)
-            
-            # Get weight tensor
-            weight = layer.weight.data
-            
-            # Calculate scales and zero points
-            if self.group_size > 0:
-                # Group-wise quantization
-                num_groups = weight.shape[-1] // self.group_size
-                weight_groups = weight.view(-1, num_groups, self.group_size)
-                scales = weight_groups.amax(dim=-1, keepdim=True)
-                weight_scaled = weight_groups / scales.clamp(min=1e-5)
-                zeros = torch.zeros_like(scales)  # GGUF uses symmetric quantization
-            else:
-                # Per-tensor quantization
-                scale = weight.abs().max()
-                weight_scaled = weight / scale.clamp(min=1e-5)
-                scales = scale.expand(1)
-                zeros = torch.zeros_like(scales)
-
-            # Quantize weights
-            qweight = torch.clamp(
-                torch.round(weight_scaled * (2**(self.bits-1) - 1)),
-                -2**(self.bits-1),
-                2**(self.bits-1) - 1
-            ).to(torch.int8)
-
-            # Create quantized layer
-            qlayer = QuantizedLinear(
-                in_features=layer.in_features,
-                out_features=layer.out_features,
-                bias=layer.bias is not None,
-                config=QuantizationConfig(
-                    bits=self.bits,
-                    scheme="symmetric",
-                    granularity="per-group" if self.group_size > 0 else "per-tensor",
-                    format="gguf",
-                    format_config={
-                        "type": self.quant_type,
-                        "group_size": self.group_size,
-                        "is_packed": self.use_packed
-                    }
-                )
-            ).to(device)
-
-            # Store quantized weights and parameters
-            qlayer.weight_quantized = qweight
-            qlayer.weight_scale = 1.0 / scales
-            qlayer.weight_zero_point = zeros
-            if layer.bias is not None:
-                qlayer.bias = layer.bias.data.clone()
-
-            return qlayer
-
-        except Exception as e:
-            logger.log_error(f"Failed to quantize layer: {str(e)}")
-            raise RuntimeError(f"GGUF layer quantization failed: {str(e)}") from e
-        finally:
-            # Clean up original layer if it was moved
-            if layer_device != device:
-                del layer
-            if not self.cpu_offload:
-                torch.cuda.empty_cache()
-            gc.collect()
-
     def convert_to_gguf(self, output_path: str):
-        """
-        Convert quantized model to GGUF format using llama.cpp conversion tools.
-        """
+        """Convert quantized model to GGUF format using llama.cpp conversion tools."""
         if not CT_AVAILABLE:
             raise ImportError("CTransformers is required for GGUF conversion")
         
+        temp_dir = None
         try:
-            logger.log_info(f"\nConverting model to GGUF format: {output_path}")
-            logger.log_info(f"Using quantization type: {self.quant_type}")
+            logger.log_info("\n" + "="*60)
+            logger.log_info("GGUF Conversion Process")
+            logger.log_info("="*60)
             
-            # Ensure model is on CPU for conversion
-            if not self.cpu_offload:
-                self.model.to('cpu')
+            # Log conversion settings
+            logger.log_info(f"\nOutput path: {output_path}")
+            logger.log_info(f"Quantization type: {self.quant_type}")
+            logger.log_info(f"Bits: {self.bits}")
+            logger.log_info(f"Group size: {self.group_size}")
             
             # Save model in HF format first
             temp_dir = f"{output_path}_temp_hf"
-            logger.log_info(f"Saving temporary HF checkpoint to: {temp_dir}")
+            logger.log_info(f"\nSaving temporary HF checkpoint to: {temp_dir}")
             self.model.save_pretrained(temp_dir, safe_serialization=True)
             
-            # Prepare conversion command
-            import subprocess
-            import sys
-            import os
-            
-            # Try to find convert.py from llama.cpp
+            # Find convert.py from llama.cpp
             convert_script = None
-            potential_paths = [
-                "llama.cpp/convert.py",
-                os.path.join(os.path.dirname(sys.executable), "llama.cpp/convert.py"),
-                os.path.expanduser("~/.local/lib/python*/site-packages/llama_cpp_python/convert.py"),
-                "/usr/local/lib/python*/site-packages/llama_cpp_python/convert.py"
+            
+            # Search paths for convert.py
+            search_paths = [
+                # Current directory
+                os.path.join(os.getcwd(), "llama.cpp/convert.py"),
+                # Python environment
+                os.path.join(sys.prefix, "llama.cpp/convert.py"),
+                # Site packages
+                *glob.glob(os.path.join(sys.prefix, "lib/python*/site-packages/llama_cpp_python/convert.py")),
+                # User site packages
+                *glob.glob(os.path.expanduser("~/.local/lib/python*/site-packages/llama_cpp_python/convert.py")),
+                # Windows specific paths
+                os.path.join(sys.prefix, "Lib/site-packages/llama_cpp_python/convert.py"),
+                # Try pip show llama-cpp-python
+                *glob.glob(subprocess.getoutput("pip show llama-cpp-python | grep Location: | cut -d' ' -f2").strip() + "/llama_cpp_python/convert.py"),
             ]
             
-            for path in potential_paths:
-                if "*" in path:
-                    import glob
-                    matches = glob.glob(path)
-                    if matches:
-                        convert_script = matches[0]
-                        break
-                elif os.path.exists(path):
+            for path in search_paths:
+                if os.path.exists(path):
                     convert_script = path
                     break
             
             if not convert_script:
+                # Try to install llama-cpp-python if not found
+                logger.log_info("\nconvert.py not found. Attempting to install llama-cpp-python...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "llama-cpp-python"])
+                
+                # Search again after installation
+                for path in search_paths:
+                    if os.path.exists(path):
+                        convert_script = path
+                        break
+            
+            if not convert_script:
                 raise RuntimeError(
-                    "Could not find llama.cpp convert.py script. Please install llama-cpp-python: "
-                    "pip install llama-cpp-python"
+                    "Could not find llama.cpp convert.py script. Please install llama-cpp-python manually:\n"
+                    "pip install llama-cpp-python --upgrade"
                 )
             
             # Build conversion command
@@ -549,7 +370,7 @@ class GGUFQuantizer(BaseQuantizer):
                 cmd.extend(["--model-type", model_type])
             
             # Execute conversion
-            logger.log_info("Running GGUF conversion...")
+            logger.log_info("\nRunning GGUF conversion...")
             logger.log_info(f"Command: {' '.join(cmd)}")
             
             with tqdm(total=100, desc="Converting to GGUF", unit="%") as pbar:
@@ -573,30 +394,48 @@ class GGUFQuantizer(BaseQuantizer):
                                 pbar.refresh()
                             except:
                                 pass
-                
-                # Get return code and output
-                return_code = process.wait()
-                if return_code != 0:
-                    error_output = process.stderr.read()
-                    raise RuntimeError(f"GGUF conversion failed with error:\n{error_output}")
+                        logger.log_info(output.strip())
             
-            # Cleanup temporary files
-            import shutil
-            logger.log_info("Cleaning up temporary files...")
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            # Get return code and output
+            return_code = process.wait()
+            if return_code != 0:
+                error_output = process.stderr.read()
+                raise RuntimeError(f"GGUF conversion failed with error:\n{error_output}")
+        
+            # Verify output file
+            if not os.path.exists(output_path):
+                raise RuntimeError(f"GGUF file was not created at {output_path}")
             
-            logger.log_info(f"Successfully saved model in GGUF format to: {output_path}")
+            file_size = os.path.getsize(output_path) / (1024 * 1024 * 1024)  # Convert to GB
+            logger.log_info(f"\nGGUF file size: {file_size:.2f} GB")
+            
+            # Calculate compression ratio
+            original_size = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024 * 1024 * 1024)
+            compression_ratio = original_size / file_size
+            logger.log_info(f"Compression ratio: {compression_ratio:.2f}x")
             
         except Exception as e:
             logger.log_error(f"GGUF conversion failed: {str(e)}")
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to convert model to GGUF: {str(e)}") from e
+        
         finally:
+            # Cleanup temporary files
+            if temp_dir and os.path.exists(temp_dir):
+                logger.log_info("\nCleaning up temporary files...")
+                shutil.rmtree(temp_dir, ignore_errors=True)
             self._clear_memory()
-    
+            
+            if os.path.exists(output_path):
+                logger.log_info("\nGGUF conversion completed successfully!")
+                logger.log_info(f"Model saved to: {output_path}")
+                logger.log_info("="*60 + "\n")
+
     def _clear_memory(self):
         """Enhanced memory cleanup for GGUF operations."""
         gc.collect()
-        if not self.cpu_offload and torch.cuda.is_available():
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 

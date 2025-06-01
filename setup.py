@@ -44,7 +44,6 @@ setup(
             "einops>=0.6.1",
             "evaluate>=0.4.0",
             "tensorboard>=2.13.0",
-            "llama-cpp-python>=0.2.0",
             "psutil>=5.9.0",
             "pandas>=1.5.0",
     ],
@@ -62,7 +61,8 @@ setup(
             "flake8>=4.0.0",
         ],
         "gguf": [
-            "ctransformers>=0.2.0",
+            "ctransformers>=0.2.24",
+            "llama-cpp-python>=0.2.11",
         ],
     },
     include_package_data=True,

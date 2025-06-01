@@ -27,7 +27,7 @@ def move_to_device(
         # Existing logic for torch.Tensor
         if force_copy:
             return tensor.to(device, copy=True)
-        if tensor.device == device: # type: ignore[union-attr]
+        if tensor.device == device:
             return tensor
         return tensor.to(device)
     except Exception as e:
@@ -462,9 +462,7 @@ class BaseQuantizer:
     ):
         """Initialize base quantizer with device management and model loading."""
         self.bits = bits
-        self.device_manager = DeviceManager(
-            primary_device=torch.device(device) if device else None
-        )
+        self.device = torch.device(device) if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.logger = logger
         self.tokenizer = None
         self._model: Optional[PreTrainedModel] = None # Internal attribute for the property
@@ -491,7 +489,7 @@ class BaseQuantizer:
                     self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
                 except Exception as e:
                     self.logger.log_warning(
-                        f"Could not load tokenizer based on the provided model's config path ({self.model_name_or_path}): {e}. "
+                        f"Could not load tokenizer based on the provided model's config path ({self.model_name}): {e}. "
                         "Please handle tokenizer separately if needed."
                     )
             else:
@@ -525,9 +523,9 @@ class BaseQuantizer:
             prepared_model = new_model_from_config
         
         prepared_model.eval()
-        if self.device_manager.primary_device is not None:
-            self.logger.log_info(f"Moving model to device: {self.device_manager.primary_device}")
-            prepared_model = prepared_model.to(self.device_manager.primary_device)
+        if self.device is not None:
+            self.logger.log_info(f"Moving model to device: {self.device}")
+            prepared_model = prepared_model.to(self.device)
         
         self.logger.log_info("Model preparation (copy, eval, device move) completed successfully.")
         return prepared_model
@@ -549,35 +547,24 @@ class BaseQuantizer:
         # If tokenizer auto-loading is desired, it should ideally happen based on this new model's config.
         self.model_config = value.config
         if hasattr(value.config, '_name_or_path') and value.config._name_or_path:
-             self.model_name_or_path = value.config._name_or_path
+             self.model_name = value.config._name_or_path
              try:
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
              except Exception as e:
                 self.logger.log_warning(f"Could not load tokenizer for newly set model: {e}")
         else:
-            self.model_name_or_path = None
+            self.model_name = None
             self.tokenizer = None # Reset tokenizer if new model has no path
             self.logger.log_warning("Newly set model has no _name_or_path in config, tokenizer not loaded.")
 
         self._model = self._prepare_model_instance(value, make_copy=False) # make_copy=False, user is setting it directly.
-
-    def prepare_calibration_data(self, calibration_data: torch.Tensor) -> torch.Tensor:
-        """Prepare calibration data with proper device handling."""
-        if calibration_data is None:
-            raise ValueError("Calibration data is required")
-
-        # Move to appropriate device
-        if self.device_manager.primary_device is not None:
-            calibration_data = move_to_device(calibration_data, self.device_manager.primary_device)
-
-        return calibration_data
 
     def _clear_memory(self):
         """Clear GPU memory and run garbage collection."""
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            self.device_manager.sync()
+            torch.cuda.synchronize()
 
     def quantize(self, calibration_data: Optional[torch.Tensor] = None) -> PreTrainedModel:
         """Abstract method for quantization. Must be implemented by subclasses."""
