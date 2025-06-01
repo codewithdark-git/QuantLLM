@@ -300,7 +300,8 @@ class QuantLLM:
         save_format: str = "gguf",
         save_tokenizer: bool = True,
         quant_config: Optional[Dict[str, Any]] = None,
-        safe_serialization: bool = True
+        safe_serialization: bool = True,
+        verbose: bool = False
     ):
         """
         Save a quantized model in either GGUF or safetensors format.
@@ -312,36 +313,39 @@ class QuantLLM:
             save_tokenizer: Whether to save the tokenizer
             quant_config: Optional quantization configuration
             safe_serialization: Whether to use safe serialization for safetensors format
+            verbose: Whether to show detailed progress logs
         """
         try:
-            logger.log_info("\n" + "="*80)
-            logger.log_info(f"Starting Model Export Process ({save_format.upper()})".center(80))
-            logger.log_info("="*80 + "\n")
-            
-            # Log model details
-            total_params = sum(p.numel() for p in model.parameters())
-            model_size_gb = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024**3)
-            
-            logger.log_info("📊 Model Information:")
-            logger.log_info("-"*40)
-            logger.log_info(f"• Architecture: {model.config.model_type}")
-            logger.log_info(f"• Total Parameters: {total_params:,}")
-            logger.log_info(f"• Model Size: {model_size_gb:.2f} GB")
-            logger.log_info(f"• Export Format: {save_format.upper()}")
-            logger.log_info("")
+            if not verbose:
+                logger.log_info(f"Converting model to {save_format.upper()} format...")
+            else:
+                logger.log_info("\n" + "="*80)
+                logger.log_info(f"Starting Model Export Process ({save_format.upper()})".center(80))
+                logger.log_info("="*80 + "\n")
+                
+                # Log model details
+                total_params = sum(p.numel() for p in model.parameters())
+                model_size_gb = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024**3)
+                
+                logger.log_info("📊 Model Information:")
+                logger.log_info("-"*40)
+                logger.log_info(f"• Architecture: {model.config.model_type}")
+                logger.log_info(f"• Total Parameters: {total_params:,}")
+                logger.log_info(f"• Model Size: {model_size_gb:.2f} GB")
+                logger.log_info(f"• Export Format: {save_format.upper()}")
+                logger.log_info("")
             
             # Get quantization info
-            if not quant_config:
-                if hasattr(model.config, 'quantization_config'):
-                    config_dict = model.config.quantization_config
-                    if isinstance(config_dict, BitsAndBytesConfig):
-                        # Handle BitsAndBytesConfig
-                        bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
-                        quant_config = {
-                            'bits': bits,
-                            'group_size': 128,  # Default group size
-                            'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
-                        }
+            if not quant_config and hasattr(model.config, 'quantization_config'):
+                config_dict = model.config.quantization_config
+                if isinstance(config_dict, BitsAndBytesConfig):
+                    bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
+                    quant_config = {
+                        'bits': bits,
+                        'group_size': 128,
+                        'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
+                    }
+                    if verbose:
                         logger.log_info("📊 Quantization Configuration:")
                         logger.log_info("-"*40)
                         logger.log_info(f"• Bits: {bits}")
@@ -349,15 +353,9 @@ class QuantLLM:
                         if config_dict.load_in_4bit:
                             logger.log_info(f"• 4-bit Type: {config_dict.bnb_4bit_quant_type}")
                             logger.log_info(f"• Compute dtype: {config_dict.bnb_4bit_compute_dtype}")
-                    else:
-                        quant_config = config_dict
+                        logger.log_info("")
                 else:
-                    logger.log_info("\nUsing default 4-bit quantization settings")
-                    quant_config = {
-                        'bits': 4,
-                        'group_size': 128,
-                        'quant_type': "Q4_K_M"
-                    }
+                    quant_config = config_dict
             
             # Create output directory
             output_dir = os.path.dirname(output_path) or "."
@@ -371,35 +369,38 @@ class QuantLLM:
                 gguf_path = converter.convert_to_gguf(
                     model=model,
                     output_dir=output_dir,
-                    bits=quant_config['bits'],
-                    group_size=quant_config.get('group_size', 128),
+                    bits=quant_config['bits'] if quant_config else 4,
+                    group_size=quant_config.get('group_size', 128) if quant_config else 128,
                     save_tokenizer=save_tokenizer
                 )
                 
-                logger.log_info("\n✨ GGUF export completed successfully!")
+                if verbose:
+                    file_size = os.path.getsize(gguf_path) / (1024**3)
+                    logger.log_info(f"\nGGUF model saved ({file_size:.2f} GB): {gguf_path}")
+                else:
+                    logger.log_info("✓ GGUF conversion completed successfully!")
                 
             else:  # safetensors format
-                logger.log_info("\n💾 Saving model in safetensors format:")
-                logger.log_info("-"*40)
+                if verbose:
+                    logger.log_info("\n💾 Saving model in safetensors format...")
                 
                 # Save the model
                 model.save_pretrained(
                     output_dir,
                     safe_serialization=safe_serialization
                 )
-                logger.log_info("• Model weights saved successfully")
                 
                 # Save tokenizer if requested
                 if save_tokenizer and hasattr(model, 'tokenizer'):
-                    logger.log_info("• Saving tokenizer...")
                     model.tokenizer.save_pretrained(output_dir)
                 
-                logger.log_info("\n✨ Safetensors export completed successfully!")
-            
-            logger.log_info("="*80)
+                if verbose:
+                    logger.log_info("✓ Model saved successfully in safetensors format!")
+                else:
+                    logger.log_info("✓ Model saved successfully!")
             
         except Exception as e:
-            logger.log_error(f"\n❌ Failed to save model: {str(e)}")
+            logger.log_error(f"Failed to save model: {str(e)}")
             raise
         finally:
             if torch.cuda.is_available():
