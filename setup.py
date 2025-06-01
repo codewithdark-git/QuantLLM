@@ -46,6 +46,8 @@ setup(
             "tensorboard>=2.13.0",
             "psutil>=5.9.0",
             "pandas>=1.5.0",
+            "ctransformers>=0.2.24",  # Required for GGUF
+            "llama-cpp-python>=0.2.11",  # Required for GGUF
     ],
     extras_require={
         "dev": [
@@ -59,10 +61,6 @@ setup(
             "black>=22.0.0",
             "isort>=5.10.0",
             "flake8>=4.0.0",
-        ],
-        "gguf": [
-            "ctransformers>=0.2.24",
-            "llama-cpp-python>=0.2.11",
         ],
     },
     include_package_data=True,

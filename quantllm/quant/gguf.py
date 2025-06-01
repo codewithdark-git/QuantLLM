@@ -299,81 +299,105 @@ class GGUFQuantizer:
         
         temp_dir = None
         try:
-            logger.log_info("\n" + "="*60)
-            logger.log_info("GGUF Conversion Process")
-            logger.log_info("="*60)
+            # Print header
+            logger.log_info("\n" + "="*80)
+            logger.log_info("🚀 Starting GGUF Conversion Process".center(80))
+            logger.log_info("="*80 + "\n")
             
-            # Log conversion settings
-            logger.log_info(f"\nOutput path: {output_path}")
-            logger.log_info(f"Quantization type: {self.quant_type}")
-            logger.log_info(f"Bits: {self.bits}")
-            logger.log_info(f"Group size: {self.group_size}")
+            # Model Information Section
+            logger.log_info("📊 Model Information:")
+            logger.log_info("-"*40)
+            model_type = self.model.config.model_type if hasattr(self.model, 'config') else None
+            supported_types = ["llama", "mistral", "falcon", "mpt", "gpt_neox", "pythia", "stablelm"]
             
-            # Save model in HF format first
+            if model_type in supported_types:
+                logger.log_info(f"• Architecture: {model_type.upper()}")
+            else:
+                logger.log_info(f"• Architecture: Unknown (using default LLAMA)")
+                model_type = "llama"
+            
+            total_params = sum(p.numel() for p in self.model.parameters())
+            logger.log_info(f"• Total Parameters: {total_params:,}")
+            model_size = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024**3)
+            logger.log_info(f"• Model Size: {model_size:.2f} GB")
+            logger.log_info("")
+            
+            # Conversion Settings Section
+            logger.log_info("⚙️ Conversion Settings:")
+            logger.log_info("-"*40)
+            logger.log_info(f"• Output Path: {output_path}")
+            logger.log_info(f"• Quantization Type: {self.quant_type}")
+            logger.log_info(f"• Target Bits: {self.bits}")
+            logger.log_info(f"• Group Size: {self.group_size}")
+            logger.log_info("")
+            
+            # Save temporary checkpoint
             temp_dir = f"{output_path}_temp_hf"
-            logger.log_info(f"\nSaving temporary HF checkpoint to: {temp_dir}")
+            logger.log_info("💾 Saving Temporary Checkpoint:")
+            logger.log_info("-"*40)
+            logger.log_info(f"• Checkpoint Path: {temp_dir}")
             self.model.save_pretrained(temp_dir, safe_serialization=True)
+            logger.log_info("• Checkpoint saved successfully")
+            logger.log_info("")
             
-            # Find convert.py from llama.cpp
-            convert_script = None
+            # Find convert.py script
+            logger.log_info("🔍 Locating GGUF Conversion Tools:")
+            logger.log_info("-"*40)
             
-            # Search paths for convert.py
-            search_paths = [
-                # Current directory
-                os.path.join(os.getcwd(), "llama.cpp/convert.py"),
-                # Python environment
-                os.path.join(sys.prefix, "llama.cpp/convert.py"),
-                # Site packages
-                *glob.glob(os.path.join(sys.prefix, "lib/python*/site-packages/llama_cpp_python/convert.py")),
-                # User site packages
-                *glob.glob(os.path.expanduser("~/.local/lib/python*/site-packages/llama_cpp_python/convert.py")),
-                # Windows specific paths
-                os.path.join(sys.prefix, "Lib/site-packages/llama_cpp_python/convert.py"),
-                # Try pip show llama-cpp-python
-                *glob.glob(subprocess.getoutput("pip show llama-cpp-python | grep Location: | cut -d' ' -f2").strip() + "/llama_cpp_python/convert.py"),
-            ]
-            
-            for path in search_paths:
-                if os.path.exists(path):
-                    convert_script = path
-                    break
+            # First try pip installation path
+            try:
+                import llama_cpp
+                llama_cpp_path = os.path.dirname(llama_cpp.__file__)
+                potential_convert = os.path.join(llama_cpp_path, "convert.py")
+                if os.path.exists(potential_convert):
+                    convert_script = potential_convert
+                    logger.log_info(f"• Found convert.py in llama_cpp package: {convert_script}")
+                else:
+                    convert_script = None
+            except ImportError:
+                convert_script = None
             
             if not convert_script:
-                # Try to install llama-cpp-python if not found
-                logger.log_info("\nconvert.py not found. Attempting to install llama-cpp-python...")
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "llama-cpp-python"])
-                
-                # Search again after installation
-                for path in search_paths:
-                    if os.path.exists(path):
-                        convert_script = path
-                        break
+                logger.log_info("• Attempting to install llama-cpp-python...")
+                try:
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "llama-cpp-python"])
+                    import llama_cpp
+                    llama_cpp_path = os.path.dirname(llama_cpp.__file__)
+                    convert_script = os.path.join(llama_cpp_path, "convert.py")
+                    if not os.path.exists(convert_script):
+                        raise FileNotFoundError("convert.py not found after installation")
+                    logger.log_info("• Successfully installed and located convert.py")
+                except Exception as e:
+                    logger.log_error(f"• Failed to install/locate llama-cpp-python: {e}")
+                    raise RuntimeError(
+                        "Could not find or install llama-cpp-python. Please install manually:\n"
+                        "pip install llama-cpp-python --upgrade"
+                    )
             
-            if not convert_script:
-                raise RuntimeError(
-                    "Could not find llama.cpp convert.py script. Please install llama-cpp-python manually:\n"
-                    "pip install llama-cpp-python --upgrade"
-                )
+            logger.log_info("")
             
             # Build conversion command
+            logger.log_info("🛠️ Preparing Conversion Command:")
+            logger.log_info("-"*40)
+            
             cmd = [
                 sys.executable,
                 convert_script,
                 temp_dir,
                 "--outfile", output_path,
                 "--outtype", f"q{self.bits}" if self.bits < 16 else "f16" if self.bits == 16 else "f32",
+                "--model-type", model_type
             ]
             
-            # Add model type specific args
-            model_type = self.model.config.model_type if hasattr(self.model, 'config') else "llama"
-            if model_type in ["llama", "mistral"]:
-                cmd.extend(["--model-type", model_type])
+            logger.log_info(f"• Command: {' '.join(cmd)}")
+            logger.log_info("")
             
             # Execute conversion
-            logger.log_info("\nRunning GGUF conversion...")
-            logger.log_info(f"Command: {' '.join(cmd)}")
+            logger.log_info("🔄 Running GGUF Conversion:")
+            logger.log_info("-"*40)
             
-            with tqdm(total=100, desc="Converting to GGUF", unit="%") as pbar:
+            with tqdm(total=100, desc="Converting to GGUF", unit="%", 
+                     bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -394,43 +418,48 @@ class GGUFQuantizer:
                                 pbar.refresh()
                             except:
                                 pass
-                        logger.log_info(output.strip())
+                        logger.log_info(f"• {output.strip()}")
             
-            # Get return code and output
+            # Check for errors
             return_code = process.wait()
             if return_code != 0:
                 error_output = process.stderr.read()
                 raise RuntimeError(f"GGUF conversion failed with error:\n{error_output}")
         
-            # Verify output file
-            if not os.path.exists(output_path):
+            # Verify and report results
+            if os.path.exists(output_path):
+                logger.log_info("\n✅ Conversion Results:")
+                logger.log_info("-"*40)
+                
+                file_size = os.path.getsize(output_path) / (1024**3)
+                logger.log_info(f"• GGUF File Size: {file_size:.2f} GB")
+                
+                compression_ratio = model_size / file_size
+                logger.log_info(f"• Compression Ratio: {compression_ratio:.2f}x")
+                logger.log_info(f"• Output Path: {output_path}")
+                
+                logger.log_info("\n" + "="*80)
+                logger.log_info("✨ GGUF Conversion Completed Successfully! ✨".center(80))
+                logger.log_info("="*80 + "\n")
+            else:
                 raise RuntimeError(f"GGUF file was not created at {output_path}")
             
-            file_size = os.path.getsize(output_path) / (1024 * 1024 * 1024)  # Convert to GB
-            logger.log_info(f"\nGGUF file size: {file_size:.2f} GB")
-            
-            # Calculate compression ratio
-            original_size = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024 * 1024 * 1024)
-            compression_ratio = original_size / file_size
-            logger.log_info(f"Compression ratio: {compression_ratio:.2f}x")
-            
         except Exception as e:
-            logger.log_error(f"GGUF conversion failed: {str(e)}")
+            logger.log_error("\n❌ Conversion Failed:")
+            logger.log_error("-"*40)
+            logger.log_error(f"• Error: {str(e)}")
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to convert model to GGUF: {str(e)}") from e
         
         finally:
-            # Cleanup temporary files
+            # Cleanup
             if temp_dir and os.path.exists(temp_dir):
-                logger.log_info("\nCleaning up temporary files...")
+                logger.log_info("\n🧹 Cleaning Up:")
+                logger.log_info("-"*40)
+                logger.log_info("• Removing temporary files...")
                 shutil.rmtree(temp_dir, ignore_errors=True)
             self._clear_memory()
-            
-            if os.path.exists(output_path):
-                logger.log_info("\nGGUF conversion completed successfully!")
-                logger.log_info(f"Model saved to: {output_path}")
-                logger.log_info("="*60 + "\n")
 
     def _clear_memory(self):
         """Enhanced memory cleanup for GGUF operations."""

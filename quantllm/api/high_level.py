@@ -5,6 +5,7 @@ from ..quant.gguf import GGUFQuantizer, SUPPORTED_GGUF_BITS, SUPPORTED_GGUF_TYPE
 from ..utils.logger import logger
 import psutil
 import math
+import os
 
 def get_gpu_memory():
     """Get available GPU memory in GB."""
@@ -219,7 +220,7 @@ class QuantLLM:
             if auto_device:
                 if torch.cuda.is_available() and gpu_mem:
                     max_gpu_mem = max(gpu_mem)
-                    if model_size_gb * 1.5 > max_gpu_mem:  # Need 1.5x for safe loading
+                    if model_size_gb > max_gpu_mem:
                         logger.log_info("Insufficient GPU memory. Using CPU offloading.")
                         device = "cpu"
                         cpu_offload = True
@@ -262,6 +263,7 @@ class QuantLLM:
                 )
                 logger.log_info(f"Selected quantization type: {quant_type} ({bits}-bit)")
             
+            # Create and store quantizer
             quantizer = GGUFQuantizer(
                 model_name=model_name,
                 bits=bits,
@@ -278,6 +280,9 @@ class QuantLLM:
                 torch_dtype=torch_dtype,
                 cpu_offload=cpu_offload
             )
+            
+            # Store quantizer instance in model for later use
+            quantizer.model._quantizer = quantizer
             
             return quantizer.model
             
@@ -297,78 +302,68 @@ class QuantLLM:
     ):
         """Save a quantized model in GGUF format."""
         try:
-            logger.log_info("\n" + "="*60)
-            logger.log_info("Starting GGUF Export Process")
-            logger.log_info("="*60)
+            logger.log_info("\n" + "="*80)
+            logger.log_info("Starting GGUF Export Process".center(80))
+            logger.log_info("="*80 + "\n")
             
             # Log model details
             total_params = sum(p.numel() for p in model.parameters())
             model_size_gb = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024**3)
             
-            logger.log_info(f"\nModel Information:")
-            logger.log_info(f"Architecture: {model.config.model_type}")
-            logger.log_info(f"Total Parameters: {total_params:,}")
-            logger.log_info(f"Model Size: {model_size_gb:.2f} GB")
+            logger.log_info("📊 Model Information:")
+            logger.log_info("-"*40)
+            logger.log_info(f"• Architecture: {model.config.model_type}")
+            logger.log_info(f"• Total Parameters: {total_params:,}")
+            logger.log_info(f"• Model Size: {model_size_gb:.2f} GB")
+            logger.log_info("")
             
             # Get quantization info
-            if hasattr(model.config, 'quantization_config'):
-                config_dict = model.config.quantization_config
-                if isinstance(config_dict, BitsAndBytesConfig):
-                    # Handle BitsAndBytesConfig
-                    bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
-                    quant_config = {
-                        'bits': bits,
-                        'group_size': 128,  # Default group size
-                        'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
-                    }
-                    logger.log_info(f"\nQuantization Configuration:")
-                    logger.log_info(f"Bits: {bits}")
-                    logger.log_info(f"Quantization Type: {quant_config['quant_type']}")
-                    if config_dict.load_in_4bit:
-                        logger.log_info(f"4-bit Type: {config_dict.bnb_4bit_quant_type}")
-                        logger.log_info(f"Compute dtype: {config_dict.bnb_4bit_compute_dtype}")
-                else:
-                    quant_config = config_dict
-            
             if not quant_config:
-                logger.log_info("\nUsing default 4-bit quantization settings")
-                quant_config = {
-                    'bits': 4,
-                    'group_size': 128,
-                    'quant_type': "Q4_K_M"
-                }
+                if hasattr(model.config, 'quantization_config'):
+                    config_dict = model.config.quantization_config
+                    if isinstance(config_dict, BitsAndBytesConfig):
+                        # Handle BitsAndBytesConfig
+                        bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
+                        quant_config = {
+                            'bits': bits,
+                            'group_size': 128,  # Default group size
+                            'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
+                        }
+                        logger.log_info("📊 Quantization Configuration:")
+                        logger.log_info("-"*40)
+                        logger.log_info(f"• Bits: {bits}")
+                        logger.log_info(f"• Quantization Type: {quant_config['quant_type']}")
+                        if config_dict.load_in_4bit:
+                            logger.log_info(f"• 4-bit Type: {config_dict.bnb_4bit_quant_type}")
+                            logger.log_info(f"• Compute dtype: {config_dict.bnb_4bit_compute_dtype}")
+                    else:
+                        quant_config = config_dict
+                else:
+                    logger.log_info("\nUsing default 4-bit quantization settings")
+                    quant_config = {
+                        'bits': 4,
+                        'group_size': 128,
+                        'quant_type': "Q4_K_M"
+                    }
             
-            # Create quantizer with config
-            logger.log_info("\nInitializing GGUF quantizer...")
-            quantizer = GGUFQuantizer(
-                model_name=model,
+            # Create output directory
+            output_dir = os.path.dirname(output_path) or "."
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Convert to GGUF using the new converter
+            from ..quant.llama_cpp_utils import LlamaCppConverter
+            
+            converter = LlamaCppConverter()
+            gguf_path = converter.convert_to_gguf(
+                model=model,
+                output_dir=output_dir,
                 bits=quant_config['bits'],
                 group_size=quant_config.get('group_size', 128),
-                quant_type=quant_config.get('quant_type'),
-                use_packed=quant_config.get('use_packed', True)
+                save_tokenizer=save_tokenizer
             )
             
-            # Convert to GGUF
-            logger.log_info("\nConverting model to GGUF format...")
-            quantizer.convert_to_gguf(output_path)
-            logger.log_info("GGUF conversion completed successfully")
-            
-            # Save tokenizer if requested
-            if save_tokenizer and hasattr(model, 'config'):
-                if hasattr(model.config, '_name_or_path'):
-                    try:
-                        tokenizer = AutoTokenizer.from_pretrained(
-                            model.config._name_or_path,
-                            trust_remote_code=True
-                        )
-                        tokenizer_path = output_path.rsplit('.', 1)[0] + "_tokenizer"
-                        tokenizer.save_pretrained(tokenizer_path)
-                        logger.log_info(f"Tokenizer saved to: {tokenizer_path}")
-                    except Exception as e:
-                        logger.log_warning(f"Failed to save tokenizer: {e}")
-            
-            logger.log_info("\nModel export completed successfully!")
-            logger.log_info("="*60)
+            logger.log_info("\n✨ Model export completed successfully!")
+            logger.log_info("="*80)
             
         except Exception as e:
             logger.log_error(f"Failed to save model: {str(e)}")
