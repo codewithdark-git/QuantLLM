@@ -1,12 +1,93 @@
 from typing import Optional, Dict, Any, Union, Tuple
 import torch
-from transformers import PreTrainedModel, AutoTokenizer
+from transformers import PreTrainedModel, AutoTokenizer, AutoConfig
 from ..quant.gguf import GGUFQuantizer, SUPPORTED_GGUF_BITS, SUPPORTED_GGUF_TYPES
 from ..utils.logger import logger
-from ..utils.benchmark import QuantizationBenchmark
 
 class QuantLLM:
     """High-level API for GGUF model quantization."""
+    
+    @staticmethod
+    def list_quant_types(bits: Optional[int] = None) -> Dict[str, str]:
+        """
+        List available quantization types and their descriptions.
+        
+        Args:
+            bits: Optional bit width to filter quantization types
+            
+        Returns:
+            Dictionary mapping quantization types to their descriptions
+        """
+        quant_types = {}
+        
+        if bits is not None:
+            if bits not in SUPPORTED_GGUF_BITS:
+                raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
+            types = SUPPORTED_GGUF_TYPES[bits]
+            for qtype, config in types.items():
+                quant_types[qtype] = config["description"]
+        else:
+            for bits_val, types in SUPPORTED_GGUF_TYPES.items():
+                for qtype, config in types.items():
+                    quant_types[f"{qtype} ({bits_val}-bit)"] = config["description"]
+        
+        return quant_types
+    
+    @staticmethod
+    def get_recommended_quant_type(
+        model_size_gb: float,
+        target_size_gb: Optional[float] = None,
+        priority: str = "balanced"
+    ) -> Tuple[int, str]:
+        """
+        Get recommended quantization type based on model size and requirements.
+        
+        Args:
+            model_size_gb: Original model size in gigabytes
+            target_size_gb: Target model size in gigabytes (optional)
+            priority: Optimization priority ("speed", "quality", or "balanced")
+            
+        Returns:
+            Tuple of (bits, quant_type)
+        """
+        if priority not in ["speed", "quality", "balanced"]:
+            raise ValueError("Priority must be 'speed', 'quality', or 'balanced'")
+        
+        # Calculate compression ratio if target size is specified
+        if target_size_gb:
+            required_ratio = model_size_gb / target_size_gb
+            
+            if required_ratio <= 2:
+                bits, qtype = (8, "Q8_0") if priority == "quality" else (6, "Q6_K")
+            elif required_ratio <= 4:
+                if priority == "quality":
+                    bits, qtype = (5, "Q5_1")
+                elif priority == "speed":
+                    bits, qtype = (4, "Q4_K_S")
+                else:
+                    bits, qtype = (4, "Q4_K_M")
+            elif required_ratio <= 8:
+                if priority == "quality":
+                    bits, qtype = (4, "Q4_1")
+                elif priority == "speed":
+                    bits, qtype = (3, "Q3_K_S")
+                else:
+                    bits, qtype = (3, "Q3_K_M")
+            else:
+                bits, qtype = (2, "Q2_K")
+        else:
+            # Without target size, recommend based on model size and priority
+            if model_size_gb <= 2:
+                bits, qtype = (5, "Q5_1") if priority == "quality" else (4, "Q4_K_M")
+            elif model_size_gb <= 7:
+                bits, qtype = (4, "Q4_K_M") if priority != "speed" else (4, "Q4_K_S")
+            elif model_size_gb <= 13:
+                bits, qtype = (3, "Q3_K_M") if priority != "speed" else (3, "Q3_K_S")
+            else:
+                bits, qtype = (2, "Q2_K")
+        
+        return bits, qtype
+    
     @staticmethod
     def quantize_from_pretrained(
         model_name: Union[str, PreTrainedModel],
@@ -14,46 +95,54 @@ class QuantLLM:
         group_size: int = 128,
         quant_type: Optional[str] = None,
         use_packed: bool = True,
-        cpu_offload: bool = False,
-        desc_act: bool = False,
-        desc_ten: bool = False,
-        legacy_format: bool = False,
-        batch_size: int = 4,
         device: Optional[str] = None,
-        calibration_data: Optional[torch.Tensor] = None,
-        gradient_checkpointing: bool = False,
-        chunk_size: int = 1000,
-        auto_device: bool = True
-    ) -> Tuple[PreTrainedModel, Any]:
+        load_in_8bit: bool = False,
+        load_in_4bit: bool = True,
+        bnb_4bit_quant_type: str = "nf4",
+        bnb_4bit_compute_dtype: torch.dtype = torch.float16,
+        bnb_4bit_use_double_quant: bool = True,
+        use_gradient_checkpointing: bool = True,
+        device_map: Optional[Union[str, Dict[str, Union[int, str, torch.device]]]] = "auto",
+        max_memory: Optional[Dict[Union[int, str], Union[int, str]]] = None,
+        offload_folder: Optional[str] = None,
+        offload_state_dict: bool = False,
+        torch_dtype: Optional[torch.dtype] = torch.float16,
+        auto_device: bool = True,
+        optimize_for: str = "balanced"
+    ) -> PreTrainedModel:
         """
-        Quantize a model using GGUF format with optional benchmarking and memory optimizations.
+        Quantize a model using GGUF format with BitsAndBytes and Accelerate for efficient loading.
         
         Args:
             model_name: Model identifier or instance
-            bits: Number of bits for quantization
+            bits: Number of bits for GGUF quantization
             group_size: Size of quantization groups
             quant_type: GGUF quantization type
             use_packed: Whether to use packed format
-            cpu_offload: Whether to offload to CPU during quantization
-            desc_act: Whether to use activation descriptors
-            desc_ten: Whether to use tensor descriptors
-            legacy_format: Whether to use legacy format
-            batch_size: Batch size for processing
             device: Target device for quantization
-            calibration_data: Data for calibration
-            gradient_checkpointing: Whether to use gradient checkpointing
-            chunk_size: Size of chunks for processing
+            load_in_8bit: Whether to load model in 8-bit precision
+            load_in_4bit: Whether to load model in 4-bit precision
+            bnb_4bit_quant_type: BitsAndBytes 4-bit quantization type
+            bnb_4bit_compute_dtype: Compute dtype for 4-bit quantization
+            bnb_4bit_use_double_quant: Whether to use double quantization
+            use_gradient_checkpointing: Whether to use gradient checkpointing
+            device_map: Device mapping strategy
+            max_memory: Maximum memory configuration
+            offload_folder: Folder for offloading
+            offload_state_dict: Whether to offload state dict
+            torch_dtype: Default torch dtype
             auto_device: Automatically determine optimal device
+            optimize_for: Optimization priority ("speed", "quality", or "balanced")
             
         Returns:
-            Tuple of (quantized_model, benchmark_results)
+            Quantized model
         """
         try:
             logger.log_info(f"Starting GGUF quantization with {bits} bits")
             
             if bits not in SUPPORTED_GGUF_BITS:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
-            if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, []):
+            if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, {}):
                 raise ValueError(f"Unsupported quant_type: {quant_type} for {bits} bits")
                 
             # Auto-determine device if requested
@@ -67,14 +156,36 @@ class QuantLLM:
                     
                     # If model is too large for GPU, use CPU offloading
                     if model_size > gpu_mem * 0.7:  # Leave 30% margin
-                        logger.log_info("Model too large for GPU memory. Enabling CPU offloading.")
-                        cpu_offload = True
+                        logger.log_info("Model too large for GPU memory. Using CPU offloading.")
                         device = "cpu"
+                        device_map = "cpu"
+                        max_memory = None
                     else:
                         device = "cuda"
                 else:
                     device = "cpu"
+                    device_map = "cpu"
+                    max_memory = None
                 logger.log_info(f"Auto-selected device: {device}")
+            
+            # If no quant_type specified, use recommended type based on optimization priority
+            if not quant_type:
+                if isinstance(model_name, PreTrainedModel):
+                    model_size_gb = sum(p.numel() * p.element_size() for p in model_name.parameters()) / (1024**3)
+                else:
+                    # Estimate model size based on common architectures
+                    config = AutoConfig.from_pretrained(model_name)
+                    params = config.n_params if hasattr(config, 'n_params') else None
+                    if params:
+                        model_size_gb = (params * 2) / (1024**3)  # Assuming FP16
+                    else:
+                        model_size_gb = 7  # Default assumption
+                
+                bits, quant_type = QuantLLM.get_recommended_quant_type(
+                    model_size_gb=model_size_gb,
+                    priority=optimize_for
+                )
+                logger.log_info(f"Selected quantization type: {quant_type} ({bits}-bit)")
             
             quantizer = GGUFQuantizer(
                 model_name=model_name,
@@ -82,19 +193,21 @@ class QuantLLM:
                 group_size=group_size,
                 quant_type=quant_type,
                 use_packed=use_packed,
-                cpu_offload=cpu_offload,
-                desc_act=desc_act,
-                desc_ten=desc_ten,
-                legacy_format=legacy_format,
-                batch_size=batch_size,
                 device=device,
-                gradient_checkpointing=gradient_checkpointing,
-                chunk_size=chunk_size
+                load_in_8bit=load_in_8bit,
+                load_in_4bit=load_in_4bit,
+                bnb_4bit_quant_type=bnb_4bit_quant_type,
+                bnb_4bit_compute_dtype=bnb_4bit_compute_dtype,
+                bnb_4bit_use_double_quant=bnb_4bit_use_double_quant,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                device_map=device_map,
+                max_memory=max_memory,
+                offload_folder=offload_folder,
+                offload_state_dict=offload_state_dict,
+                torch_dtype=torch_dtype
             )
             
-            logger.log_info("Starting quantization process")
-            quantized_model = quantizer.quantize(calibration_data)
-            return quantized_model, 
+            return quantizer.model
             
         except Exception as e:
             logger.log_error(f"Quantization failed: {str(e)}")
@@ -111,7 +224,7 @@ class QuantLLM:
         quant_config: Optional[Dict[str, Any]] = None
     ):
         """
-        Save a quantized model and optionally its tokenizer.
+        Save a quantized model in GGUF format.
         
         Args:
             model: Quantized model to save
