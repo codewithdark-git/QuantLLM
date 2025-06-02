@@ -1,71 +1,327 @@
-from typing import Optional, Dict, Any, Union, Tuple
+"""Enhanced high-level API for GGUF model quantization with improved UX and performance."""
+
+from typing import Optional, Dict, Any, Union, Tuple, Callable, List
 import torch
+import time
+import threading
 from transformers import PreTrainedModel, AutoTokenizer, AutoConfig, BitsAndBytesConfig
 from ..quant.gguf import GGUFQuantizer, SUPPORTED_GGUF_BITS, SUPPORTED_GGUF_TYPES
+from ..quant.llama_cpp_utils import LlamaCppConverter
 from ..utils.logger import logger
 import psutil
 import math
 import os
+import json
+from pathlib import Path
+import tempfile
+import shutil
 
+class SystemResourceMonitor:
+    """Monitor system resources during quantization."""
+    
+    def __init__(self):
+        self.gpu_info = self._get_gpu_info()
+        self.cpu_info = self._get_cpu_info()
+        self.memory_info = self._get_memory_info()
+        
+    def _get_gpu_info(self) -> Dict[str, Any]:
+        """Get comprehensive GPU information."""
+        gpu_info = {"available": False, "devices": []}
+        
+        if torch.cuda.is_available():
+            gpu_info["available"] = True
+            gpu_info["device_count"] = torch.cuda.device_count()
+            
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                total_mem = props.total_memory / (1024**3)
+                allocated_mem = torch.cuda.memory_allocated(i) / (1024**3)
+                free_mem = total_mem - allocated_mem
+                
+                gpu_info["devices"].append({
+                    "id": i,
+                    "name": props.name,
+                    "total_memory_gb": total_mem,
+                    "allocated_memory_gb": allocated_mem,
+                    "free_memory_gb": free_mem,
+                    "compute_capability": f"{props.major}.{props.minor}"
+                })
+        
+        return gpu_info
+    
+    def _get_cpu_info(self) -> Dict[str, Any]:
+        """Get CPU information."""
+        return {
+            "cores_physical": psutil.cpu_count(logical=False),
+            "cores_logical": psutil.cpu_count(logical=True),
+            "frequency_mhz": psutil.cpu_freq().current if psutil.cpu_freq() else 0
+        }
+    
+    def _get_memory_info(self) -> Dict[str, Any]:
+        """Get system memory information."""
+        mem = psutil.virtual_memory()
+        return {
+            "total_gb": mem.total / (1024**3),
+            "available_gb": mem.available / (1024**3),
+            "used_gb": mem.used / (1024**3),
+            "percentage": mem.percent
+        }
+    
+    def get_optimal_config(self, model_size_gb: float) -> Dict[str, Any]:
+        """Get optimal configuration based on available resources."""
+        config = {
+            "device": "cpu",
+            "device_map": "cpu",
+            "load_in_4bit": False,
+            "cpu_offload": True,
+            "max_memory": None,
+            "optimization_level": "balanced"
+        }
+        
+        # GPU optimization
+        if self.gpu_info["available"]:
+            max_gpu_mem = max(gpu["free_memory_gb"] for gpu in self.gpu_info["devices"])
+            total_gpu_mem = sum(gpu["free_memory_gb"] for gpu in self.gpu_info["devices"])
+            
+            if model_size_gb <= max_gpu_mem * 0.8:  # Single GPU
+                config.update({
+                    "device": "cuda",
+                    "device_map": "auto",
+                    "cpu_offload": False,
+                    "optimization_level": "quality"
+                })
+            elif model_size_gb <= total_gpu_mem * 0.8:  # Multi-GPU
+                config.update({
+                    "device": "cuda",
+                    "device_map": "auto",
+                    "cpu_offload": False,
+                    "max_memory": {
+                        i: f"{int(gpu['free_memory_gb'] * 0.8)}GB"
+                        for i, gpu in enumerate(self.gpu_info["devices"])
+                    },
+                    "optimization_level": "balanced"
+                })
+            elif model_size_gb <= (total_gpu_mem + self.memory_info["available_gb"]) * 0.6:
+                config.update({
+                    "device": "cuda",
+                    "device_map": "auto",
+                    "cpu_offload": True,
+                    "max_memory": {
+                        **{
+                            i: f"{int(gpu['free_memory_gb'] * 0.7)}GB"
+                            for i, gpu in enumerate(self.gpu_info["devices"])
+                        },
+                        "cpu": f"{int(self.memory_info['available_gb'] * 0.5)}GB"
+                    }
+                })
+        
+        # CPU optimization based on available cores
+        if self.cpu_info["cores_physical"] >= 8:
+            config["optimization_level"] = "quality"
+        elif self.cpu_info["cores_physical"] >= 4:
+            config["optimization_level"] = "balanced"
+        else:
+            config["optimization_level"] = "fast"
+        
+        return config
+
+def estimate_model_size(model_name: Union[str, PreTrainedModel]) -> Dict[str, float]:
+    """Enhanced model size estimation with detailed breakdown."""
+    try:
+        if isinstance(model_name, PreTrainedModel):
+            params = sum(p.numel() for p in model_name.parameters())
+            model_size_fp16 = (params * 2) / (1024**3)
+            
+            # Calculate size breakdown
+            embedding_params = sum(p.numel() for n, p in model_name.named_parameters() if 'embed' in n.lower())
+            attention_params = sum(p.numel() for n, p in model_name.named_parameters() if any(x in n.lower() for x in ['attn', 'attention']))
+            
+            return {
+                "total_params": params,
+                "size_fp16_gb": model_size_fp16,
+                "size_fp32_gb": model_size_fp16 * 2,
+                "embedding_params": embedding_params,
+                "attention_params": attention_params,
+                "other_params": params - embedding_params - attention_params
+            }
+        else:
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            return _estimate_from_config(config, model_name)
+            
+    except Exception as e:
+        logger.log_warning(f"Error estimating model size: {e}. Using fallback estimation.")
+        return _fallback_size_estimation(model_name)
+
+def _estimate_from_config(config, model_name: str) -> Dict[str, float]:
+    """Estimate model size from configuration."""
+    if hasattr(config, 'num_parameters'):
+        params = config.num_parameters
+    elif hasattr(config, 'n_params'):
+        params = config.n_params
+    elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
+        # Enhanced estimation for various architectures
+        hidden_size = config.hidden_size
+        num_layers = config.num_hidden_layers
+        vocab_size = getattr(config, 'vocab_size', 32000)
+        
+        # Architecture-specific calculations
+        if hasattr(config, 'intermediate_size'):
+            ffn_size = config.intermediate_size
+        else:
+            ffn_size = hidden_size * 4  # Standard transformer ratio
+        
+        # Calculate components
+        attention_params = 4 * num_layers * hidden_size * hidden_size  # Q,K,V,O
+        ffn_params = 2 * num_layers * hidden_size * ffn_size  # Up and down projections
+        embedding_params = vocab_size * hidden_size * 2  # Input + output embeddings
+        norm_params = 2 * num_layers * hidden_size  # Layer norms
+        
+        params = attention_params + ffn_params + embedding_params + norm_params
+    else:
+        params = _fallback_param_estimation(model_name)
+    
+    size_fp16 = (params * 2) / (1024**3)
+    
+    return {
+        "total_params": params,
+        "size_fp16_gb": size_fp16,
+        "size_fp32_gb": size_fp16 * 2,
+        "embedding_params": 0,  # Not available from config
+        "attention_params": 0,  # Not available from config
+        "other_params": params
+    }
+
+def _fallback_size_estimation(model_name: str) -> Dict[str, float]:
+    """Fallback size estimation based on model name patterns."""
+    model_name_lower = str(model_name).lower()
+    
+    # Common model size patterns
+    size_patterns = {
+        "7b": 13.0, "8b": 15.0, "3b": 6.0, "1b": 2.0,
+        "13b": 24.0, "15b": 28.0, "20b": 38.0,
+        "30b": 58.0, "34b": 65.0, "40b": 75.0,
+        "65b": 120.0, "70b": 130.0, "72b": 135.0,
+        "175b": 350.0, "180b": 360.0
+    }
+    
+    for pattern, size in size_patterns.items():
+        if pattern in model_name_lower:
+            params = int(pattern.replace('b', '')) * 1e9
+            return {
+                "total_params": params,
+                "size_fp16_gb": size,
+                "size_fp32_gb": size * 2,
+                "embedding_params": 0,
+                "attention_params": 0,
+                "other_params": params
+            }
+    
+    # Default fallback
+    default_size = 7.0
+    default_params = 7e9
+    return {
+        "total_params": default_params,
+        "size_fp16_gb": default_size,
+        "size_fp32_gb": default_size * 2,
+        "embedding_params": 0,
+        "attention_params": 0,
+        "other_params": default_params
+    }
+
+def _fallback_param_estimation(model_name: str) -> int:
+    """Fallback parameter estimation based on model name patterns."""
+    model_name_lower = str(model_name).lower()
+    
+    # Common model parameter patterns
+    param_patterns = {
+        "7b": 7e9, "8b": 8e9, "3b": 3e9, "1b": 1e9,
+        "13b": 13e9, "15b": 15e9, "20b": 20e9,
+        "30b": 30e9, "34b": 34e9, "40b": 40e9,
+        "65b": 65e9, "70b": 70e9, "72b": 72e9,
+        "175b": 175e9, "180b": 180e9
+    }
+    
+    for pattern, params in param_patterns.items():
+        if pattern in model_name_lower:
+            return int(params)
+    
+    return int(7e9)  # Default 7B parameters
+
+class ProgressTracker:
+    """Track quantization progress with detailed metrics."""
+    
+    def __init__(self):
+        self.start_time = None
+        self.phase_times = {}
+        self.current_phase = None
+        self.total_steps = 0
+        self.completed_steps = 0
+        
+    def start(self, total_steps: int = 100):
+        """Start progress tracking."""
+        self.start_time = time.time()
+        self.total_steps = total_steps
+        self.completed_steps = 0
+        logger.log_info("🚀 Starting quantization process...")
+        
+    def start_phase(self, phase_name: str):
+        """Start a new phase."""
+        if self.current_phase:
+            self.end_phase()
+        
+        self.current_phase = phase_name
+        self.phase_times[phase_name] = {"start": time.time(), "end": None}
+        logger.log_info(f"📋 Phase: {phase_name}")
+        
+    def end_phase(self):
+        """End current phase."""
+        if self.current_phase and self.current_phase in self.phase_times:
+            self.phase_times[self.current_phase]["end"] = time.time()
+            duration = self.phase_times[self.current_phase]["end"] - self.phase_times[self.current_phase]["start"]
+            logger.log_info(f"✓ Completed {self.current_phase} in {duration:.2f}s")
+        
+    def update(self, steps: int = 1, message: str = None):
+        """Update progress."""
+        self.completed_steps += steps
+        if message:
+            logger.log_info(f"  {message}")
+        
+        # Show progress every 10%
+        progress = (self.completed_steps / self.total_steps) * 100
+        if progress % 10 < (steps / self.total_steps) * 100:
+            logger.log_info(f"📊 Progress: {progress:.1f}%")
+    
+    def finish(self):
+        """Finish tracking."""
+        if self.current_phase:
+            self.end_phase()
+            
+        total_time = time.time() - self.start_time if self.start_time else 0
+        logger.log_info(f"🎉 Quantization completed in {total_time:.2f}s")
+        
+        # Log phase breakdown
+        if self.phase_times:
+            logger.log_info("\n⏱️  Phase Breakdown:")
+            for phase, times in self.phase_times.items():
+                if times["end"]:
+                    duration = times["end"] - times["start"]
+                    logger.log_info(f"  • {phase}: {duration:.2f}s")
+
+# Legacy compatibility functions
 def get_gpu_memory():
     """Get available GPU memory in GB."""
-    if torch.cuda.is_available():
-        gpu_mem = []
-        for i in range(torch.cuda.device_count()):
-            total = torch.cuda.get_device_properties(i).total_memory / (1024**3)  # Convert to GB
-            allocated = torch.cuda.memory_allocated(i) / (1024**3)
-            gpu_mem.append(total - allocated)
-        return gpu_mem
+    monitor = SystemResourceMonitor()
+    if monitor.gpu_info["available"]:
+        return [gpu["free_memory_gb"] for gpu in monitor.gpu_info["devices"]]
     return []
 
 def get_system_memory():
     """Get available system memory in GB."""
-    return psutil.virtual_memory().available / (1024**3)
-
-def estimate_model_size(model_name: Union[str, PreTrainedModel]) -> float:
-    """Estimate model size in GB."""
-    try:
-        if isinstance(model_name, PreTrainedModel):
-            params = sum(p.numel() for p in model_name.parameters())
-            return (params * 2) / (1024**3)  # Assuming FP16
-        else:
-            config = AutoConfig.from_pretrained(model_name)
-            if hasattr(config, 'num_parameters'):
-                return (config.num_parameters * 2) / (1024**3)  # Assuming FP16
-            elif hasattr(config, 'n_params'):
-                return (config.n_params * 2) / (1024**3)  # Assuming FP16
-            # Estimate based on common architectures
-            elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
-                # More accurate estimation for transformer models
-                hidden_size = config.hidden_size
-                num_layers = config.num_hidden_layers
-                vocab_size = config.vocab_size if hasattr(config, 'vocab_size') else 32000
-                
-                # Calculate main components
-                attention_params = 4 * num_layers * hidden_size * hidden_size  # Q,K,V,O matrices
-                ffn_params = 8 * num_layers * hidden_size * hidden_size  # FFN layers
-                embedding_params = vocab_size * hidden_size  # Input embeddings
-                
-                total_params = attention_params + ffn_params + embedding_params
-                return (total_params * 2) / (1024**3)  # Assuming FP16
-            
-            # If no size info available, estimate based on model name
-            if "llama" in model_name.lower():
-                if "7b" in model_name.lower():
-                    return 13.0
-                elif "13b" in model_name.lower():
-                    return 24.0
-                elif "70b" in model_name.lower():
-                    return 130.0
-                elif "3b" in model_name.lower():
-                    return 6.0
-            return 7.0  # Default assumption
-    except Exception as e:
-        logger.log_warning(f"Error estimating model size: {e}. Using default size.")
-        return 7.0  # Default assumption
+    monitor = SystemResourceMonitor()
+    return monitor.memory_info["available_gb"]
 
 class QuantLLM:
-    """High-level API for GGUF model quantization."""
+    """Enhanced high-level API for GGUF model quantization."""
     
     @staticmethod
     def list_quant_types(bits: Optional[int] = None) -> Dict[str, str]:
@@ -149,6 +405,83 @@ class QuantLLM:
         return bits, qtype
     
     @staticmethod
+    def analyze_model(model_name: Union[str, PreTrainedModel]) -> Dict[str, Any]:
+        """
+        Analyze a model and provide optimization recommendations.
+        
+        Args:
+            model_name: Model identifier or instance
+            
+        Returns:
+            Dictionary with model analysis and recommendations
+        """
+        logger.log_info("🔍 Analyzing model...")
+        
+        # Get model size information
+        size_info = estimate_model_size(model_name)
+        
+        # Get system resources
+        monitor = SystemResourceMonitor()
+        optimal_config = monitor.get_optimal_config(size_info["size_fp16_gb"])
+        
+        # Get quantization recommendations
+        recommended_bits, recommended_type = QuantLLM.get_recommended_quant_type(
+            size_info["size_fp16_gb"],
+            priority=optimal_config["optimization_level"]
+        )
+        
+        # Calculate estimated quantized sizes
+        compression_ratios = {
+            8: 2.0, 6: 2.7, 5: 3.2, 4: 4.0, 
+            3: 5.3, 2: 8.0
+        }
+        
+        quantized_sizes = {}
+        for bits in SUPPORTED_GGUF_BITS:
+            ratio = compression_ratios.get(bits, 4.0)
+            quantized_sizes[f"{bits}bit"] = size_info["size_fp16_gb"] / ratio
+        
+        analysis = {
+            "model_info": {
+                "name": str(model_name),
+                "total_parameters": size_info["total_params"],
+                "original_size_gb": size_info["size_fp16_gb"],
+                "estimated_breakdown": {
+                    "embedding_params": size_info.get("embedding_params", 0),
+                    "attention_params": size_info.get("attention_params", 0),
+                    "other_params": size_info.get("other_params", size_info["total_params"])
+                }
+            },
+            "system_resources": {
+                "gpu_available": monitor.gpu_info["available"],
+                "gpu_devices": len(monitor.gpu_info.get("devices", [])),
+                "total_gpu_memory_gb": sum(gpu["total_memory_gb"] for gpu in monitor.gpu_info.get("devices", [])),
+                "free_gpu_memory_gb": sum(gpu["free_memory_gb"] for gpu in monitor.gpu_info.get("devices", [])),
+                "cpu_cores": monitor.cpu_info["cores_physical"],
+                "system_memory_gb": monitor.memory_info["total_gb"],
+                "available_memory_gb": monitor.memory_info["available_gb"]
+            },
+            "recommendations": {
+                "optimal_device": optimal_config["device"],
+                "device_map": optimal_config["device_map"],
+                "cpu_offload": optimal_config["cpu_offload"],
+                "optimization_level": optimal_config["optimization_level"],
+                "recommended_bits": recommended_bits,
+                "recommended_type": recommended_type,
+                "load_in_4bit": optimal_config.get("load_in_4bit", False)
+            },
+            "quantized_sizes": quantized_sizes,
+            "memory_requirements": {
+                "minimum_gpu_memory_gb": size_info["size_fp16_gb"] * 1.2,  # 20% overhead
+                "minimum_system_memory_gb": size_info["size_fp16_gb"] * 1.5,  # 50% overhead
+                "recommended_gpu_memory_gb": size_info["size_fp16_gb"] * 1.5,
+                "recommended_system_memory_gb": size_info["size_fp16_gb"] * 2.0
+            }
+        }
+        
+        return analysis
+    
+    @staticmethod
     def quantize_from_pretrained(
         model_name: Union[str, PreTrainedModel],
         bits: int = 4,
@@ -169,7 +502,9 @@ class QuantLLM:
         torch_dtype: Optional[torch.dtype] = torch.float16,
         auto_device: bool = True,
         optimize_for: str = "balanced",
-        cpu_offload: bool = False
+        cpu_offload: bool = False,
+        verbose: bool = True,
+        progress_callback: Optional[Callable] = None
     ) -> PreTrainedModel:
         """
         Quantize a model using GGUF format with optimized resource handling.
@@ -195,53 +530,68 @@ class QuantLLM:
             auto_device: Automatically determine optimal device
             optimize_for: Optimization priority ("speed", "quality", or "balanced")
             cpu_offload: Whether to use CPU offloading
+            verbose: Whether to show detailed progress
+            progress_callback: Optional callback for progress updates
             
         Returns:
             Quantized model
         """
         try:
+            # Initialize progress tracking
+            progress = ProgressTracker()
+            if verbose:
+                progress.start(100)
+                progress.start_phase("Initialization")
+            
             logger.log_info(f"Starting GGUF quantization with {bits} bits")
             
             if bits not in SUPPORTED_GGUF_BITS:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
             if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, {}):
                 raise ValueError(f"Unsupported quant_type: {quant_type} for {bits} bits")
-                
-            # Estimate model size and available resources
-            model_size_gb = estimate_model_size(model_name)
-            gpu_mem = get_gpu_memory()
-            system_mem = get_system_memory()
             
-            logger.log_info(f"Estimated model size: {model_size_gb:.2f} GB")
-            logger.log_info(f"Available GPU memory: {gpu_mem}")
-            logger.log_info(f"Available system memory: {system_mem:.2f} GB")
+            # Analyze model and resources
+            if verbose:
+                progress.update(10, "Analyzing model and system resources...")
+            
+            size_info = estimate_model_size(model_name)
+            model_size_gb = size_info["size_fp16_gb"]
+            
+            monitor = SystemResourceMonitor()
+            gpu_mem = [gpu["free_memory_gb"] for gpu in monitor.gpu_info.get("devices", [])]
+            system_mem = monitor.memory_info["available_gb"]
+            
+            if verbose:
+                logger.log_info(f"📊 Model Analysis:")
+                logger.log_info(f"  • Parameters: {size_info['total_params']:,}")
+                logger.log_info(f"  • Size (FP16): {model_size_gb:.2f} GB")
+                logger.log_info(f"  • Available GPU memory: {gpu_mem}")
+                logger.log_info(f"  • Available system memory: {system_mem:.2f} GB")
+                
+                progress.update(10, "Resource analysis completed")
+                progress.end_phase()
+                progress.start_phase("Configuration")
             
             # Auto-configure resources
             if auto_device:
-                if torch.cuda.is_available() and gpu_mem:
-                    max_gpu_mem = max(gpu_mem)
-                    if model_size_gb > max_gpu_mem:
-                        logger.log_info("Insufficient GPU memory. Using CPU offloading.")
-                        device = "cpu"
-                        cpu_offload = True
-                        device_map = "cpu"
-                        max_memory = None
-                    else:
-                        device = "cuda"
-                        # Calculate memory distribution
-                        if device_map == "auto":
-                            max_memory = {
-                                i: f"{int(mem * 0.8)}GB"  # Use 80% of available memory
-                                for i, mem in enumerate(gpu_mem)
-                            }
-                            max_memory["cpu"] = f"{int(system_mem * 0.5)}GB"  # Use 50% of system RAM
-                else:
-                    device = "cpu"
-                    cpu_offload = True
-                    device_map = "cpu"
-                    max_memory = None
-                logger.log_info(f"Auto-selected device: {device}")
+                optimal_config = monitor.get_optimal_config(model_size_gb)
                 
+                if device is None:
+                    device = optimal_config["device"]
+                if device_map == "auto":
+                    device_map = optimal_config["device_map"]
+                if max_memory is None:
+                    max_memory = optimal_config.get("max_memory")
+                if not cpu_offload:
+                    cpu_offload = optimal_config["cpu_offload"]
+                    
+                if verbose:
+                    logger.log_info(f"🔧 Auto-configuration:")
+                    logger.log_info(f"  • Device: {device}")
+                    logger.log_info(f"  • Device map: {device_map}")
+                    logger.log_info(f"  • CPU offload: {cpu_offload}")
+                    logger.log_info(f"  • Optimization level: {optimal_config['optimization_level']}")
+            
             # Configure BitsAndBytes for 4-bit quantization
             if load_in_4bit:
                 compute_dtype = bnb_4bit_compute_dtype or torch.float16
@@ -261,9 +611,18 @@ class QuantLLM:
                     model_size_gb=model_size_gb,
                     priority=optimize_for
                 )
-                logger.log_info(f"Selected quantization type: {quant_type} ({bits}-bit)")
+                if verbose:
+                    logger.log_info(f"📋 Selected quantization: {quant_type} ({bits}-bit)")
             
-            # Create and store quantizer
+            if verbose:
+                progress.update(20, "Configuration completed")
+                progress.end_phase()
+                progress.start_phase("Model Loading & Quantization")
+            
+            # Create quantizer and perform quantization
+            if progress_callback:
+                progress_callback(30, "Creating quantizer...")
+            
             quantizer = GGUFQuantizer(
                 model_name=model_name,
                 bits=bits,
@@ -281,8 +640,19 @@ class QuantLLM:
                 cpu_offload=cpu_offload
             )
             
+            if verbose:
+                progress.update(40, "Quantizer created, starting quantization...")
+            
             # Store quantizer instance in model for later use
             quantizer.model._quantizer = quantizer
+            
+            if verbose:
+                progress.update(30, "Quantization completed")
+                progress.end_phase()
+                progress.finish()
+            
+            if progress_callback:
+                progress_callback(100, "Quantization completed successfully!")
             
             return quantizer.model
             
@@ -292,7 +662,7 @@ class QuantLLM:
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        
+    
     @staticmethod
     def save_quantized_model(
         model: PreTrainedModel,
@@ -301,7 +671,8 @@ class QuantLLM:
         save_tokenizer: bool = True,
         quant_config: Optional[Dict[str, Any]] = None,
         safe_serialization: bool = True,
-        verbose: bool = False
+        verbose: bool = False,
+        progress_callback: Optional[Callable] = None
     ):
         """
         Save a quantized model in either GGUF or safetensors format.
@@ -312,16 +683,31 @@ class QuantLLM:
             save_format: Format to save in ("gguf" or "safetensors")
             save_tokenizer: Whether to save the tokenizer
             quant_config: Optional quantization configuration
-            safe_serialization: Whether to use safe serialization for safetensors format
-            verbose: Whether to show detailed progress logs
+            safe_serialization: Whether to use safe serialization
+            verbose: Whether to show detailed progress
+            progress_callback: Optional callback for progress updates
         """
         try:
-            if not verbose:
-                logger.log_info(f"Converting model to {save_format.upper()} format...")
-            else:
+            # Initialize progress tracking
+            progress = ProgressTracker()
+            if verbose:
+                progress.start(100)
+                progress.start_phase("Initialization")
+            
+            if progress_callback:
+                progress_callback(0, "Starting model export...")
+            
+            # Setup output directory
+            output_dir = os.path.abspath(os.path.dirname(output_path))
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Get base filename without extension
+            base_name = os.path.splitext(os.path.basename(output_path))[0]
+            
+            if verbose:
                 logger.log_info("\n" + "="*80)
-                logger.log_info(f"Starting Model Export Process ({save_format.upper()})".center(80))
-                logger.log_info("="*80 + "\n")
+                logger.log_info(f" SAVING MODEL IN {save_format.upper()} FORMAT ".center(80, "="))
+                logger.log_info("="*80)
                 
                 # Log model details
                 total_params = sum(p.numel() for p in model.parameters())
@@ -333,71 +719,98 @@ class QuantLLM:
                 logger.log_info(f"• Total Parameters: {total_params:,}")
                 logger.log_info(f"• Model Size: {model_size_gb:.2f} GB")
                 logger.log_info(f"• Export Format: {save_format.upper()}")
+                logger.log_info(f"• Output Directory: {output_dir}")
                 logger.log_info("")
             
-            # Get quantization info
-            if not quant_config and hasattr(model.config, 'quantization_config'):
-                config_dict = model.config.quantization_config
-                if isinstance(config_dict, BitsAndBytesConfig):
-                    bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
-                    quant_config = {
-                        'bits': bits,
-                        'group_size': 128,
-                        'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
-                    }
-                    if verbose:
-                        logger.log_info("📊 Quantization Configuration:")
-                        logger.log_info("-"*40)
-                        logger.log_info(f"• Bits: {bits}")
-                        logger.log_info(f"• Quantization Type: {quant_config['quant_type']}")
-                        if config_dict.load_in_4bit:
-                            logger.log_info(f"• 4-bit Type: {config_dict.bnb_4bit_quant_type}")
-                            logger.log_info(f"• Compute dtype: {config_dict.bnb_4bit_compute_dtype}")
-                        logger.log_info("")
-                else:
-                    quant_config = config_dict
-            
-            # Create output directory
-            output_dir = os.path.dirname(output_path) or "."
-            os.makedirs(output_dir, exist_ok=True)
-            
             if save_format.lower() == "gguf":
-                # Convert to GGUF using the converter
-                from ..quant.llama_cpp_utils import LlamaCppConverter
+                if verbose:
+                    progress.start_phase("GGUF Conversion")
                 
-                converter = LlamaCppConverter()
+                # Get quantization configuration
+                if not quant_config and hasattr(model.config, 'quantization_config'):
+                    config_dict = model.config.quantization_config
+                    if isinstance(config_dict, BitsAndBytesConfig):
+                        bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
+                        quant_config = {
+                            'bits': bits,
+                            'group_size': 128,
+                            'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
+                        }
+                
+                # Convert to GGUF
+                from ..quant.llama_cpp_utils import LlamaCppConverter
+                converter = LlamaCppConverter(verbose=verbose)
+                
+                if progress_callback:
+                    progress_callback(30, "Converting to GGUF format...")
+                
+                # Ensure .gguf extension
+                if not output_path.lower().endswith('.gguf'):
+                    output_path = f"{output_path}.gguf"
+                
                 gguf_path = converter.convert_to_gguf(
                     model=model,
                     output_dir=output_dir,
-                    bits=quant_config['bits'] if quant_config else 4,
+                    bits=quant_config.get('bits', 4) if quant_config else 4,
                     group_size=quant_config.get('group_size', 128) if quant_config else 128,
-                    save_tokenizer=save_tokenizer
+                    save_tokenizer=save_tokenizer,
+                    custom_name=os.path.basename(output_path),
+                    progress_callback=progress_callback
                 )
                 
                 if verbose:
                     file_size = os.path.getsize(gguf_path) / (1024**3)
-                    logger.log_info(f"\nGGUF model saved ({file_size:.2f} GB): {gguf_path}")
-                else:
-                    logger.log_info("✓ GGUF conversion completed successfully!")
+                    logger.log_info(f"\n✅ GGUF model saved ({file_size:.2f} GB): {gguf_path}")
                 
             else:  # safetensors format
                 if verbose:
+                    progress.start_phase("Safetensors Export")
                     logger.log_info("\n💾 Saving model in safetensors format...")
                 
-                # Save the model
-                model.save_pretrained(
-                    output_dir,
-                    safe_serialization=safe_serialization
-                )
+                if progress_callback:
+                    progress_callback(30, "Saving in safetensors format...")
                 
-                # Save tokenizer if requested
-                if save_tokenizer and hasattr(model, 'tokenizer'):
-                    model.tokenizer.save_pretrained(output_dir)
+                # Create a temporary directory for sharded saving
+                with tempfile.TemporaryDirectory(prefix="model_save_", dir=output_dir) as temp_dir:
+                    # Save model with sharding for large models
+                    model.save_pretrained(
+                        temp_dir,
+                        safe_serialization=safe_serialization,
+                        max_shard_size="2GB"
+                    )
+                    
+                    if progress_callback:
+                        progress_callback(60, "Moving files to final location...")
+                    
+                    # Move files to final location
+                    for file in os.listdir(temp_dir):
+                        src = os.path.join(temp_dir, file)
+                        dst = os.path.join(output_dir, file)
+                        if os.path.exists(dst):
+                            os.remove(dst)
+                        shutil.move(src, dst)
+                    
+                    # Save tokenizer if requested
+                    if save_tokenizer and hasattr(model, 'tokenizer'):
+                        if progress_callback:
+                            progress_callback(80, "Saving tokenizer...")
+                        model.tokenizer.save_pretrained(output_dir)
                 
                 if verbose:
-                    logger.log_info("✓ Model saved successfully in safetensors format!")
-                else:
-                    logger.log_info("✓ Model saved successfully!")
+                    total_size = sum(
+                        os.path.getsize(os.path.join(output_dir, f)) / (1024**3)
+                        for f in os.listdir(output_dir)
+                        if f.endswith('.safetensors')
+                    )
+                    logger.log_info(f"\n✅ Model saved in safetensors format ({total_size:.2f} GB)")
+                    logger.log_info(f"📁 Output directory: {output_dir}")
+            
+            if verbose:
+                progress.end_phase()
+                progress.finish()
+            
+            if progress_callback:
+                progress_callback(100, "Model export completed successfully!")
             
         except Exception as e:
             logger.log_error(f"Failed to save model: {str(e)}")
@@ -405,5 +818,3 @@ class QuantLLM:
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    
-    
