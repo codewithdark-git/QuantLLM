@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import tempfile
 import shutil
+import glob
 
 class SystemResourceMonitor:
     """Monitor system resources during quantization."""
@@ -28,11 +29,11 @@ class SystemResourceMonitor:
         """Get comprehensive GPU information."""
         gpu_info = {"available": False, "devices": []}
         
-        if torch.cuda.is_available():
+    if torch.cuda.is_available():
             gpu_info["available"] = True
             gpu_info["device_count"] = torch.cuda.device_count()
             
-            for i in range(torch.cuda.device_count()):
+        for i in range(torch.cuda.device_count()):
                 props = torch.cuda.get_device_properties(i)
                 total_mem = props.total_memory / (1024**3)
                 allocated_mem = torch.cuda.memory_allocated(i) / (1024**3)
@@ -154,14 +155,14 @@ def estimate_model_size(model_name: Union[str, PreTrainedModel]) -> Dict[str, fl
 
 def _estimate_from_config(config, model_name: str) -> Dict[str, float]:
     """Estimate model size from configuration."""
-    if hasattr(config, 'num_parameters'):
+            if hasattr(config, 'num_parameters'):
         params = config.num_parameters
-    elif hasattr(config, 'n_params'):
+            elif hasattr(config, 'n_params'):
         params = config.n_params
-    elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
+            elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
         # Enhanced estimation for various architectures
-        hidden_size = config.hidden_size
-        num_layers = config.num_hidden_layers
+                hidden_size = config.hidden_size
+                num_layers = config.num_hidden_layers
         vocab_size = getattr(config, 'vocab_size', 32000)
         
         # Architecture-specific calculations
@@ -549,7 +550,7 @@ class QuantLLM:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
             if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, {}):
                 raise ValueError(f"Unsupported quant_type: {quant_type} for {bits} bits")
-            
+                
             # Analyze model and resources
             if verbose:
                 progress.update(10, "Analyzing model and system resources...")
@@ -578,7 +579,7 @@ class QuantLLM:
                 
                 if device is None:
                     device = optimal_config["device"]
-                if device_map == "auto":
+                        if device_map == "auto":
                     device_map = optimal_config["device_map"]
                 if max_memory is None:
                     max_memory = optimal_config.get("max_memory")
@@ -591,7 +592,7 @@ class QuantLLM:
                     logger.log_info(f"  • Device map: {device_map}")
                     logger.log_info(f"  • CPU offload: {cpu_offload}")
                     logger.log_info(f"  • Optimization level: {optimal_config['optimization_level']}")
-            
+                
             # Configure BitsAndBytes for 4-bit quantization
             if load_in_4bit:
                 compute_dtype = bnb_4bit_compute_dtype or torch.float16
@@ -662,17 +663,18 @@ class QuantLLM:
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    
+        
     @staticmethod
     def save_quantized_model(
         model: PreTrainedModel,
         output_path: str,
-        save_format: str = "gguf",
+        save_format: str = "safetensors",
         save_tokenizer: bool = True,
         quant_config: Optional[Dict[str, Any]] = None,
         safe_serialization: bool = True,
         verbose: bool = False,
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        replace_original: bool = True
     ):
         """
         Save a quantized model in either GGUF or safetensors format.
@@ -686,6 +688,7 @@ class QuantLLM:
             safe_serialization: Whether to use safe serialization
             verbose: Whether to show detailed progress
             progress_callback: Optional callback for progress updates
+            replace_original: Whether to replace original model files with quantized ones
         """
         try:
             # Initialize progress tracking
@@ -697,113 +700,121 @@ class QuantLLM:
             if progress_callback:
                 progress_callback(0, "Starting model export...")
             
+            # Get original model path from cache if available
+            original_path = None
+            if hasattr(model, 'config') and hasattr(model.config, '_name_or_path'):
+                from transformers.utils import HUGGINGFACE_HUB_CACHE
+                model_id = model.config._name_or_path
+                if '/' in model_id:  # It's a hub model
+                    cache_dir = os.getenv('TRANSFORMERS_CACHE', HUGGINGFACE_HUB_CACHE)
+                    org, model_name = model_id.split('/')
+                    potential_paths = glob.glob(os.path.join(cache_dir, 'models--' + org + '--' + model_name, '*', 'snapshots', '*'))
+                    if potential_paths:
+                        original_path = potential_paths[0]
+                        if verbose:
+                            logger.log_info(f"Found original model in cache: {original_path}")
+
             # Setup output directory
-            output_dir = os.path.abspath(os.path.dirname(output_path))
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Get base filename without extension
-            base_name = os.path.splitext(os.path.basename(output_path))[0]
+            if output_path == "auto" and original_path:
+                output_path = original_path
+            else:
+                output_path = os.path.abspath(output_path)
+                
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             if verbose:
-                logger.log_info("\n" + "="*80)
-                logger.log_info(f" SAVING MODEL IN {save_format.upper()} FORMAT ".center(80, "="))
-                logger.log_info("="*80)
+                logger.log_info(f"Saving quantized model to: {output_path}")
                 
-                # Log model details
-                total_params = sum(p.numel() for p in model.parameters())
-                model_size_gb = sum(p.numel() * p.element_size() for p in model.parameters()) / (1024**3)
-                
-                logger.log_info("📊 Model Information:")
-                logger.log_info("-"*40)
-                logger.log_info(f"• Architecture: {model.config.model_type}")
-                logger.log_info(f"• Total Parameters: {total_params:,}")
-                logger.log_info(f"• Model Size: {model_size_gb:.2f} GB")
-                logger.log_info(f"• Export Format: {save_format.upper()}")
-                logger.log_info(f"• Output Directory: {output_dir}")
-                logger.log_info("")
-            
-            if save_format.lower() == "gguf":
-                if verbose:
-                    progress.start_phase("GGUF Conversion")
-                
-                # Get quantization configuration
-                if not quant_config and hasattr(model.config, 'quantization_config'):
-                    config_dict = model.config.quantization_config
-                    if isinstance(config_dict, BitsAndBytesConfig):
-                        bits = 4 if config_dict.load_in_4bit else (8 if config_dict.load_in_8bit else 16)
-                        quant_config = {
-                            'bits': bits,
-                            'group_size': 128,
-                            'quant_type': f"Q{bits}_K_M" if bits <= 8 else "F16"
-                        }
-                
-                # Convert to GGUF
-                from ..quant.llama_cpp_utils import LlamaCppConverter
-                converter = LlamaCppConverter(verbose=verbose)
-                
-                if progress_callback:
-                    progress_callback(30, "Converting to GGUF format...")
-                
-                # Ensure .gguf extension
-                if not output_path.lower().endswith('.gguf'):
-                    output_path = f"{output_path}.gguf"
-                
-                gguf_path = converter.convert_to_gguf(
-                    model=model,
-                    output_dir=output_dir,
-                    bits=quant_config.get('bits', 4) if quant_config else 4,
-                    group_size=quant_config.get('group_size', 128) if quant_config else 128,
-                    save_tokenizer=save_tokenizer,
-                    custom_name=os.path.basename(output_path),
-                    progress_callback=progress_callback
-                )
-                
-                if verbose:
-                    file_size = os.path.getsize(gguf_path) / (1024**3)
-                    logger.log_info(f"\n✅ GGUF model saved ({file_size:.2f} GB): {gguf_path}")
-                
-            else:  # safetensors format
-                if verbose:
-                    progress.start_phase("Safetensors Export")
-                    logger.log_info("\n💾 Saving model in safetensors format...")
-                
-                if progress_callback:
-                    progress_callback(30, "Saving in safetensors format...")
-                
-                # Create a temporary directory for sharded saving
-                with tempfile.TemporaryDirectory(prefix="model_save_", dir=output_dir) as temp_dir:
-                    # Save model with sharding for large models
+            # Create temporary directory for saving
+            with tempfile.TemporaryDirectory(prefix="quant_save_") as temp_dir:
+                if save_format.lower() == "gguf":
+                    if verbose:
+                        progress.start_phase("GGUF Conversion")
+                    
+                    # Convert to GGUF
+                    from ..quant.llama_cpp_utils import LlamaCppConverter
+                    converter = LlamaCppConverter(verbose=verbose)
+                    
+                    if progress_callback:
+                        progress_callback(30, "Converting to GGUF format...")
+                    
+                    # Ensure .gguf extension
+                    if not output_path.lower().endswith('.gguf'):
+                        output_path = f"{output_path}.gguf"
+                    
+                    gguf_path = converter.convert_to_gguf(
+                        model=model,
+                        output_dir=os.path.dirname(output_path),
+                        bits=quant_config.get('bits', 4) if quant_config else 4,
+                        group_size=quant_config.get('group_size', 128) if quant_config else 128,
+                        save_tokenizer=save_tokenizer,
+                        custom_name=os.path.basename(output_path)
+                    )
+                    
+                    if verbose:
+                        file_size = os.path.getsize(gguf_path) / (1024**3)
+                        logger.log_info(f"\n✅ GGUF model saved ({file_size:.2f} GB): {gguf_path}")
+                    
+                else:  # safetensors format
+                    if verbose:
+                        progress.start_phase("Safetensors Export")
+                    
+                    if progress_callback:
+                        progress_callback(30, "Saving in safetensors format...")
+                    
+                    # Save to temporary directory first
                     model.save_pretrained(
                         temp_dir,
                         safe_serialization=safe_serialization,
                         max_shard_size="2GB"
                     )
                     
-                    if progress_callback:
-                        progress_callback(60, "Moving files to final location...")
-                    
-                    # Move files to final location
-                    for file in os.listdir(temp_dir):
-                        src = os.path.join(temp_dir, file)
-                        dst = os.path.join(output_dir, file)
-                        if os.path.exists(dst):
-                            os.remove(dst)
-                        shutil.move(src, dst)
-                    
-                    # Save tokenizer if requested
                     if save_tokenizer and hasattr(model, 'tokenizer'):
-                        if progress_callback:
-                            progress_callback(80, "Saving tokenizer...")
-                        model.tokenizer.save_pretrained(output_dir)
-                
-                if verbose:
-                    total_size = sum(
-                        os.path.getsize(os.path.join(output_dir, f)) / (1024**3)
-                        for f in os.listdir(output_dir)
-                        if f.endswith('.safetensors')
-                    )
-                    logger.log_info(f"\n✅ Model saved in safetensors format ({total_size:.2f} GB)")
-                    logger.log_info(f"📁 Output directory: {output_dir}")
+                        model.tokenizer.save_pretrained(temp_dir)
+                    
+                    # If replacing original files in cache
+                    if replace_original and original_path:
+                        target_dir = original_path
+                        if verbose:
+                            logger.log_info(f"Replacing original files in: {target_dir}")
+                        
+                        # Remove old model files but keep config and tokenizer
+                        for file in os.listdir(target_dir):
+                            if file.endswith(('.bin', '.safetensors', '.pt', '.gguf')):
+                                os.remove(os.path.join(target_dir, file))
+                        
+                        # Copy new files
+                        for file in os.listdir(temp_dir):
+                            src = os.path.join(temp_dir, file)
+                            dst = os.path.join(target_dir, file)
+                            if os.path.exists(dst):
+                                os.remove(dst)
+                            shutil.copy2(src, dst)
+                            
+                        if verbose:
+                            logger.log_info("✅ Original model files replaced with quantized versions")
+                    
+                    # If saving to custom location
+                    else:
+                        target_dir = output_path if os.path.isdir(output_path) else os.path.dirname(output_path)
+                        os.makedirs(target_dir, exist_ok=True)
+                        
+                        # Copy files to final location
+                        for file in os.listdir(temp_dir):
+                            src = os.path.join(temp_dir, file)
+                            dst = os.path.join(target_dir, file)
+                            if os.path.exists(dst):
+                                os.remove(dst)
+                            shutil.copy2(src, dst)
+                    
+                    if verbose:
+                        total_size = sum(
+                            os.path.getsize(os.path.join(target_dir, f)) / (1024**3)
+                            for f in os.listdir(target_dir)
+                            if f.endswith('.safetensors')
+                        )
+                        logger.log_info(f"\n✅ Model saved in safetensors format ({total_size:.2f} GB)")
+                        logger.log_info(f"📁 Output directory: {target_dir}")
             
             if verbose:
                 progress.end_phase()
@@ -818,3 +829,4 @@ class QuantLLM:
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+    

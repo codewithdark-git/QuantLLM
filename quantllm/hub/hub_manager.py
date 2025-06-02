@@ -14,6 +14,7 @@ class HubManager:
         self.model_id = model_id
         self.organization = organization
         self.token = token
+    
         
     def login(self):
         """Login to Hugging Face Hub."""
@@ -61,6 +62,31 @@ class HubManager:
             
         except Exception as e:
             logger.log_error(f"Error pushing to hub: {str(e)}")
+            raise
+
+    def push_folder(
+        self,
+        folder_path: str,
+        commit_message: str = "Update model",
+        allow_patterns: Optional[list] = None,
+        ignore_patterns: Optional[list] = None,
+        **kwargs
+    ):
+        """Push all files from a folder to the HuggingFace Hub."""
+        try:
+            
+            self.api.upload_folder(
+                folder_path=folder_path,
+                repo_id=self.model_id,
+                token=self.token,
+                commit_message=commit_message,
+                allow_patterns=allow_patterns,
+                ignore_patterns=ignore_patterns,
+                **kwargs
+            )
+            logger.log_success(f"Successfully pushed folder to {self.model_id}")
+        except Exception as e:
+            logger.log_error(f"Error pushing folder: {str(e)}")
             raise
             
     def push_checkpoint(
