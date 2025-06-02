@@ -29,11 +29,11 @@ class SystemResourceMonitor:
         """Get comprehensive GPU information."""
         gpu_info = {"available": False, "devices": []}
         
-    if torch.cuda.is_available():
+        if torch.cuda.is_available():
             gpu_info["available"] = True
             gpu_info["device_count"] = torch.cuda.device_count()
             
-        for i in range(torch.cuda.device_count()):
+            for i in range(torch.cuda.device_count()):
                 props = torch.cuda.get_device_properties(i)
                 total_mem = props.total_memory / (1024**3)
                 allocated_mem = torch.cuda.memory_allocated(i) / (1024**3)
@@ -155,14 +155,14 @@ def estimate_model_size(model_name: Union[str, PreTrainedModel]) -> Dict[str, fl
 
 def _estimate_from_config(config, model_name: str) -> Dict[str, float]:
     """Estimate model size from configuration."""
-            if hasattr(config, 'num_parameters'):
+    if hasattr(config, 'num_parameters'):
         params = config.num_parameters
-            elif hasattr(config, 'n_params'):
+    elif hasattr(config, 'n_params'):
         params = config.n_params
-            elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
+    elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
         # Enhanced estimation for various architectures
-                hidden_size = config.hidden_size
-                num_layers = config.num_hidden_layers
+        hidden_size = config.hidden_size
+        num_layers = config.num_hidden_layers
         vocab_size = getattr(config, 'vocab_size', 32000)
         
         # Architecture-specific calculations
@@ -187,9 +187,9 @@ def _estimate_from_config(config, model_name: str) -> Dict[str, float]:
         "total_params": params,
         "size_fp16_gb": size_fp16,
         "size_fp32_gb": size_fp16 * 2,
-        "embedding_params": 0,  # Not available from config
-        "attention_params": 0,  # Not available from config
-        "other_params": params
+        "embedding_params": embedding_params if 'embedding_params' in locals() else 0,
+        "attention_params": attention_params if 'attention_params' in locals() else 0,
+        "other_params": params - (embedding_params + attention_params) if 'embedding_params' in locals() else params
     }
 
 def _fallback_size_estimation(model_name: str) -> Dict[str, float]:
@@ -323,6 +323,71 @@ def get_system_memory():
 
 class QuantLLM:
     """Enhanced high-level API for GGUF model quantization."""
+    
+    def __init__(self):
+        """Initialize QuantLLM with system monitoring."""
+        self.system_monitor = SystemResourceMonitor()
+        self.progress_tracker = None
+        
+    def get_system_info(self) -> Dict[str, Any]:
+        """Get current system information."""
+        return {
+            "gpu": self.system_monitor.gpu_info,
+            "cpu": self.system_monitor.cpu_info,
+            "memory": self.system_monitor.memory_info
+        }
+    
+    def get_optimal_config(self, model_size_gb: float) -> Dict[str, Any]:
+        """Get optimal configuration based on system resources."""
+        return self.system_monitor.get_optimal_config(model_size_gb)
+    
+    def estimate_model_size(self, model_name: Union[str, PreTrainedModel]) -> Dict[str, float]:
+        """Estimate model size and get detailed breakdown."""
+        return estimate_model_size(model_name)
+    
+    def get_recommended_bits(
+        self,
+        model_size_gb: float,
+        target_size_gb: Optional[float] = None,
+        priority: str = "balanced"
+    ) -> Tuple[int, str]:
+        """Get recommended quantization bits and type."""
+        return self.get_recommended_quant_type(
+            model_size_gb=model_size_gb,
+            target_size_gb=target_size_gb,
+            priority=priority
+        )
+    
+    def start_progress_tracking(self, total_steps: int = 100):
+        """Initialize progress tracking."""
+        self.progress_tracker = ProgressTracker()
+        self.progress_tracker.start(total_steps)
+    
+    def update_progress(self, step: int, message: Optional[str] = None):
+        """Update progress tracking."""
+        if self.progress_tracker:
+            self.progress_tracker.update(step, message)
+    
+    def end_progress_tracking(self):
+        """End progress tracking."""
+        if self.progress_tracker:
+            self.progress_tracker.finish()
+            self.progress_tracker = None
+    
+    def cleanup(self):
+        """Clean up resources."""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with cleanup."""
+        self.cleanup()
+        if self.progress_tracker:
+            self.end_progress_tracking()
     
     @staticmethod
     def list_quant_types(bits: Optional[int] = None) -> Dict[str, str]:
@@ -507,36 +572,6 @@ class QuantLLM:
         verbose: bool = True,
         progress_callback: Optional[Callable] = None
     ) -> PreTrainedModel:
-        """
-        Quantize a model using GGUF format with optimized resource handling.
-        
-        Args:
-            model_name: Model identifier or instance
-            bits: Number of bits for GGUF quantization
-            group_size: Size of quantization groups
-            quant_type: GGUF quantization type
-            use_packed: Whether to use packed format
-            device: Target device for quantization
-            load_in_8bit: Whether to load model in 8-bit precision
-            load_in_4bit: Whether to load model in 4-bit precision
-            bnb_4bit_quant_type: BitsAndBytes 4-bit quantization type
-            bnb_4bit_compute_dtype: Compute dtype for 4-bit quantization
-            bnb_4bit_use_double_quant: Whether to use double quantization
-            use_gradient_checkpointing: Whether to use gradient checkpointing
-            device_map: Device mapping strategy
-            max_memory: Maximum memory configuration
-            offload_folder: Folder for offloading
-            offload_state_dict: Whether to offload state dict
-            torch_dtype: Default torch dtype
-            auto_device: Automatically determine optimal device
-            optimize_for: Optimization priority ("speed", "quality", or "balanced")
-            cpu_offload: Whether to use CPU offloading
-            verbose: Whether to show detailed progress
-            progress_callback: Optional callback for progress updates
-            
-        Returns:
-            Quantized model
-        """
         try:
             # Initialize progress tracking
             progress = ProgressTracker()
@@ -544,7 +579,7 @@ class QuantLLM:
                 progress.start(100)
                 progress.start_phase("Initialization")
             
-            logger.log_info(f"Starting GGUF quantization with {bits} bits")
+            logger.log_info(f"Starting quantization with {bits} bits")
             
             if bits not in SUPPORTED_GGUF_BITS:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
@@ -579,7 +614,7 @@ class QuantLLM:
                 
                 if device is None:
                     device = optimal_config["device"]
-                        if device_map == "auto":
+                if device_map == "auto":
                     device_map = optimal_config["device_map"]
                 if max_memory is None:
                     max_memory = optimal_config.get("max_memory")
@@ -592,12 +627,24 @@ class QuantLLM:
                     logger.log_info(f"  • Device map: {device_map}")
                     logger.log_info(f"  • CPU offload: {cpu_offload}")
                     logger.log_info(f"  • Optimization level: {optimal_config['optimization_level']}")
-                
-            # Configure BitsAndBytes for 4-bit quantization
-            if load_in_4bit:
+            
+            # Configure quantization based on bits
+            if bits <= 4:
+                load_in_4bit = True
+                load_in_8bit = False
+            elif bits <= 8:
+                load_in_8bit = True
+                load_in_4bit = False
+            else:
+                load_in_4bit = False
+                load_in_8bit = False
+            
+            # Configure BitsAndBytes for quantization
+            if load_in_4bit or load_in_8bit:
                 compute_dtype = bnb_4bit_compute_dtype or torch.float16
                 bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
+                    load_in_4bit=load_in_4bit,
+                    load_in_8bit=load_in_8bit,
                     bnb_4bit_quant_type=bnb_4bit_quant_type,
                     bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_use_double_quant=bnb_4bit_use_double_quant,
@@ -608,7 +655,7 @@ class QuantLLM:
             
             # If no quant_type specified, use recommended type
             if not quant_type:
-                bits, quant_type = QuantLLM.get_recommended_quant_type(
+                _, quant_type = QuantLLM.get_recommended_quant_type(
                     model_size_gb=model_size_gb,
                     priority=optimize_for
                 )
@@ -644,8 +691,13 @@ class QuantLLM:
             if verbose:
                 progress.update(40, "Quantizer created, starting quantization...")
             
-            # Store quantizer instance in model for later use
+            # Store quantizer instance and config in model for later use
             quantizer.model._quantizer = quantizer
+            quantizer.model.config.quantization_config = {
+                "bits": bits,
+                "quant_type": quant_type,
+                "group_size": group_size
+            }
             
             if verbose:
                 progress.update(30, "Quantization completed")
@@ -703,10 +755,10 @@ class QuantLLM:
             # Get original model path from cache if available
             original_path = None
             if hasattr(model, 'config') and hasattr(model.config, '_name_or_path'):
-                from transformers.utils import HUGGINGFACE_HUB_CACHE
+                from huggingface_hub import HfFolder
+                cache_dir = os.getenv('HF_HOME', HfFolder.default_cache_path)
                 model_id = model.config._name_or_path
                 if '/' in model_id:  # It's a hub model
-                    cache_dir = os.getenv('TRANSFORMERS_CACHE', HUGGINGFACE_HUB_CACHE)
                     org, model_name = model_id.split('/')
                     potential_paths = glob.glob(os.path.join(cache_dir, 'models--' + org + '--' + model_name, '*', 'snapshots', '*'))
                     if potential_paths:
