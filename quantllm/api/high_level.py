@@ -755,8 +755,8 @@ class QuantLLM:
             # Get original model path from cache if available
             original_path = None
             if hasattr(model, 'config') and hasattr(model.config, '_name_or_path'):
-                from huggingface_hub import HfFolder
-                cache_dir = os.getenv('HF_HOME', HfFolder.default_cache_path)
+            
+                cache_dir = os.getenv('HF_HOME')
                 model_id = model.config._name_or_path
                 if '/' in model_id:  # It's a hub model
                     org, model_name = model_id.split('/')
