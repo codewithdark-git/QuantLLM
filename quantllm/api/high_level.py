@@ -79,19 +79,18 @@ class SystemResourceMonitor:
             "optimization_level": "balanced"
         }
         
-        # GPU optimization
         if self.gpu_info["available"]:
             max_gpu_mem = max(gpu["free_memory_gb"] for gpu in self.gpu_info["devices"])
             total_gpu_mem = sum(gpu["free_memory_gb"] for gpu in self.gpu_info["devices"])
             
-            if model_size_gb <= max_gpu_mem * 0.8:  # Single GPU
+            if model_size_gb <= max_gpu_mem * 0.8:
                 config.update({
                     "device": "cuda",
                     "device_map": "auto",
                     "cpu_offload": False,
                     "optimization_level": "quality"
                 })
-            elif model_size_gb <= total_gpu_mem * 0.8:  # Multi-GPU
+            elif model_size_gb <= total_gpu_mem * 0.8:
                 config.update({
                     "device": "cuda",
                     "device_map": "auto",
@@ -115,8 +114,13 @@ class SystemResourceMonitor:
                         "cpu": f"{int(self.memory_info['available_gb'] * 0.5)}GB"
                     }
                 })
+            elif model_size_gb > total_gpu_mem * 0.5:
+                config["cpu_offload"] = True
+                config["max_memory"] = {
+                    **{i: f"{int(gpu['free_memory_gb'] * 0.5)}GB" for i, gpu in enumerate(self.gpu_info["devices"])},
+                    "cpu": f"{int(self.memory_info['available_gb'] * 0.7)}GB"
+                }
         
-        # CPU optimization based on available cores
         if self.cpu_info["cores_physical"] >= 8:
             config["optimization_level"] = "quality"
         elif self.cpu_info["cores_physical"] >= 4:
@@ -133,7 +137,6 @@ def estimate_model_size(model_name: Union[str, PreTrainedModel]) -> Dict[str, fl
             params = sum(p.numel() for p in model_name.parameters())
             model_size_fp16 = (params * 2) / (1024**3)
             
-            # Calculate size breakdown
             embedding_params = sum(p.numel() for n, p in model_name.named_parameters() if 'embed' in n.lower())
             attention_params = sum(p.numel() for n, p in model_name.named_parameters() if any(x in n.lower() for x in ['attn', 'attention']))
             
@@ -160,22 +163,19 @@ def _estimate_from_config(config, model_name: str) -> Dict[str, float]:
     elif hasattr(config, 'n_params'):
         params = config.n_params
     elif hasattr(config, 'hidden_size') and hasattr(config, 'num_hidden_layers'):
-        # Enhanced estimation for various architectures
         hidden_size = config.hidden_size
         num_layers = config.num_hidden_layers
         vocab_size = getattr(config, 'vocab_size', 32000)
         
-        # Architecture-specific calculations
         if hasattr(config, 'intermediate_size'):
             ffn_size = config.intermediate_size
         else:
-            ffn_size = hidden_size * 4  # Standard transformer ratio
+            ffn_size = hidden_size * 4
         
-        # Calculate components
-        attention_params = 4 * num_layers * hidden_size * hidden_size  # Q,K,V,O
-        ffn_params = 2 * num_layers * hidden_size * ffn_size  # Up and down projections
-        embedding_params = vocab_size * hidden_size * 2  # Input + output embeddings
-        norm_params = 2 * num_layers * hidden_size  # Layer norms
+        attention_params = 4 * num_layers * hidden_size * hidden_size
+        ffn_params = 2 * num_layers * hidden_size * ffn_size
+        embedding_params = vocab_size * hidden_size * 2
+        norm_params = 2 * num_layers * hidden_size
         
         params = attention_params + ffn_params + embedding_params + norm_params
     else:
@@ -196,7 +196,6 @@ def _fallback_size_estimation(model_name: str) -> Dict[str, float]:
     """Fallback size estimation based on model name patterns."""
     model_name_lower = str(model_name).lower()
     
-    # Common model size patterns
     size_patterns = {
         "7b": 13.0, "8b": 15.0, "3b": 6.0, "1b": 2.0,
         "13b": 24.0, "15b": 28.0, "20b": 38.0,
@@ -217,7 +216,6 @@ def _fallback_size_estimation(model_name: str) -> Dict[str, float]:
                 "other_params": params
             }
     
-    # Default fallback
     default_size = 7.0
     default_params = 7e9
     return {
@@ -233,7 +231,6 @@ def _fallback_param_estimation(model_name: str) -> int:
     """Fallback parameter estimation based on model name patterns."""
     model_name_lower = str(model_name).lower()
     
-    # Common model parameter patterns
     param_patterns = {
         "7b": 7e9, "8b": 8e9, "3b": 3e9, "1b": 1e9,
         "13b": 13e9, "15b": 15e9, "20b": 20e9,
@@ -246,7 +243,7 @@ def _fallback_param_estimation(model_name: str) -> int:
         if pattern in model_name_lower:
             return int(params)
     
-    return int(7e9)  # Default 7B parameters
+    return int(7e9)
 
 class ProgressTracker:
     """Track quantization progress with detailed metrics."""
@@ -287,7 +284,6 @@ class ProgressTracker:
         if message:
             logger.log_info(f"  {message}")
         
-        # Show progress every 10%
         progress = (self.completed_steps / self.total_steps) * 100
         if progress % 10 < (steps / self.total_steps) * 100:
             logger.log_info(f"📊 Progress: {progress:.1f}%")
@@ -300,7 +296,6 @@ class ProgressTracker:
         total_time = time.time() - self.start_time if self.start_time else 0
         logger.log_info(f"🎉 Quantization completed in {total_time:.2f}s")
         
-        # Log phase breakdown
         if self.phase_times:
             logger.log_info("\n⏱️  Phase Breakdown:")
             for phase, times in self.phase_times.items():
@@ -308,7 +303,6 @@ class ProgressTracker:
                     duration = times["end"] - times["start"]
                     logger.log_info(f"  • {phase}: {duration:.2f}s")
 
-# Legacy compatibility functions
 def get_gpu_memory():
     """Get available GPU memory in GB."""
     monitor = SystemResourceMonitor()
@@ -435,7 +429,6 @@ class QuantLLM:
         if priority not in ["speed", "quality", "balanced"]:
             raise ValueError("Priority must be 'speed', 'quality', or 'balanced'")
         
-        # Calculate compression ratio if target size is specified
         if target_size_gb:
             required_ratio = model_size_gb / target_size_gb
             
@@ -452,13 +445,12 @@ class QuantLLM:
                 if priority == "quality":
                     bits, qtype = (4, "Q4_1")
                 elif priority == "speed":
-                    bits, qtype = (3, "Q3_K_S")
+                    bits, qtype = (2, "IQ2_XXS")
                 else:
-                    bits, qtype = (3, "Q3_K_M")
+                    bits, qtype = (2, "IQ2_XS")
             else:
                 bits, qtype = (2, "Q2_K")
         else:
-            # Without target size, recommend based on model size and priority
             if model_size_gb <= 2:
                 bits, qtype = (5, "Q5_1") if priority == "quality" else (4, "Q4_K_M")
             elif model_size_gb <= 7:
@@ -466,7 +458,7 @@ class QuantLLM:
             elif model_size_gb <= 13:
                 bits, qtype = (4, "Q4_K_M") if priority != "speed" else (4, "Q4_K_S")
             else:
-                bits, qtype = (3, "Q3_K_M")
+                bits, qtype = (2, "IQ2_XS")
         
         return bits, qtype
     
@@ -483,20 +475,16 @@ class QuantLLM:
         """
         logger.log_info("🔍 Analyzing model...")
         
-        # Get model size information
         size_info = estimate_model_size(model_name)
         
-        # Get system resources
         monitor = SystemResourceMonitor()
         optimal_config = monitor.get_optimal_config(size_info["size_fp16_gb"])
         
-        # Get quantization recommendations
         recommended_bits, recommended_type = QuantLLM.get_recommended_quant_type(
             size_info["size_fp16_gb"],
             priority=optimal_config["optimization_level"]
         )
         
-        # Calculate estimated quantized sizes
         compression_ratios = {
             8: 2.0, 6: 2.7, 5: 3.2, 4: 4.0, 
             3: 5.3, 2: 8.0
@@ -538,8 +526,8 @@ class QuantLLM:
             },
             "quantized_sizes": quantized_sizes,
             "memory_requirements": {
-                "minimum_gpu_memory_gb": size_info["size_fp16_gb"] * 1.2,  # 20% overhead
-                "minimum_system_memory_gb": size_info["size_fp16_gb"] * 1.5,  # 50% overhead
+                "minimum_gpu_memory_gb": size_info["size_fp16_gb"] * 1.2,
+                "minimum_system_memory_gb": size_info["size_fp16_gb"] * 1.5,
                 "recommended_gpu_memory_gb": size_info["size_fp16_gb"] * 1.5,
                 "recommended_system_memory_gb": size_info["size_fp16_gb"] * 2.0
             }
@@ -573,20 +561,18 @@ class QuantLLM:
         progress_callback: Optional[Callable] = None
     ) -> PreTrainedModel:
         try:
-            # Initialize progress tracking
             progress = ProgressTracker()
             if verbose:
                 progress.start(100)
                 progress.start_phase("Initialization")
             
-            logger.log_info(f"Starting quantization with {bits} bits")
+            logger.log_info(f"Starting quantization preparation with {bits} bits")
             
             if bits not in SUPPORTED_GGUF_BITS:
                 raise ValueError(f"Unsupported bits: {bits}. Supported values: {SUPPORTED_GGUF_BITS}")
             if quant_type and quant_type not in SUPPORTED_GGUF_TYPES.get(bits, {}):
                 raise ValueError(f"Unsupported quant_type: {quant_type} for {bits} bits")
                 
-            # Analyze model and resources
             if verbose:
                 progress.update(10, "Analyzing model and system resources...")
             
@@ -608,7 +594,6 @@ class QuantLLM:
                 progress.end_phase()
                 progress.start_phase("Configuration")
             
-            # Auto-configure resources
             if auto_device:
                 optimal_config = monitor.get_optimal_config(model_size_gb)
                 
@@ -628,32 +613,18 @@ class QuantLLM:
                     logger.log_info(f"  • CPU offload: {cpu_offload}")
                     logger.log_info(f"  • Optimization level: {optimal_config['optimization_level']}")
             
-            # Configure quantization based on bits
-            if bits <= 4:
-                load_in_4bit = True
-                load_in_8bit = False
-            elif bits <= 8:
-                load_in_8bit = True
-                load_in_4bit = False
-            else:
-                load_in_4bit = False
-                load_in_8bit = False
-            
-            # Configure BitsAndBytes for quantization
-            if load_in_4bit or load_in_8bit:
+            bnb_config = None
+            if bits in [4, 8]:
                 compute_dtype = bnb_4bit_compute_dtype or torch.float16
                 bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=load_in_4bit,
-                    load_in_8bit=load_in_8bit,
+                    load_in_4bit=bits == 4,
+                    load_in_8bit=bits == 8,
                     bnb_4bit_quant_type=bnb_4bit_quant_type,
                     bnb_4bit_compute_dtype=compute_dtype,
                     bnb_4bit_use_double_quant=bnb_4bit_use_double_quant,
                     llm_int8_enable_fp32_cpu_offload=cpu_offload
                 )
-            else:
-                bnb_config = None
             
-            # If no quant_type specified, use recommended type
             if not quant_type:
                 _, quant_type = QuantLLM.get_recommended_quant_type(
                     model_size_gb=model_size_gb,
@@ -665,9 +636,8 @@ class QuantLLM:
             if verbose:
                 progress.update(20, "Configuration completed")
                 progress.end_phase()
-                progress.start_phase("Model Loading & Quantization")
+                progress.start_phase("Model Loading")
             
-            # Create quantizer and perform quantization
             if progress_callback:
                 progress_callback(30, "Creating quantizer...")
             
@@ -689,9 +659,13 @@ class QuantLLM:
             )
             
             if verbose:
-                progress.update(40, "Quantizer created, starting quantization...")
+                progress.update(40, "Quantizer created")
+                progress.end_phase()
+                progress.finish()
             
-            # Store quantizer instance and config in model for later use
+            if progress_callback:
+                progress_callback(100, "Model preparation completed successfully!")
+            
             quantizer.model._quantizer = quantizer
             quantizer.model.config.quantization_config = {
                 "bits": bits,
@@ -699,18 +673,10 @@ class QuantLLM:
                 "group_size": group_size
             }
             
-            if verbose:
-                progress.update(30, "Quantization completed")
-                progress.end_phase()
-                progress.finish()
-            
-            if progress_callback:
-                progress_callback(100, "Quantization completed successfully!")
-            
             return quantizer.model
             
         except Exception as e:
-            logger.log_error(f"Quantization failed: {str(e)}")
+            logger.log_error(f"Quantization preparation failed: {str(e)}")
             raise
         finally:
             if torch.cuda.is_available():
@@ -743,7 +709,6 @@ class QuantLLM:
             replace_original: Whether to replace original model files with quantized ones
         """
         try:
-            # Initialize progress tracking
             progress = ProgressTracker()
             if verbose:
                 progress.start(100)
@@ -752,13 +717,12 @@ class QuantLLM:
             if progress_callback:
                 progress_callback(0, "Starting model export...")
             
-            # Get original model path from cache if available
             original_path = None
             if hasattr(model, 'config') and hasattr(model.config, '_name_or_path'):
-            
-                cache_dir = os.getenv('HF_HOME')
+                from huggingface_hub import HfFolder
+                cache_dir = os.getenv('HF_HOME', HfFolder.default_cache_path)
                 model_id = model.config._name_or_path
-                if '/' in model_id:  # It's a hub model
+                if '/' in model_id:
                     org, model_name = model_id.split('/')
                     potential_paths = glob.glob(os.path.join(cache_dir, 'models--' + org + '--' + model_name, '*', 'snapshots', '*'))
                     if potential_paths:
@@ -766,7 +730,6 @@ class QuantLLM:
                         if verbose:
                             logger.log_info(f"Found original model in cache: {original_path}")
 
-            # Setup output directory
             if output_path == "auto" and original_path:
                 output_path = original_path
             else:
@@ -775,22 +738,19 @@ class QuantLLM:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             if verbose:
-                logger.log_info(f"Saving quantized model to: {output_path}")
+                logger.log_info(f"Saving model to: {output_path}")
                 
-            # Create temporary directory for saving
             with tempfile.TemporaryDirectory(prefix="quant_save_") as temp_dir:
                 if save_format.lower() == "gguf":
                     if verbose:
                         progress.start_phase("GGUF Conversion")
                     
-                    # Convert to GGUF
                     from ..quant.llama_cpp_utils import LlamaCppConverter
                     converter = LlamaCppConverter(verbose=verbose)
                     
                     if progress_callback:
                         progress_callback(30, "Converting to GGUF format...")
                     
-                    # Ensure .gguf extension
                     if not output_path.lower().endswith('.gguf'):
                         output_path = f"{output_path}.gguf"
                     
@@ -800,21 +760,21 @@ class QuantLLM:
                         bits=quant_config.get('bits', 4) if quant_config else 4,
                         group_size=quant_config.get('group_size', 128) if quant_config else 128,
                         save_tokenizer=save_tokenizer,
-                        custom_name=os.path.basename(output_path)
+                        custom_name=os.path.basename(output_path),
+                        quant_type=quant_config.get('quant_type', 'q4_k_m') if quant_config else None
                     )
                     
                     if verbose:
                         file_size = os.path.getsize(gguf_path) / (1024**3)
                         logger.log_info(f"\n✅ GGUF model saved ({file_size:.2f} GB): {gguf_path}")
                     
-                else:  # safetensors format
+                else:
                     if verbose:
                         progress.start_phase("Safetensors Export")
                     
                     if progress_callback:
                         progress_callback(30, "Saving in safetensors format...")
                     
-                    # Save to temporary directory first
                     model.save_pretrained(
                         temp_dir,
                         safe_serialization=safe_serialization,
@@ -824,18 +784,15 @@ class QuantLLM:
                     if save_tokenizer and hasattr(model, 'tokenizer'):
                         model.tokenizer.save_pretrained(temp_dir)
                     
-                    # If replacing original files in cache
                     if replace_original and original_path:
                         target_dir = original_path
                         if verbose:
                             logger.log_info(f"Replacing original files in: {target_dir}")
                         
-                        # Remove old model files but keep config and tokenizer
                         for file in os.listdir(target_dir):
                             if file.endswith(('.bin', '.safetensors', '.pt', '.gguf')):
                                 os.remove(os.path.join(target_dir, file))
                         
-                        # Copy new files
                         for file in os.listdir(temp_dir):
                             src = os.path.join(temp_dir, file)
                             dst = os.path.join(target_dir, file)
@@ -846,12 +803,10 @@ class QuantLLM:
                         if verbose:
                             logger.log_info("✅ Original model files replaced with quantized versions")
                     
-                    # If saving to custom location
                     else:
                         target_dir = output_path if os.path.isdir(output_path) else os.path.dirname(output_path)
                         os.makedirs(target_dir, exist_ok=True)
                         
-                        # Copy files to final location
                         for file in os.listdir(temp_dir):
                             src = os.path.join(temp_dir, file)
                             dst = os.path.join(target_dir, file)
@@ -881,4 +836,3 @@ class QuantLLM:
         finally:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    
