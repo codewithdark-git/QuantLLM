@@ -35,7 +35,6 @@ class ProgressTracker:
         elapsed = time.time() - self.start_time
         progress_pct = min((self.current_step / self.total_steps) * 100, 100)
         
-        # Estimate remaining time
         if len(self.step_times) > 1:
             avg_step_time = elapsed / len(self.step_times)
             remaining_steps = self.total_steps - self.current_step
@@ -60,16 +59,16 @@ class LlamaCppConverter:
         "stablelm", "phi", "gemma", "qwen", "baichuan", "yi"
     ]
     
-    # Enhanced quantization type mapping with better defaults
+    # Enhanced quantization type mapping with 2-bit support
     QUANT_TYPE_MAP = {
-        2: "q2_k",      # 2-bit with K-quant for better quality
-        3: "q3_k_m",    # 3-bit medium quality
-        4: "q4_k_m",    # 4-bit medium quality (balanced)
-        5: "q5_k_m",    # 5-bit medium quality
-        6: "q6_k",      # 6-bit high quality
-        8: "q8_0",      # 8-bit highest quality
-        16: "f16",      # 16-bit float
-        32: "f32"       # 32-bit float
+        2: ["q2_k", "iq2_xxs", "iq2_xs"],
+        3: ["q3_k_m", "q3_k_s", "q3_k_l"],
+        4: ["q4_k_m", "q4_k_s", "q4_0", "q4_1"],
+        5: ["q5_k_m", "q5_k_s", "q5_0", "q5_1"],
+        6: ["q6_k"],
+        8: ["q8_0"],
+        16: ["f16"],
+        32: ["f32"]
     }
     
     # Performance optimization flags
@@ -83,11 +82,11 @@ class LlamaCppConverter:
         """Initialize converter with performance optimizations."""
         self.verbose = verbose
         self.progress_tracker = None
+        self.convert_script = None
+        self.quantize_bin = None
         
         try:
-            # Try multiple ways to find llama-cpp-python
             self._find_llama_cpp_installation()
-            
         except ImportError as e:
             raise ImportError(
                 "llama-cpp-python is required for GGUF conversion.\n"
@@ -98,49 +97,32 @@ class LlamaCppConverter:
     def _find_llama_cpp_installation(self):
         """Find llama-cpp-python installation and conversion scripts."""
         try:
-            # First try: Direct import
             import llama_cpp
             self.llama_cpp_path = os.path.dirname(llama_cpp.__file__)
             
-            # Look for conversion script in package
+            # Look for conversion script
             script_path = os.path.join(self.llama_cpp_path, "convert.py")
             if os.path.exists(script_path):
                 self.convert_script = script_path
-                return
-            
-            # Look in package scripts directory
-            scripts_dir = os.path.join(os.path.dirname(self.llama_cpp_path), "scripts")
-            if os.path.exists(scripts_dir):
+            else:
+                scripts_dir = os.path.join(os.path.dirname(self.llama_cpp_path), "scripts")
                 for script in ["convert.py", "convert_hf_to_gguf.py"]:
                     script_path = os.path.join(scripts_dir, script)
                     if os.path.exists(script_path):
                         self.convert_script = script_path
-                        return
+                        break
             
-            # Try pip installation path
-            try:
-                import site
-                for site_dir in site.getsitepackages():
-                    for script in ["convert.py", "convert_hf_to_gguf.py"]:
-                        script_path = os.path.join(site_dir, "llama_cpp", script)
-                        if os.path.exists(script_path):
-                            self.convert_script = script_path
-                            return
-                        script_path = os.path.join(site_dir, "llama_cpp", "scripts", script)
-                        if os.path.exists(script_path):
-                            self.convert_script = script_path
-                            return
-            except Exception:
-                pass
+            # Look for quantize binary
+            quantize_path = os.path.join(self.llama_cpp_path, "quantize")
+            if os.path.exists(quantize_path):
+                self.quantize_bin = quantize_path
             
-            # Try PATH
-            for script in ["convert.py", "convert_hf_to_gguf.py"]:
-                script_path = shutil.which(script)
-                if script_path:
-                    self.convert_script = script_path
-                    return
-                
-            raise ImportError("GGUF conversion script not found")
+            if not self.convert_script or not self.quantize_bin:
+                raise FileNotFoundError("Required llama.cpp tools (convert.py or quantize) not found")
+            
+            if self.verbose:
+                logger.log_info(f"Found convert.py: {self.convert_script}")
+                logger.log_info(f"Found quantize: {self.quantize_bin}")
             
         except ImportError:
             raise ImportError(
@@ -155,7 +137,6 @@ class LlamaCppConverter:
         
         model_type = getattr(model.config, 'model_type', 'unknown').lower()
         
-        # Enhanced type mapping
         type_mapping = {
             "llama": "llama",
             "llama2": "llama", 
@@ -189,15 +170,12 @@ class LlamaCppConverter:
         if self.verbose:
             logger.log_info("⚡ Applying conversion optimizations...")
         
-        # Move to CPU and optimize memory
         if hasattr(model, 'to'):
             model = model.to('cpu')
         
-        # Clear CUDA cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        # Enable eval mode for stability
         model.eval()
         
         return model
@@ -219,7 +197,6 @@ class LlamaCppConverter:
                     if not line:
                         continue
                     
-                    # Parse progress indicators
                     if "%" in line or "processing" in line.lower():
                         current_step += 1
                         if self.progress_tracker:
@@ -228,7 +205,6 @@ class LlamaCppConverter:
                         if progress_callback:
                             progress_callback(current_step, line)
                     
-                    # Log important messages
                     if any(keyword in line.lower() for keyword in ['error', 'warning', 'failed']):
                         logger.log_warning(f"⚠️  {line}")
                     elif any(keyword in line.lower() for keyword in ['completed', 'success', 'done']):
@@ -249,7 +225,8 @@ class LlamaCppConverter:
         optimization_level: str = "balanced",
         save_tokenizer: bool = True,
         progress_callback: Optional[Callable] = None,
-        custom_name: Optional[str] = None
+        custom_name: Optional[str] = None,
+        quant_type: Optional[str] = None
     ) -> str:
         """
         Convert model to GGUF format with enhanced performance and logging.
@@ -264,6 +241,7 @@ class LlamaCppConverter:
             save_tokenizer: Whether to save tokenizer
             progress_callback: Optional progress callback function
             custom_name: Custom output filename (default: model.gguf)
+            quant_type: Specific quantization type (e.g., Q2_K, IQ2_XXS)
             
         Returns:
             Path to generated GGUF file
@@ -271,11 +249,9 @@ class LlamaCppConverter:
         start_time = time.time()
         
         try:
-            # Setup output directory
             output_dir = os.path.abspath(output_dir)
             os.makedirs(output_dir, exist_ok=True)
             
-            # Generate output filename
             if custom_name:
                 filename = custom_name if custom_name.endswith('.gguf') else f"{custom_name}.gguf"
             else:
@@ -295,19 +271,15 @@ class LlamaCppConverter:
                 logger.log_info(f"💾 Output: {gguf_path}")
                 logger.log_info("="*80 + "\n")
             
-            # Use a temporary directory for intermediate files
             with tempfile.TemporaryDirectory(prefix="gguf_convert_", dir=output_dir) as temp_dir:
                 if self.verbose:
                     logger.log_info("📁 Setting up workspace...")
                 
-                # Initialize progress tracking
                 self.progress_tracker = ProgressTracker(total_steps=10)
                 
-                # Step 1: Optimize model
                 self.progress_tracker.update(1, "Optimizing model...")
                 model = self._optimize_for_conversion(model)
                 
-                # Step 2: Save model in optimal format with sharding
                 self.progress_tracker.update(2, "Saving model...")
                 model.save_pretrained(
                     temp_dir,
@@ -315,25 +287,34 @@ class LlamaCppConverter:
                     max_shard_size="2GB"
                 )
                 
-                # Step 3: Save tokenizer if requested
                 if save_tokenizer:
                     self.progress_tracker.update(3, "Saving tokenizer...")
                     self._save_tokenizer(model, temp_dir)
                 
-                # Step 4: Prepare and run conversion
-                self.progress_tracker.update(4, "Converting to GGUF...")
-                cmd = self._build_conversion_command(
-                    temp_dir, gguf_path,
+                self.progress_tracker.update(4, "Converting to FP16 GGUF...")
+                temp_gguf = os.path.join(temp_dir, "temp_f16.gguf")
+                cmd_convert = self._build_conversion_command(
+                    temp_dir, temp_gguf,
                     model_type or self._detect_model_type(model),
                     bits, optimization_level
                 )
                 
-                success = self._run_conversion(cmd, progress_callback)
+                success = self._run_conversion(cmd_convert, progress_callback)
+                if not success or not os.path.exists(temp_gguf):
+                    raise RuntimeError("FP16 GGUF conversion failed")
                 
+                self.progress_tracker.update(7, f"Quantizing to {quant_type or self.QUANT_TYPE_MAP.get(bits)[0]}...")
+                cmd_quantize = [
+                    self.quantize_bin,
+                    temp_gguf,
+                    gguf_path,
+                    (quant_type or self.QUANT_TYPE_MAP.get(bits)[0]).lower()
+                ]
+                
+                success = self._run_conversion(cmd_quantize, progress_callback)
                 if not success or not os.path.exists(gguf_path):
-                    raise RuntimeError("GGUF conversion failed")
+                    raise RuntimeError(f"GGUF quantization to {quant_type} failed")
                 
-                # Log completion
                 file_size = os.path.getsize(gguf_path) / (1024**3)
                 elapsed_time = time.time() - start_time
                 
@@ -360,15 +341,13 @@ class LlamaCppConverter:
         """Prepare optimized model configuration."""
         config = model.config.to_dict() if hasattr(model.config, 'to_dict') else {}
         
-        # Essential fields for GGUF conversion
         essential_config = {
             "model_type": model_type,
             "architectures": getattr(model.config, 'architectures', [model_type]),
             "torch_dtype": str(getattr(model, 'dtype', torch.float32)).replace('torch.', ''),
-            "transformers_version": "4.36.0",  # Compatibility version
+            "transformers_version": "4.36.0",
         }
         
-        # Preserve important model-specific fields
         important_fields = [
             'hidden_size', 'num_hidden_layers', 'num_attention_heads',
             'vocab_size', 'max_position_embeddings', 'intermediate_size',
@@ -388,7 +367,7 @@ class LlamaCppConverter:
                 tokenizer = AutoTokenizer.from_pretrained(
                     model.config._name_or_path,
                     trust_remote_code=True,
-                    use_fast=False  # Use slow tokenizer for better compatibility
+                    use_fast=False
                 )
                 tokenizer.save_pretrained(temp_dir)
                 if self.verbose:
@@ -408,35 +387,30 @@ class LlamaCppConverter:
         bits: int,
         optimization_level: str
     ) -> List[str]:
-        """Build optimized conversion command."""
-        quant_type = self.QUANT_TYPE_MAP.get(bits, "q4_k_m")
-        
+        """Build optimized conversion command for FP16."""
         cmd = [
             sys.executable,
             self.convert_script,
             temp_dir,
             "--outfile", gguf_path,
-            "--outtype", quant_type,
+            "--outtype", "f16",
         ]
         
-        # Add optimization flags
         if optimization_level in self.OPTIMIZATION_FLAGS:
             cmd.extend(self.OPTIMIZATION_FLAGS[optimization_level])
         
-        # Add model-specific flags
         if model_type != "llama":
             cmd.extend(["--model-type", model_type])
         
-        # Add memory optimization for large models
         cmd.extend([
-            "--no-lazy",  # Disable lazy loading for speed
-            "--big-endian"  # Better compatibility
+            "--no-lazy",
+            "--big-endian"
         ])
         
         return cmd
     
     def _run_conversion(self, cmd: List[str], progress_callback: Optional[Callable] = None) -> bool:
-        """Run conversion process with enhanced monitoring."""
+        """Run conversion or quantization process with enhanced monitoring."""
         try:
             process = subprocess.Popen(
                 cmd,
@@ -446,10 +420,8 @@ class LlamaCppConverter:
                 bufsize=1
             )
             
-            # Monitor progress
             monitor_thread = self._log_progress(process, progress_callback)
             
-            # Wait for completion
             return_code = process.wait()
             
             if monitor_thread:
@@ -458,11 +430,11 @@ class LlamaCppConverter:
             return return_code == 0
             
         except Exception as e:
-            logger.log_error(f"Conversion process error: {e}")
+            logger.log_error(f"Process error: {e}")
             return False
 
     def get_supported_quantization_types(self, bits: Optional[int] = None) -> Dict[int, List[str]]:
         """Get supported quantization types."""
         if bits:
-            return {bits: [self.QUANT_TYPE_MAP.get(bits, "q4_k_m")]}
-        return {k: [v] for k, v in self.QUANT_TYPE_MAP.items()}
+            return {bits: self.QUANT_TYPE_MAP.get(bits, ["q4_k_m"])}
+        return self.QUANT_TYPE_MAP.copy()
