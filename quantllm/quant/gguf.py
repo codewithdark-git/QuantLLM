@@ -298,193 +298,48 @@ class GGUFQuantizer:
             logger.log_info(f"GPU Memory Reserved: {torch.cuda.memory_reserved() / (1024 * 1024):.2f} MB")
 
     def convert_to_gguf(self, output_path: str):
-        """Convert model to GGUF format with separate quantization step."""
+        """
+        Convert model to GGUF format using the LlamaCppConverter for robustness.
+        """
+        from .llama_cpp_utils import LlamaCppConverter
+
         if not CT_AVAILABLE:
-            raise ImportError("CTransformers is required for GGUF conversion")
-        
-        temp_dir = None
-        temp_gguf = None
+            raise ImportError("CTransformers is required for GGUF conversion. Install with: pip install ctransformers")
+
         try:
             logger.log_info("\n" + "="*80)
-            logger.log_info("🚀 Starting GGUF Conversion Process".center(80))
+            logger.log_info("🚀 Starting GGUF Conversion Process via LlamaCppConverter".center(80))
             logger.log_info("="*80 + "\n")
+
+            output_dir = os.path.dirname(output_path)
+            custom_name = os.path.basename(output_path)
+
+            converter = LlamaCppConverter(verbose=True)
             
-            # Model Information
-            logger.log_info("📊 Model Information:")
-            logger.log_info("-"*40)
-            model_type = self.model.config.model_type if hasattr(self.model, 'config') else None
-            supported_types = ["llama", "mistral", "falcon", "mpt", "gpt_neox", "pythia", "stablelm"]
-            
-            if model_type in supported_types:
-                logger.log_info(f"• Architecture: {model_type.upper()}")
-            else:
-                logger.log_info(f"• Architecture: Unknown (using default LLAMA)")
-                model_type = "llama"
-            
-            total_params = sum(p.numel() for p in self.model.parameters())
-            logger.log_info(f"• Total Parameters: {total_params:,}")
-            model_size = sum(p.numel() * p.element_size() for p in self.model.parameters()) / (1024**3)
-            logger.log_info(f"• Model Size: {model_size:.2f} GB")
-            logger.log_info("")
-            
-            # Conversion Settings
-            logger.log_info("⚙️ Conversion Settings:")
-            logger.log_info("-"*40)
-            logger.log_info(f"• Output Path: {output_path}")
-            logger.log_info(f"• Quantization Type: {self.quant_type}")
-            logger.log_info(f"• Target Bits: {self.bits}")
-            logger.log_info(f"• Group Size: {self.group_size}")
-            logger.log_info("")
-            
-            # Save temporary checkpoint
-            temp_dir = f"{output_path}_temp_hf"
-            logger.log_info("💾 Saving Temporary Checkpoint:")
-            logger.log_info("-"*40)
-            logger.log_info(f"• Checkpoint Path: {temp_dir}")
-            self.model.save_pretrained(temp_dir, safe_serialization=True)
-            logger.log_info("• Checkpoint saved successfully")
-            logger.log_info("")
-            
-            # Find llama.cpp tools
-            logger.log_info("🔍 Locating GGUF Conversion Tools:")
-            logger.log_info("-"*40)
-            
-            try:
-                import llama_cpp
-                llama_cpp_path = os.path.dirname(llama_cpp.__file__)
-                convert_script = os.path.join(llama_cpp_path, "convert.py")
-                quantize_bin = os.path.join(llama_cpp_path, "quantize")
-                if not os.path.exists(convert_script):
-                    raise FileNotFoundError("convert.py not found")
-                if not os.path.exists(quantize_bin):
-                    raise FileNotFoundError("quantize binary not found")
-                logger.log_info(f"• Found convert.py: {convert_script}")
-                logger.log_info(f"• Found quantize: {quantize_bin}")
-            except (ImportError, FileNotFoundError) as e:
-                logger.log_error(f"• Failed to locate llama.cpp tools: {e}")
-                try:
-                    logger.log_info("• Attempting to install llama-cpp-python...")
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "llama-cpp-python"])
-                    import llama_cpp
-                    llama_cpp_path = os.path.dirname(llama_cpp.__file__)
-                    convert_script = os.path.join(llama_cpp_path, "convert.py")
-                    quantize_bin = os.path.join(llama_cpp_path, "quantize")
-                    logger.log_info("• Successfully installed and located tools")
-                except Exception as inst_err:
-                    raise RuntimeError(
-                        f"Could not find or install llama-cpp-python: {inst_err}\n"
-                        "Install manually: pip install llama-cpp-python --upgrade"
-                    ) from e
-            
-            # Convert to FP16 GGUF
-            logger.log_info("🛠️ Converting to FP16 GGUF:")
-            logger.log_info("-"*40)
-            temp_gguf = f"{output_path}_temp_f16.gguf"
-            cmd_convert = [
-                sys.executable,
-                convert_script,
-                temp_dir,
-                "--outfile", temp_gguf,
-                "--outtype", "f16",
-                "--model-type", model_type
-            ]
-            
-            logger.log_info(f"• Command: {' '.join(cmd_convert)}")
-            with tqdm(total=100, desc="Converting to FP16", unit="%") as pbar:
-                process = subprocess.Popen(
-                    cmd_convert,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True
-                )
-                
-                while True:
-                    output = process.stdout.readline()
-                    if output == '' and process.poll() is not None:
-                        break
-                    if output and "Converting" in output:
-                        try:
-                            progress = int(output.split("%")[0].split()[-1])
-                            pbar.n = progress
-                            pbar.refresh()
-                        except:
-                            pass
-                        logger.log_info(f"• {output.strip()}")
-            
-            return_code = process.wait()
-            if return_code != 0:
-                error_output = process.stderr.read()
-                raise RuntimeError(f"FP16 GGUF conversion failed:\n{error_output}")
-            
-            # Quantize to target type
-            logger.log_info("\n🔄 Quantizing GGUF:")
-            logger.log_info("-"*40)
-            cmd_quantize = [
-                quantize_bin,
-                temp_gguf,
-                output_path,
-                self.quant_type.lower()  # llama.cpp expects lowercase
-            ]
-            
-            logger.log_info(f"• Command: {' '.join(cmd_quantize)}")
-            with tqdm(total=100, desc="Quantizing GGUF", unit="%") as pbar:
-                process = subprocess.Popen(
-                    cmd_quantize,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True
-                )
-                
-                while True:
-                    output = process.stdout.readline()
-                    if output == '' and process.poll() is not None:
-                        break
-                    if output and "%" in output:
-                        try:
-                            progress = int(output.split("%")[0].split()[-1])
-                            pbar.n = progress
-                            pbar.refresh()
-                        except:
-                            pass
-                        logger.log_info(f"• {output.strip()}")
-            
-            return_code = process.wait()
-            if return_code != 0:
-                error_output = process.stderr.read()
-                raise RuntimeError(f"GGUF quantization failed:\n{error_output}")
-            
-            # Verify results
-            if os.path.exists(output_path):
-                logger.log_info("\n✅ Conversion Results:")
-                logger.log_info("-"*40)
-                
-                file_size = os.path.getsize(output_path) / (1024**3)
-                logger.log_info(f"• GGUF File Size: {file_size:.2f} GB")
-                
-                compression_ratio = model_size / file_size
-                logger.log_info(f"• Compression Ratio: {compression_ratio:.2f}x")
-                logger.log_info(f"• Output Path: {output_path}")
-                
-                logger.log_info("\n" + "="*80)
-                logger.log_info("✨ GGUF Conversion Completed Successfully! ✨".center(80))
-                logger.log_info("="*80 + "\n")
-            else:
-                raise RuntimeError(f"GGUF file was not created at {output_path}")
-            
+            gguf_path = converter.convert_to_gguf(
+                model=self.model,
+                output_dir=output_dir,
+                bits=self.bits,
+                group_size=self.group_size,
+                save_tokenizer=True,  # It's good practice to save the tokenizer
+                custom_name=custom_name,
+                quant_type=self.quant_type
+            )
+
+            if not os.path.exists(gguf_path):
+                raise RuntimeError(f"GGUF file was not created at {gguf_path}")
+
+            logger.log_info("\n" + "="*80)
+            logger.log_info("✨ GGUF Conversion Completed Successfully! ✨".center(80))
+            logger.log_info(f"📄 GGUF file saved to: {gguf_path}".center(80))
+            logger.log_info("="*80 + "\n")
+
         except Exception as e:
-            logger.log_error("\n❌ Conversion Failed:")
+            logger.log_error("\n❌ GGUF Conversion Failed:")
             logger.log_error("-"*40)
             logger.log_error(f"• Error: {str(e)}")
             raise RuntimeError(f"Failed to convert model to GGUF: {str(e)}") from e
-        
         finally:
-            if temp_dir and os.path.exists(temp_dir):
-                logger.log_info("\n🧹 Cleaning Up:")
-                logger.log_info("-"*40)
-                logger.log_info("• Removing temporary files...")
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            if temp_gguf and os.path.exists(temp_gguf):
-                os.remove(temp_gguf)
             self._clear_memory()
 
     def _clear_memory(self):

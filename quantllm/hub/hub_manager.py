@@ -34,6 +34,7 @@ class HubManager:
     ):
         """Push model and tokenizer to HuggingFace Hub."""
         try:
+            # Ensure the repository exists
             if not self.api.repo_exists(self.model_id):
                 self.api.create_repo(
                     repo_id=self.model_id,
@@ -41,27 +42,22 @@ class HubManager:
                     organization=self.organization
                 )
                 logger.log_success(f"Created new repository: {self.model_id}")
+
+            # Save model and tokenizer to a temporary directory and upload
+            with tempfile.TemporaryDirectory() as temp_dir:
+                model.save_pretrained(temp_dir)
+                tokenizer.save_pretrained(temp_dir)
                 
-            # Push model
-            model.push_to_hub(
-                self.model_id,
-                token=self.token,
-                commit_message=commit_message,
-                **kwargs
-            )
-            logger.log_success(f"Successfully pushed model to {self.model_id}")
+                self.push_folder(
+                    folder_path=temp_dir,
+                    commit_message=commit_message,
+                    **kwargs
+                )
             
-            # Push tokenizer
-            tokenizer.push_to_hub(
-                self.model_id,
-                token=self.token,
-                commit_message=commit_message,
-                **kwargs
-            )
-            logger.log_success(f"Successfully pushed tokenizer to {self.model_id}")
+            logger.log_success(f"Successfully pushed model and tokenizer to {self.model_id}")
             
         except Exception as e:
-            logger.log_error(f"Error pushing to hub: {str(e)}")
+            logger.log_error(f"Error pushing model to hub: {str(e)}")
             raise
 
     def push_folder(

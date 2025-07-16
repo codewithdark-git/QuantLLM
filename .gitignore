@@ -8,6 +8,7 @@ __pycache__/
 *.dylib
 
 upcoming.md
+GEMINI.md
 examples/
 *.ipynb
 
