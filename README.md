@@ -1,134 +1,404 @@
-# 🧠 QuantLLM: Efficient GGUF Model Quantization and Deployment
+<div align="center">
+  <h1>🧠 QuantLLM v2.0</h1>
+  <p align="center">
+    <img src="https://img.shields.io/badge/QuantLLM-v2.0-blue?style=for-the-badge" alt="QuantLLM v2.0"/>
+    <br/>
+    <strong>🚀 One Line to Rule Them All</strong>
+  </p>
 
-[![PyPI Downloads](https://static.pepy.tech/badge/quantllm)](https://pepy.tech/projects/quantllm)
-<img alt="PyPI - Version" src="https://img.shields.io/pypi/v/quantllm?logo=pypi&label=version&">
+  <p align="center">
+    <a href="https://pepy.tech/projects/quantllm"><img src="https://static.pepy.tech/badge/quantllm" alt="Downloads"/></a>
+    <img alt="PyPI - Version" src="https://img.shields.io/pypi/v/quantllm?logo=pypi&label=version"/>
+    <img alt="Python" src="https://img.shields.io/badge/python-3.10+-blue.svg"/>
+    <img alt="License" src="https://img.shields.io/badge/license-MIT-green.svg"/>
+    <img alt="Stars" src="https://img.shields.io/github/stars/codewithdark-git/QuantLLM?style=social"/>
+  </p>
 
-## 📌 Overview
+  <p align="center">
+    <b>Load → Quantize → Fine-tune → Export</b> · Any LLM · One Line Each
+  </p>
+  
+  <p align="center">
+    <a href="#-quick-start">Quick Start</a> •
+    <a href="#-features">Features</a> •
+    <a href="#-examples">Examples</a> •
+    <a href="#-supported-models">Models</a> •
+    <a href="#-documentation">Docs</a>
+  </p>
+</div>
 
-**QuantLLM** is a Python library designed for efficient model quantization using the GGUF (GGML Universal Format) method. It provides a robust framework for converting and deploying large language models with minimal memory footprint and optimal performance. Key capabilities include:
+---
 
-- **Memory-efficient GGUF quantization** with multiple precision options (2-bit to 8-bit)
-- **Chunk-based processing** for handling large models
-- **Comprehensive benchmarking** tools
-- **Detailed progress tracking** with memory statistics
-- **Easy model export** and deployment
+## 🤔 Why QuantLLM?
 
-## 🎯 Key Features
+| Challenge | Without QuantLLM | With QuantLLM |
+|-----------|------------------|---------------|
+| **Loading 7B model** | 50+ lines of config | `turbo("model")` |
+| **Quantization setup** | Complex BitsAndBytes config | Automatic |
+| **Fine-tuning** | LoRA config + Trainer setup | `model.finetune(data)` |
+| **GGUF export** | Manual llama.cpp workflow | `model.export("gguf")` |
+| **Memory management** | Manual offloading code | Built-in |
 
-| Feature                          | Description |
-|----------------------------------|-------------|
-| ✅ Multiple GGUF Types          | Support for various GGUF quantization types (Q2_K to Q8_0) with different precision-size tradeoffs |
-| ✅ Memory Optimization          | Chunk-based processing and CPU offloading for efficient handling of large models |
-| ✅ Progress Tracking            | Detailed layer-wise progress with memory statistics and ETA |
-| ✅ Benchmarking Tools           | Comprehensive benchmarking suite for performance evaluation |
-| ✅ Hardware Optimization        | Automatic device selection and memory management |
-| ✅ Easy Deployment              | Simple conversion to GGUF format for deployment |
-| ✅ Flexible Configuration       | Customizable quantization parameters and processing options |
+**QuantLLM handles the complexity so you can focus on building.**
 
-## 🚀 Getting Started
+---
+
+## ⚡ Quick Start
 
 ### Installation
 
-Basic installation:
 ```bash
-pip install quantllm
+# From GitHub (recommended)
+pip install git+https://github.com/codewithdark-git/QuantLLM.git
+
+# With all features
+pip install "quantllm[full] @ git+https://github.com/codewithdark-git/QuantLLM.git"
 ```
 
-With GGUF support (recommended):
-```bash
-pip install quantllm[gguf]
-```
-
-### Quick Example
+### Your First Model in 3 Lines
 
 ```python
-from quantllm import QuantLLM
-from transformers import AutoTokenizer
+from quantllm import turbo
 
-# Load tokenizer and prepare data
-model_name = "facebook/opt-125m"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-calibration_text = ["Example text for calibration."] * 10
-calibration_data = tokenizer(calibration_text, return_tensors="pt", padding=True)["input_ids"]
+# Load with automatic 4-bit quantization, Flash Attention, optimal settings
+model = turbo("meta-llama/Llama-3-8B")
 
-# Quantize model
-quantized_model, benchmark_results = QuantLLM.quantize_from_pretrained(
-    model_name_or_path=model_name,
-    bits=4,                    # Quantization bits (2-8)
-    group_size=32,            # Group size for quantization
-    quant_type="Q4_K_M",      # GGUF quantization type
-    calibration_data=calibration_data,
-    benchmark=True,           # Run benchmarks
-    benchmark_input_shape=(1, 32)
-)
-
-# Save and convert to GGUF
-QuantLLM.save_quantized_model(model=quantized_model, output_path="quantized_model")
-QuantLLM.convert_to_gguf(model=quantized_model, output_path="model.gguf")
+# Generate text
+print(model.generate("Explain quantum computing in simple terms"))
 ```
 
-For detailed usage examples and API documentation, please refer to our:
-- 📚 [Official Documentation](https://quantllm.readthedocs.io/)
-- 🎓 [Tutorials](https://quantllm.readthedocs.io/tutorials/)
-- 📖 [API Reference](https://quantllm.readthedocs.io/api/)
+That's it. QuantLLM automatically:
+- ✅ Detects your GPU and memory
+- ✅ Chooses optimal quantization (4-bit on most GPUs)
+- ✅ Enables Flash Attention 2 if available
+- ✅ Configures batch size and memory management
+
+---
+
+## ✨ Features
+
+<table>
+<tr>
+<td width="50%">
+
+### 🎯 Ultra-Simple API
+```python
+# One line - everything automatic
+model = turbo("mistralai/Mistral-7B")
+
+# Override if needed
+model = turbo("Qwen/Qwen2-7B", bits=4, max_length=8192)
+```
+
+</td>
+<td width="50%">
+
+### ⚡ Speed Optimizations
+- **Triton Kernels** - Fused dequant+matmul
+- **torch.compile** - Graph optimization
+- **Flash Attention 2** - Fast attention
+- **Weight Caching** - No re-dequantization
+
+</td>
+</tr>
+<tr>
+<td>
+
+### 🧠 45+ Model Architectures
+Llama 2/3, Mistral, Mixtral, Qwen/Qwen2, Phi-1/2/3, Gemma, Falcon, GPT-NeoX, StableLM, ChatGLM, Yi, DeepSeek, InternLM, Baichuan, StarCoder, BLOOM, OPT, MPT...
+
+</td>
+<td>
+
+### 📦 6 Export Formats
+- **GGUF** - llama.cpp, Ollama, LM Studio
+- **ONNX** - ONNX Runtime, TensorRT
+- **SafeTensors** - HuggingFace
+- **MLX** - Apple Silicon
+- **AWQ** - AutoAWQ
+- **PyTorch** - Standard .pt
+
+</td>
+</tr>
+<tr>
+<td>
+
+### 🔧 Zero-Config Smart Defaults
+- Hardware auto-detection (GPU, memory, capabilities)
+- Optimal quantization selection
+- Automatic batch size calculation
+- Memory-aware loading
+
+</td>
+<td>
+
+### 💾 Memory Optimizations
+- Dynamic CPU ↔ GPU offloading
+- Gradient checkpointing
+- CPU optimizer states
+- Layer-wise memory tracking
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🎮 Usage Examples
+
+### Chat with Any Model
+
+```python
+from quantllm import turbo
+
+model = turbo("meta-llama/Llama-3-8B")
+
+# Simple generation
+response = model.generate(
+    "Write a Python function to calculate fibonacci numbers",
+    max_new_tokens=200,
+    temperature=0.7,
+)
+print(response)
+
+# Chat format
+messages = [
+    {"role": "system", "content": "You are a helpful coding assistant."},
+    {"role": "user", "content": "How do I read a file in Python?"},
+]
+response = model.chat(messages)
+print(response)
+```
+
+### Fine-Tune with Your Data
+
+```python
+from quantllm import turbo
+
+model = turbo("mistralai/Mistral-7B")
+
+# Simple - everything auto-configured
+model.finetune("training_data.json", epochs=3)
+
+# Advanced - full control
+model.finetune(
+    "training_data.json",
+    epochs=5,
+    learning_rate=2e-4,
+    lora_r=32,
+    lora_alpha=64,
+    batch_size=4,
+    output_dir="./fine-tuned-model",
+)
+```
+
+**Supported data formats:**
+```json
+[
+  {"instruction": "What is Python?", "output": "Python is a programming language..."},
+  {"text": "Full text for language modeling"},
+  {"prompt": "Question here", "completion": "Answer here"}
+]
+```
+
+### Export to Multiple Formats
+
+```python
+from quantllm import turbo
+
+model = turbo("microsoft/phi-3-mini")
+
+# GGUF for llama.cpp / Ollama / LM Studio
+model.export("gguf", "phi3-q4.gguf", quantization="Q4_K_M")
+
+# GGUF quantization options:
+# Q2_K, Q3_K_S, Q3_K_M, Q4_0, Q4_K_S, Q4_K_M, Q5_0, Q5_K_M, Q6_K, Q8_0
+
+# ONNX for TensorRT / ONNX Runtime
+model.export("onnx", "phi3.onnx")
+
+# SafeTensors for HuggingFace
+model.export("safetensors", "./phi3-hf/")
+
+# MLX for Apple Silicon Macs
+model.export("mlx", "./phi3-mlx/", quantization="4bit")
+```
+
+### Push to HuggingFace Hub
+
+```python
+from quantllm import turbo
+from quantllm.hub import QuantLLMHubManager
+
+# Load and fine-tune
+model = turbo("microsoft/phi-2")
+model.finetune("my_data.json", epochs=3)
+
+# Setup Hub manager
+manager = QuantLLMHubManager(
+    repo_id="username/my-fine-tuned-model",
+    hf_token="your_token",
+)
+
+# Track training
+manager.track_hyperparameters({
+    "learning_rate": 0.001,
+    "epochs": 3,
+    "base_model": "microsoft/phi-2",
+})
+
+# Save and push
+manager.save_final_model(model.model, format="safetensors")
+manager.push()
+```
+
+---
+
+## 🧠 Supported Models
+
+QuantLLM supports **45+ model architectures** out of the box:
+
+| Category | Models |
+|----------|--------|
+| **Llama Family** | Llama 2, Llama 3, CodeLlama |
+| **Mistral Family** | Mistral 7B, Mixtral 8x7B |
+| **Qwen Family** | Qwen, Qwen2, Qwen2-MoE |
+| **Microsoft** | Phi-1, Phi-2, Phi-3 |
+| **Google** | Gemma, Gemma 2 |
+| **Falcon** | Falcon 7B/40B/180B |
+| **Code Models** | StarCoder, StarCoder2, CodeGen |
+| **Chinese** | ChatGLM, Yi, Baichuan, InternLM |
+| **Other** | DeepSeek, StableLM, MPT, BLOOM, OPT, GPT-NeoX |
+
+---
+
+## 📦 Installation Options
+
+```bash
+# Basic installation
+pip install git+https://github.com/codewithdark-git/QuantLLM.git
+
+# With GGUF export support
+pip install "quantllm[gguf] @ git+https://github.com/codewithdark-git/QuantLLM.git"
+
+# With Triton kernels (Linux only)
+pip install "quantllm[triton] @ git+https://github.com/codewithdark-git/QuantLLM.git"
+
+# With Flash Attention
+pip install "quantllm[flash] @ git+https://github.com/codewithdark-git/QuantLLM.git"
+
+# Full installation (all features)
+pip install "quantllm[full] @ git+https://github.com/codewithdark-git/QuantLLM.git"
+
+# Hub lifecycle (for HuggingFace integration)
+pip install git+https://github.com/codewithdark-git/huggingface-lifecycle.git
+```
+
+---
 
 ## 💻 Hardware Requirements
 
-### Minimum Requirements
-- **CPU**: 4+ cores
-- **RAM**: 16GB+
-- **Storage**: 10GB+ free space
-- **Python**: 3.10+
+| Configuration | RAM | GPU VRAM | Recommended For |
+|---------------|-----|----------|-----------------|
+| 🟢 **CPU Only** | 8GB+ | None | Testing, small models (1-3B) |
+| 🔵 **Entry GPU** | 16GB | 6-8GB | 7B models (4-bit) |
+| 🟣 **Mid-Range** | 32GB | 12-24GB | 13B-30B models |
+| 🟠 **High-End** | 64GB+ | 24-80GB | 70B+ models |
 
-### Recommended for Large Models
-- **CPU**: 8+ cores
-- **RAM**: 32GB+
-- **GPU**: NVIDIA GPU with 8GB+ VRAM
-- **CUDA**: 11.7+
-- **Storage**: 20GB+ free space
+### Tested GPUs
+- NVIDIA: RTX 3060, 3070, 3080, 3090, 4070, 4080, 4090, A100, H100
+- AMD: RX 7900 XTX (with ROCm)
+- Apple: M1, M2, M3 (via MLX export)
 
-### GGUF Quantization Types
+---
 
-| Type    | Bits | Description           | Use Case                    |
-|---------|------|-----------------------|-----------------------------|
-| Q2_K    | 2    | Extreme compression   | Size-critical deployment   |
-| Q3_K_S  | 3    | Small size           | Limited storage            |
-| Q4_K_M  | 4    | Balanced quality     | General use                |
-| Q5_K_M  | 5    | Higher quality       | Quality-sensitive tasks    |
-| Q8_0    | 8    | Best quality         | Accuracy-critical tasks    |
+## 📚 Documentation
 
-## 🔄 Version Compatibility
+| Resource | Description |
+|----------|-------------|
+| 📖 [Examples](./examples/) | Working code examples |
+| 📚 [API Reference](./docs/) | Full API documentation |
+| 🎓 [Tutorials](./docs/tutorials/) | Step-by-step guides |
+| 🐛 [Issues](https://github.com/codewithdark-git/QuantLLM/issues) | Report bugs |
 
-| QuantLLM | Python | PyTorch | Transformers | CUDA  |
-|----------|--------|----------|--------------|-------|
-| 1.2.0    | ≥3.10  | ≥2.0.0   | ≥4.30.0     | ≥11.7 |
+---
 
-## 🗺 Roadmap
+## 🏗️ Architecture
 
-- [ ] Support for more GGUF model architectures
-- [ ] Enhanced benchmarking capabilities
-- [ ] Multi-GPU processing support
-- [ ] Advanced memory optimization techniques
-- [ ] Integration with more deployment platforms
-- [ ] Custom quantization kernels
+```
+quantllm/
+├── core/                    # Core functionality
+│   ├── turbo_model.py      # Main TurboModel API
+│   ├── smart_config.py     # Auto-configuration
+│   ├── hardware.py         # Hardware detection
+│   ├── compilation.py      # torch.compile integration
+│   ├── flash_attention.py  # Flash Attention 2
+│   ├── memory.py           # Memory optimization
+│   ├── training.py         # Training utilities
+│   └── export.py           # Universal exporter
+├── kernels/                # Custom kernels
+│   └── triton/             # Triton fused kernels
+├── quant/                  # Quantization
+│   ├── gguf_converter.py   # GGUF export (45 models)
+│   └── quantization_engine.py
+├── hub/                    # HuggingFace integration
+│   └── hf_manager.py       # Lifecycle management
+└── utils/                  # Utilities
+```
+
+---
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [CONTRIBUTE.md](CONTRIBUTE.md) for guidelines and setup instructions.
+We welcome contributions! Here's how to get started:
 
-## 📝 License
+```bash
+# Clone the repository
+git clone https://github.com/codewithdark-git/QuantLLM.git
+cd QuantLLM
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+# Install in development mode
+pip install -e ".[dev]"
 
-## 🙏 Acknowledgments
+# Run tests
+pytest
 
-- [llama.cpp](https://github.com/ggerganov/llama.cpp) for GGUF format
-- [HuggingFace](https://huggingface.co/) for Transformers library
-- [CTransformers](https://github.com/marella/ctransformers) for GGUF support
+# Format code
+black quantllm/
+isort quantllm/
+```
 
-## 📫 Contact & Support
+### Areas for Contribution
+- 🆕 New model architecture support
+- 🔧 Performance optimizations
+- 📚 Documentation improvements
+- 🐛 Bug fixes
+- ✨ New export formats
 
-- GitHub Issues: [Create an issue](https://github.com/yourusername/QuantLLM/issues)
-- Documentation: [Read the docs](https://quantllm.readthedocs.io/)
-- Discord: [Join our community](https://discord.gg/quantllm)
-- Email: support@quantllm.ai
+---
+
+## 📈 Benchmarks
+
+Coming soon! We're working on comprehensive benchmarks comparing:
+- Inference speed vs vanilla transformers
+- Memory usage comparisons
+- Quantization quality metrics
+- Export format performance
+
+---
+
+## 📜 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+  <p>
+    <strong>Made with ❤️ by <a href="https://github.com/codewithdark-git">Dark Coder</a></strong>
+  </p>
+  <p>
+    <a href="https://github.com/codewithdark-git/QuantLLM">⭐ Star us on GitHub</a> •
+    <a href="https://github.com/sponsors/codewithdark-git">💖 Sponsor</a>
+  </p>
+</div>
