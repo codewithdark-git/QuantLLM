@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="docs/images/logo.png" alt="QuantLLM Logo" width="200"/>
   <h1>🧠 QuantLLM v2.0</h1>
   <p align="center">
     <img src="https://img.shields.io/badge/QuantLLM-v2.0-blue?style=for-the-badge" alt="QuantLLM v2.0"/>

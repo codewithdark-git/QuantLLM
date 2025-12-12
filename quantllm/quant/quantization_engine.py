@@ -116,7 +116,15 @@ class QuantizationConfig:
             raise ValueError(f"Invalid format: {self.format}")
 
 class QuantizedLinear(nn.Module):
-    """Memory-efficient quantized linear layer."""
+    """
+    Memory-efficient quantized linear layer with weight caching.
+    
+    Features:
+        - Cached dequantized weights to avoid re-computation on every forward
+        - Automatic device and dtype handling
+        - Cache invalidation when quantization params change
+        - Memory-efficient updates
+    """
     
     def __init__(
         self,
@@ -133,11 +141,11 @@ class QuantizedLinear(nn.Module):
         # Quantized parameters
         self.register_buffer(
             'weight_scale',
-            torch.ones(out_features if config.channel_wise else 1)
+            torch.ones(out_features if self.config.channel_wise else 1)
         )
         self.register_buffer(
             'weight_zero_point',
-            torch.zeros(out_features if config.channel_wise else 1)
+            torch.zeros(out_features if self.config.channel_wise else 1)
         )
         
         # Initialize quantized weights
@@ -149,21 +157,131 @@ class QuantizedLinear(nn.Module):
         
         if bias:
             self.register_buffer('bias', torch.zeros(out_features))
+        
+        # Weight cache for avoiding repeated dequantization
+        self._cached_weight: Optional[torch.Tensor] = None
+        self._cache_valid = False
+        self._cache_dtype: Optional[torch.dtype] = None
             
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass with quantized weights."""
-        # Dequantize weights
+    def _invalidate_cache(self):
+        """Invalidate the weight cache (call when quantization params change)."""
+        self._cached_weight = None
+        self._cache_valid = False
+        self._cache_dtype = None
+    
+    def _get_dequantized_weight(self, target_dtype: torch.dtype) -> torch.Tensor:
+        """
+        Get dequantized weights, using cache if available.
+        
+        Args:
+            target_dtype: The dtype to return the weights in
+            
+        Returns:
+            Dequantized weight tensor
+        """
+        # Check if cache is valid and correct dtype
+        if self._cache_valid and self._cache_dtype == target_dtype and self._cached_weight is not None:
+            # Ensure cache is on same device as quantized weights
+            if self._cached_weight.device == self.weight_quantized.device:
+                return self._cached_weight
+        
+        # Dequantize and cache
         weight_deq = (
-            self.weight_quantized.float() * self.weight_scale[:, None]
-            + self.weight_zero_point[:, None]
+            self.weight_quantized.to(target_dtype) * self.weight_scale[:, None].to(target_dtype)
+            + self.weight_zero_point[:, None].to(target_dtype)
         )
+        
+        # Cache the result
+        self._cached_weight = weight_deq
+        self._cache_valid = True
+        self._cache_dtype = target_dtype
+        
+        return weight_deq
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass with optimized quantized weights.
+        
+        Uses cached dequantized weights when possible for performance.
+        Handles device and dtype mismatches automatically.
+        """
+        # Ensure input dtype compatibility
+        target_dtype = x.dtype
+        
+        # Get dequantized weight (cached)
+        weight_deq = self._get_dequantized_weight(target_dtype)
+        
+        # Ensure weight is on same device as input
+        if weight_deq.device != x.device:
+            weight_deq = weight_deq.to(x.device)
+            # Update cache on new device
+            self._cached_weight = weight_deq
         
         # Compute output
         output = torch.nn.functional.linear(x, weight_deq)
-        if hasattr(self, 'bias'):
-            output += self.bias
+        
+        # Add bias if present
+        if hasattr(self, 'bias') and self.bias is not None:
+            bias = self.bias.to(device=x.device, dtype=target_dtype)
+            output = output + bias
             
         return output
+    
+    def quantize_from(self, linear: nn.Linear, calibration_data: Optional[torch.Tensor] = None):
+        """
+        Quantize weights from a standard Linear layer.
+        
+        Args:
+            linear: Source nn.Linear module
+            calibration_data: Optional data for calibration-based quantization
+        """
+        weight = linear.weight.data
+        
+        # Compute quantization parameters
+        if self.config.scheme == "symmetric":
+            max_val = weight.abs().max(dim=1 if self.config.channel_wise else None, keepdim=True)[0]
+            scale = max_val / (2 ** (self.config.bits - 1) - 1)
+            scale = scale.clamp(min=1e-10)
+            zero_point = torch.zeros_like(scale)
+        else:  # asymmetric
+            min_val = weight.min(dim=1 if self.config.channel_wise else None, keepdim=True)[0]
+            max_val = weight.max(dim=1 if self.config.channel_wise else None, keepdim=True)[0]
+            scale = (max_val - min_val) / (2 ** self.config.bits - 1)
+            scale = scale.clamp(min=1e-10)
+            zero_point = min_val
+        
+        # Quantize weights
+        weight_quantized = torch.clamp(
+            torch.round((weight - zero_point) / scale),
+            -2 ** (self.config.bits - 1),
+            2 ** (self.config.bits - 1) - 1
+        ).to(torch.int8)
+        
+        # Store quantized weights
+        self.weight_quantized.copy_(weight_quantized)
+        self.weight_scale.copy_(scale.squeeze())
+        self.weight_zero_point.copy_(zero_point.squeeze())
+        
+        # Copy bias if present
+        if linear.bias is not None and hasattr(self, 'bias'):
+            self.bias.copy_(linear.bias.data)
+        
+        # Invalidate cache since we updated weights
+        self._invalidate_cache()
+    
+    def _apply(self, fn):
+        """Override _apply to invalidate cache on device/dtype changes."""
+        super()._apply(fn)
+        self._invalidate_cache()
+        return self
+    
+    def extra_repr(self) -> str:
+        return (
+            f'in_features={self.in_features}, '
+            f'out_features={self.out_features}, '
+            f'bits={self.config.bits}, '
+            f'bias={hasattr(self, "bias") and self.bias is not None}'
+        )
 
 class QuantizationEngine:
     """Engine for model quantization operations."""

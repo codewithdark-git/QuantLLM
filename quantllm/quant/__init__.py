@@ -7,9 +7,24 @@ from .quantization_engine import (
 )
 from .gguf import GGUFQuantizer
 
+# New modern GGUF converter
+from .gguf_converter import (
+    GGUFConverter,
+    convert_to_gguf,
+    MODEL_TYPE_MAPPING,
+    GGUF_QUANT_TYPES,
+)
+
 __all__ = [
+    # Core quantization
     "QuantizationConfig",
     "QuantizedLinear", 
     "QuantizationEngine",
-    "GGUFQuantizer"
+    # GGUF conversion (legacy)
+    "GGUFQuantizer",
+    # GGUF conversion (new - recommended)
+    "GGUFConverter",
+    "convert_to_gguf",
+    "MODEL_TYPE_MAPPING",
+    "GGUF_QUANT_TYPES",
 ]

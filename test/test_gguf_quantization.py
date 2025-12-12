@@ -3,11 +3,13 @@ import torch
 import gc
 import os
 import tempfile
-from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+from typing import Dict, Optional
+from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer, PreTrainedModel
 from quantllm.quant import GGUFQuantizer
-from quantllm.quantization_engine import QuantizedLinear
+from quantllm.quant.quantization_engine import QuantizedLinear
 from quantllm.utils.benchmark import QuantizationBenchmark
 from quantllm.utils.logger import logger
+from quantllm.utils.memory_tracker import MemoryTracker
 
 # Define model names for testing
 TEST_MODEL_NAME_SMALL = "facebook/opt-125m" # Small model for quick unit tests
