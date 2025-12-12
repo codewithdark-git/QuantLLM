@@ -257,13 +257,18 @@ class SmartConfig:
         print(f"   Group Size: {self.group_size}")
         
         print(f"\n💾 Memory:")
-        print(f"   CPU Offload:      {'✓' if self.cpu_offload else '✗'}")
-        print(f"   Grad Checkpoint:  {'✓' if self.gradient_checkpointing else '✗'}")
+        print(f"   CPU Offload:      {'Enabled (Slow)' if self.cpu_offload else 'Disabled (Fast)'}")
+        print(f"   Grad Checkpoint:  {'Enabled' if self.gradient_checkpointing else 'Disabled'}")
         
         print(f"\n⚡ Speed:")
-        print(f"   Flash Attention:  {'✓' if self.use_flash_attention else '✗'}")
-        print(f"   Fused Kernels:    {'✓' if self.use_fused_kernels else '✗'}")
-        print(f"   torch.compile:    {'✓' if self.compile_model else '✗'}")
+        # Use descriptive status instead of X
+        fa_status = "Enabled" if self.use_flash_attention else "Disabled (Requires Ampere+ GPU)"
+        fused_status = "Enabled" if self.use_fused_kernels else "Disabled"
+        compile_status = "Enabled" if self.compile_model else "Disabled (Optional)"
+        
+        print(f"   Flash Attention:  {fa_status}")
+        print(f"   Fused Kernels:    {fused_status}")
+        print(f"   torch.compile:    {compile_status}")
         
         print(f"\n🎯 Training:")
         print(f"   Batch Size:       {self.batch_size}")

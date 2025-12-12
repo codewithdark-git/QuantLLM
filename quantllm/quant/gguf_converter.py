@@ -2,7 +2,7 @@
 QuantLLM GGUF Converter v2.0 - Inspired by Unsloth's approach.
 
 Features:
-- Auto-installs llama.cpp if not present
+- Auto-installs llama.cpp (source build or pip wheel)
 - Supports 45+ model architectures
 - Dynamic quantization with multiple types
 - Better error messages and logging
@@ -14,6 +14,7 @@ import subprocess
 import shutil
 import tempfile
 import gc
+import importlib.util
 from typing import Optional, List, Union, Tuple, Dict, Any
 from pathlib import Path
 
@@ -87,6 +88,7 @@ class GGUFExporter:
         self.auto_install = auto_install
         self._quantize_bin = None
         self._convert_script = None
+        self._use_python_lib = False
         
         # Try to find existing installation
         self._find_llama_cpp()
@@ -99,7 +101,12 @@ class GGUFExporter:
         print(f"{icons.get(level, '  ')} {msg}")
     
     def _find_llama_cpp(self):
-        """Find llama.cpp installation."""
+        """Find llama.cpp installation (binary or python module)."""
+        # 1. Check for python package `llama_cpp`
+        if importlib.util.find_spec("llama_cpp"):
+            self._use_python_lib = True
+            
+        # 2. Check for binaries
         search_paths = [
             self.llama_cpp_path,
             "llama.cpp",
@@ -113,7 +120,7 @@ class GGUFExporter:
         else:
             quantize_names = ["llama-quantize", "quantize"]
         
-        # Also check PATH
+        # Check PATH
         for name in quantize_names:
             result = shutil.which(name)
             if result:
@@ -121,6 +128,7 @@ class GGUFExporter:
                 self._log(f"Found {name} in PATH")
                 return True
         
+        # Check folders
         for base_path in search_paths:
             if not base_path or not os.path.exists(base_path):
                 continue
@@ -144,7 +152,7 @@ class GGUFExporter:
     
     def install_llama_cpp(self, force: bool = False) -> bool:
         """
-        Install llama.cpp by cloning and building.
+        Install llama.cpp by cloning and building, OR via pip.
         
         Args:
             force: Force reinstall even if exists
@@ -152,12 +160,45 @@ class GGUFExporter:
         Returns:
             True if installation succeeded
         """
-        if self._quantize_bin and not force:
+        if (self._quantize_bin or self._use_python_lib) and not force:
             self._log("llama.cpp already installed", "success")
             return True
         
-        self._log("Installing llama.cpp (this may take a few minutes)...")
+        self._log("Installing llama.cpp...")
         
+        # Strategy 1: Try building from source (better performance usually)
+        build_success = False
+        try:
+            build_success = self._install_from_source(force)
+        except Exception as e:
+            self._log(f"Source build failed: {e}", "warning")
+        
+        if build_success:
+             self._find_llama_cpp()
+             if self._quantize_bin:
+                 return True
+        
+        # Strategy 2: PIP Install (Pre-built wheels)
+        self._log("Falling back to pip install llama-cpp-python...", "info")
+        try:
+            # Uninstall first to avoid conflicts if needed, or just install
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--force-reinstall", "--no-cache-dir", "llama-cpp-python"],
+                capture_output=True,
+                check=True
+            )
+            # Verify
+            if importlib.util.find_spec("llama_cpp"):
+                self._use_python_lib = True
+                self._log("Installed llama-cpp-python successfully!", "success")
+                return True
+        except Exception as e:
+            self._log(f"Pip install failed: {e}", "error")
+            
+        return False
+
+    def _install_from_source(self, force: bool) -> bool:
+        """Clone and build llama.cpp from source."""
         install_dir = "llama.cpp"
         
         # Clone repository
@@ -172,11 +213,9 @@ class GGUFExporter:
                 text=True,
             )
             if result.returncode != 0:
-                self._log(f"Git clone failed: {result.stderr}", "error")
-                return False
+                raise RuntimeError(f"Git clone failed: {result.stderr}")
         
         # Install Python dependencies
-        self._log("Installing Python dependencies...")
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", "gguf", "protobuf"],
             capture_output=True,
@@ -187,6 +226,7 @@ class GGUFExporter:
         
         build_commands = self._get_build_commands(install_dir)
         
+        success = False
         for cmd in build_commands:
             result = subprocess.run(
                 cmd,
@@ -195,18 +235,11 @@ class GGUFExporter:
                 text=True,
                 cwd=install_dir if not isinstance(cmd, str) else None,
             )
-            if result.returncode != 0:
-                # Try cmake as fallback
-                continue
+            if result.returncode == 0:
+                success = True
+                break # Stop if one method works
         
-        # Verify installation
-        self._find_llama_cpp()
-        if self._quantize_bin:
-            self._log("llama.cpp installed successfully!", "success")
-            return True
-        else:
-            self._log("llama.cpp build completed but quantize binary not found", "warning")
-            return False
+        return success
     
     def _get_build_commands(self, install_dir: str) -> List:
         """Get platform-specific build commands."""
@@ -259,14 +292,15 @@ class GGUFExporter:
         self._log(f"Exporting to GGUF with {quant_type.upper()} quantization...")
         
         # Ensure llama.cpp is installed
-        if not self._quantize_bin:
+        if not (self._quantize_bin or self._use_python_lib):
             if self.auto_install:
                 if not self.install_llama_cpp():
                     raise RuntimeError(
                         "Failed to install llama.cpp. Please install manually:\n"
+                        "  pip install llama-cpp-python\n"
+                        "  OR\n"
                         "  git clone https://github.com/ggerganov/llama.cpp\n"
-                        "  cd llama.cpp && make -j\n"
-                        "Or install via pip: pip install llama-cpp-python"
+                        "  cd llama.cpp && make -j"
                     )
             else:
                 raise RuntimeError(
@@ -295,8 +329,7 @@ class GGUFExporter:
             success = self._convert_to_gguf(temp_dir, fp16_path)
             if not success:
                 raise RuntimeError(
-                    "Failed to convert model to GGUF. "
-                    "This model architecture may not be supported yet."
+                    "GGUF conversion failed. Please check if your model architecture is supported."
                 )
             
             # Step 2: Quantize if needed
@@ -327,7 +360,7 @@ class GGUFExporter:
                 convert_script = script_path
         
         if not convert_script:
-            # Try to find convert script
+            # Try to find convert script in common locations
             for path in ["llama.cpp/convert_hf_to_gguf.py", "convert_hf_to_gguf.py"]:
                 if os.path.exists(path):
                     convert_script = path
@@ -347,17 +380,6 @@ class GGUFExporter:
                 return True
             else:
                 self._log(f"Convert script failed: {result.stderr[:500]}", "warning")
-        
-        # Try using transformers' built-in GGUF support
-        try:
-            from transformers import AutoModelForCausalLM
-            
-            # Some newer transformers versions have GGUF export
-            if hasattr(AutoModelForCausalLM, 'from_pretrained'):
-                # This is a placeholder - transformers GGUF support is limited
-                pass
-        except ImportError:
-            pass
         
         # Fallback: Try using gguf Python package directly
         try:
@@ -469,18 +491,31 @@ class GGUFExporter:
     
     def _quantize_gguf(self, input_path: str, output_path: str, quant_type: str) -> bool:
         """Quantize GGUF file."""
-        if not self._quantize_bin:
-            return False
+        # Method 1: Use binary
+        if self._quantize_bin:
+            cmd = [self._quantize_bin, input_path, output_path, quant_type.upper()]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                 return True
+            else:
+                 self._log(f"Binary quantization failed: {result.stderr[:200]}", "warning")
         
-        cmd = [self._quantize_bin, input_path, output_path, quant_type.upper()]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            self._log(f"Quantization failed: {result.stderr[:500]}", "error")
-            return False
-        
-        return os.path.exists(output_path)
+        # Method 2: Use python library
+        if self._use_python_lib:
+            try:
+                # Warning: calling quantization via dll/so not officially exposed in high level API
+                # but we can assume if this library is present, user can use it manually.
+                # However, for now we just show a warning if binary is missing.
+                # NOTE: llama-cpp-python > 0.2.x exposes `llama_model_quantize`
+                import llama_cpp
+                # Mapping string type to int is required, which is internal.
+                # For safety, since binary conversion is preferred, we return False here
+                # unless we reverse engineer the params. 
+                self._log("Quantization via python library not fully implemented - installing binary is recommended", "warning")
+            except ImportError:
+                pass
+                
+        return False
 
 
 def export_to_gguf(
