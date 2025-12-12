@@ -721,51 +721,39 @@ class TurboModel:
         quantization: Optional[str] = None,
         **kwargs
     ) -> str:
-        """Export to GGUF format using the modern converter."""
-        from ..quant.gguf_converter import GGUFExporter, export_to_gguf, ALLOWED_QUANTS
+        """
+        Export to GGUF format using pure Python converter.
         
-        quant_type = quantization or self.config.quant_type or "q4_k_m"
+        No external llama.cpp dependency required!
+        """
+        from ..quant import convert_to_gguf, QUANT_TYPES, QUANT_ALIASES
+        
+        quant_type = quantization or self.config.quant_type or "q4_0"
         
         # Normalize quant type
         quant_type = quant_type.lower()
         
-        # Validate quant type
-        if quant_type not in ALLOWED_QUANTS:
-            from ..quant.gguf_converter import QUANT_ALIASES
-            if quant_type in QUANT_ALIASES:
-                quant_type = QUANT_ALIASES[quant_type]
-            else:
-                available = list(ALLOWED_QUANTS.keys())[:10]
-                raise ValueError(
-                    f"❌ Unknown quantization type: {quant_type}\n"
-                    f"   Available: {available}...\n"
-                    f"   Recommended: q4_k_m, q5_k_m, q8_0"
-                )
+        # Handle aliases
+        if quant_type in QUANT_ALIASES:
+            quant_type = QUANT_ALIASES[quant_type]
         
-        try:
-            # Use the new modern exporter
-            return export_to_gguf(
-                self.model,
-                self.tokenizer,
-                output_path,
-                quant_type=quant_type,
-                auto_install=True,
-                verbose=True,
+        # Validate quant type
+        if quant_type not in QUANT_TYPES:
+            available = list(QUANT_TYPES.keys())
+            raise ValueError(
+                f"❌ Unknown quantization type: {quant_type}\n"
+                f"   Available: {available}\n"
+                f"   Recommended: q4_0, q8_0, f16"
             )
-        except Exception as e:
-            error_msg = str(e)
-            if "llama.cpp" in error_msg.lower():
-                raise RuntimeError(
-                    f"❌ GGUF export failed: {error_msg}\n\n"
-                    "💡 To fix this, install llama.cpp:\n"
-                    "   1. Run: git clone https://github.com/ggerganov/llama.cpp\n"
-                    "   2. Run: cd llama.cpp && make -j\n"
-                    "   3. Or: pip install llama-cpp-python\n\n"
-                    "🔄 Alternative: Use safetensors export:\n"
-                    "   model.export('safetensors', './my_model/')"
-                )
-            else:
-                raise RuntimeError(f"❌ GGUF export failed: {error_msg}")
+        
+        # Use the new pure Python converter (no llama.cpp needed!)
+        return convert_to_gguf(
+            self.model,
+            self.tokenizer,
+            output_path,
+            quant_type=quant_type,
+            verbose=True,
+        )
     
     def _export_safetensors(
         self,

@@ -1,39 +1,17 @@
+"""
+QuantLLM v2.0 - Ultra-fast LLM Quantization
 
-from .data import (
-    LoadDataset,
-    DatasetPreprocessor,
-    DatasetSplitter,
-    DataLoader
-)
-from .trainer import (
-    FineTuningTrainer,
-    ModelEvaluator
-)
-from .hub import HubManager, CheckpointManager
-from .utils import (
-    get_optimal_training_settings,
-    configure_logging,
-    enable_logging,
-    QuantizationBenchmark,
-    MemoryTracker,
-)
-from .api import QuantLLM
+The simplest way to load, quantize, fine-tune, and export LLMs.
+No external dependencies for GGUF export!
 
-from .quant import (
-    QuantizationConfig, 
-    QuantizationEngine, 
-    QuantizedLinear, 
-    GGUFQuantizer
-)
+Example:
+    >>> from quantllm import turbo
+    >>> model = turbo("meta-llama/Llama-2-7b")
+    >>> model.generate("Hello, world!")
+    >>> model.export("gguf", "model.gguf")
+"""
 
-
-from .config import (
-    ModelConfig,
-    DatasetConfig,
-    TrainingConfig
-)
-
-# NEW: Turbo API - The ultra-simple way to use QuantLLM
+# ====== MAIN API (Recommended) ======
 from .core import (
     turbo,
     TurboModel,
@@ -42,57 +20,55 @@ from .core import (
     ModelAnalyzer,
 )
 
-# Configure package-wide logging
+# ====== GGUF Export ======
+from .quant import (
+    convert_to_gguf,
+    export_to_gguf,
+    list_quant_types,
+    QUANT_TYPES,
+    GGUFWriter,
+    FastQuantizer,
+)
+
+# ====== Hub Integration ======
+from .hub import HubManager
+
+# ====== Utilities ======
+from .utils import (
+    configure_logging,
+    enable_logging,
+    MemoryTracker,
+)
+
+# Configure logging
 configure_logging()
 
 __version__ = "2.0.0"
-
-# Package metadata
 __title__ = "QuantLLM"
-__description__ = "Ultra-fast LLM Quantization - Faster and Simpler than Unsloth"
+__description__ = "Ultra-fast LLM Quantization - Pure Python GGUF Export"
 __author__ = "QuantLLM Team"
 
 __all__ = [
-    # ====== NEW TURBO API (Recommended) ======
-    "turbo",           # One-liner model loading
-    "TurboModel",      # Full-featured model class
-    "SmartConfig",     # Auto-configuration
-    "HardwareProfiler", # Hardware detection
-    "ModelAnalyzer",   # Model architecture analysis
+    # Main API
+    "turbo",
+    "TurboModel",
+    "SmartConfig",
+    "HardwareProfiler",
+    "ModelAnalyzer",
     
-    # ====== Legacy API ======
-    # Dataset
-    "DataLoader",
-    "DatasetPreprocessor",
-    "DatasetSplitter",
-    "LoadDataset",
+    # GGUF Export
+    "convert_to_gguf",
+    "export_to_gguf",
+    "list_quant_types",
+    "QUANT_TYPES",
+    "GGUFWriter",
+    "FastQuantizer",
     
-    # Training
-    "FineTuningTrainer",
-    "ModelEvaluator",
-    
-    # Hub and Checkpoint
+    # Hub
     "HubManager",
-    "CheckpointManager",
     
-    # Configuration
-    "ModelConfig",
-    "DatasetConfig",
-    "TrainingConfig",
-    "QuantizationBenchmark",
-    
-    # Utilities
-    "get_optimal_training_settings",
+    # Utils
     "configure_logging",
     "enable_logging",
     "MemoryTracker",
-
-    # Quantization
-    "QuantizationConfig",
-    "QuantizationEngine",
-    "QuantizedLinear",
-    "GGUFQuantizer",
-
-    # API
-    "QuantLLM",
 ]
