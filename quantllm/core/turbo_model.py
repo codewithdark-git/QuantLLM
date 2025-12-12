@@ -722,23 +722,50 @@ class TurboModel:
         **kwargs
     ) -> str:
         """Export to GGUF format using the modern converter."""
-        from ..quant import convert_to_gguf, GGUF_QUANT_TYPES
+        from ..quant.gguf_converter import GGUFExporter, export_to_gguf, ALLOWED_QUANTS
         
-        quant_type = quantization or self.config.quant_type
+        quant_type = quantization or self.config.quant_type or "q4_k_m"
+        
+        # Normalize quant type
+        quant_type = quant_type.lower()
         
         # Validate quant type
-        if quant_type not in GGUF_QUANT_TYPES:
-            available = list(GGUF_QUANT_TYPES.keys())
-            raise ValueError(f"Unknown quant type: {quant_type}. Available: {available[:10]}...")
+        if quant_type not in ALLOWED_QUANTS:
+            from ..quant.gguf_converter import QUANT_ALIASES
+            if quant_type in QUANT_ALIASES:
+                quant_type = QUANT_ALIASES[quant_type]
+            else:
+                available = list(ALLOWED_QUANTS.keys())[:10]
+                raise ValueError(
+                    f"❌ Unknown quantization type: {quant_type}\n"
+                    f"   Available: {available}...\n"
+                    f"   Recommended: q4_k_m, q5_k_m, q8_0"
+                )
         
-        # Use the new modern converter
-        return convert_to_gguf(
-            self.model,
-            output_path,
-            quant_type=quant_type,
-            verbose=True,
-            **kwargs
-        )
+        try:
+            # Use the new modern exporter
+            return export_to_gguf(
+                self.model,
+                self.tokenizer,
+                output_path,
+                quant_type=quant_type,
+                auto_install=True,
+                verbose=True,
+            )
+        except Exception as e:
+            error_msg = str(e)
+            if "llama.cpp" in error_msg.lower():
+                raise RuntimeError(
+                    f"❌ GGUF export failed: {error_msg}\n\n"
+                    "💡 To fix this, install llama.cpp:\n"
+                    "   1. Run: git clone https://github.com/ggerganov/llama.cpp\n"
+                    "   2. Run: cd llama.cpp && make -j\n"
+                    "   3. Or: pip install llama-cpp-python\n\n"
+                    "🔄 Alternative: Use safetensors export:\n"
+                    "   model.export('safetensors', './my_model/')"
+                )
+            else:
+                raise RuntimeError(f"❌ GGUF export failed: {error_msg}")
     
     def _export_safetensors(
         self,

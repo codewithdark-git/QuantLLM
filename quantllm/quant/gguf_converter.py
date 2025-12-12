@@ -1,641 +1,533 @@
 """
-Modern GGUF Converter for QuantLLM v2.0
+QuantLLM GGUF Converter v2.0 - Inspired by Unsloth's approach.
 
-Supports all major open-source LLM architectures with proper
-llama.cpp integration for GGUF conversion.
-
-Supported Models:
-- Llama 2/3 family
-- Mistral/Mixtral
-- Qwen/Qwen2
-- Phi-1/2/3
-- Gemma/Gemma2
-- Falcon
-- StarCoder/StarCoder2
-- MPT
-- GPT-NeoX/Pythia
-- StableLM
-- BLOOM
-- OPT
-- DeepSeek
-- InternLM
-- Baichuan
-- Yi
-- ChatGLM
-- And more...
+Features:
+- Auto-installs llama.cpp if not present
+- Supports 45+ model architectures
+- Dynamic quantization with multiple types
+- Better error messages and logging
 """
 
 import os
 import sys
+import subprocess
 import shutil
 import tempfile
-import subprocess
+import gc
+from typing import Optional, List, Union, Tuple, Dict, Any
 from pathlib import Path
-from typing import Optional, Dict, Any, Union, List
+
 import torch
-from transformers import (
-    PreTrainedModel, 
-    AutoModelForCausalLM, 
-    AutoTokenizer,
-    AutoConfig,
-)
 
-from ..utils.logger import logger
+# Check platform
+IS_WINDOWS = sys.platform == "win32"
+IS_COLAB = "google.colab" in sys.modules
+IS_KAGGLE = os.path.exists("/kaggle")
 
-
-# Comprehensive model architecture to llama.cpp type mapping
-MODEL_TYPE_MAPPING = {
-    # Llama family
-    "llama": "llama",
-    "llama2": "llama",
-    "llama3": "llama",
-    "codellama": "llama",
-    
-    # Mistral family
-    "mistral": "llama",  # Mistral uses llama architecture
-    "mixtral": "llama",
-    
-    # Qwen family
-    "qwen": "qwen",
-    "qwen2": "qwen2",
-    "qwen2_moe": "qwen2",
-    
-    # Phi family
-    "phi": "phi2",
-    "phi2": "phi2", 
-    "phi3": "phi3",
-    "phi-msft": "phi2",
-    
-    # Gemma family
-    "gemma": "gemma",
-    "gemma2": "gemma2",
-    
-    # Falcon
-    "falcon": "falcon",
-    "refinedweb": "falcon",
-    
-    # StarCoder
-    "starcoder": "starcoder",
-    "starcoder2": "starcoder2",
-    "codegen": "starcoder",
-    
-    # MPT
-    "mpt": "mpt",
-    
-    # GPT-NeoX/Pythia
-    "gpt_neox": "gptneox",
-    "pythia": "gptneox",
-    
-    # StableLM
-    "stablelm": "stablelm",
-    "stablelm_epoch": "stablelm",
-    
-    # BLOOM
-    "bloom": "bloom",
-    "bloomz": "bloom",
-    
-    # OPT
-    "opt": "opt",
-    
-    # GPT2
-    "gpt2": "gpt2",
-    
-    # DeepSeek
-    "deepseek": "llama",
-    "deepseek_v2": "llama",
-    
-    # InternLM
-    "internlm": "internlm",
-    "internlm2": "internlm2",
-    
-    # Baichuan
-    "baichuan": "baichuan",
-    "baichuan2": "baichuan",
-    
-    # Yi
-    "yi": "llama",  # Yi uses llama architecture
-    
-    # ChatGLM
-    "chatglm": "chatglm",
-    "chatglm2": "chatglm",
-    "chatglm3": "chatglm",
-    "glm": "chatglm",
-    
-    # Command-R
-    "cohere": "command-r",
-    "command-r": "command-r",
-    
-    # Orion
-    "orion": "orion",
-    
-    # Jamba
-    "jamba": "jamba",
-    
-    # Default fallback
-    "default": "llama",
+# Allowed quantization types with descriptions
+ALLOWED_QUANTS = {
+    "f32": "Full precision. Very large files, slowest inference.",
+    "f16": "Half precision. Large files, slow inference.",
+    "bf16": "Brain float16. Large files, slow inference (requires hardware support).",
+    "q8_0": "8-bit quantization. Fast conversion, good quality.",
+    "q4_0": "4-bit quantization. Fast inference, smaller files.",
+    "q4_1": "4-bit with better accuracy than q4_0.",
+    "q4_k_m": "Recommended. Uses Q6_K for half attention, else Q4_K.",
+    "q4_k_s": "Uses Q4_K for all tensors.",
+    "q5_0": "5-bit quantization. Higher accuracy than q4.",
+    "q5_1": "5-bit with even higher accuracy.",
+    "q5_k_m": "Recommended. Uses Q6_K for half attention, else Q5_K.",
+    "q5_k_s": "Uses Q5_K for all tensors.",
+    "q6_k": "6-bit quantization. High quality, larger files.",
+    "q2_k": "2-bit quantization. Smallest files, lowest quality.",
+    "q3_k_l": "3-bit large. Uses Q5_K for some tensors.",
+    "q3_k_m": "3-bit medium. Uses Q4_K for some tensors.",
+    "q3_k_s": "3-bit small. Uses Q3_K for all tensors.",
+    "q3_k_xs": "3-bit extra small.",
+    "iq2_xxs": "2.06 bpw imatrix quantization.",
+    "iq2_xs": "2.31 bpw imatrix quantization.",
+    "iq3_xxs": "3.06 bpw imatrix quantization.",
 }
 
-# GGUF quantization types with descriptions
-GGUF_QUANT_TYPES = {
-    # 2-bit
-    "Q2_K": {"bits": 2, "desc": "2-bit with mixed K-quant"},
-    "IQ2_XXS": {"bits": 2, "desc": "Tiny 2-bit importance quant"},
-    "IQ2_XS": {"bits": 2, "desc": "Small 2-bit importance quant"},
-    "IQ2_S": {"bits": 2, "desc": "Standard 2-bit importance quant"},
-    "IQ2_M": {"bits": 2, "desc": "Medium 2-bit importance quant"},
-    
-    # 3-bit
-    "Q3_K_S": {"bits": 3, "desc": "3-bit small K-quant"},
-    "Q3_K_M": {"bits": 3, "desc": "3-bit medium K-quant"},
-    "Q3_K_L": {"bits": 3, "desc": "3-bit large K-quant"},
-    "IQ3_XXS": {"bits": 3, "desc": "Tiny 3-bit importance quant"},
-    "IQ3_XS": {"bits": 3, "desc": "Extra small 3-bit importance quant"},
-    "IQ3_S": {"bits": 3, "desc": "Small 3-bit importance quant"},
-    "IQ3_M": {"bits": 3, "desc": "Medium 3-bit importance quant"},
-    
-    # 4-bit (most popular)
-    "Q4_0": {"bits": 4, "desc": "Original 4-bit quant"},
-    "Q4_1": {"bits": 4, "desc": "4-bit with improved accuracy"},
-    "Q4_K_S": {"bits": 4, "desc": "4-bit small K-quant"},
-    "Q4_K_M": {"bits": 4, "desc": "4-bit medium K-quant (recommended)"},
-    "IQ4_NL": {"bits": 4, "desc": "4-bit non-linear importance quant"},
-    "IQ4_XS": {"bits": 4, "desc": "Extra small 4-bit importance quant"},
-    
-    # 5-bit
-    "Q5_0": {"bits": 5, "desc": "5-bit quant"},
-    "Q5_1": {"bits": 5, "desc": "5-bit with higher accuracy"},
-    "Q5_K_S": {"bits": 5, "desc": "5-bit small K-quant"},
-    "Q5_K_M": {"bits": 5, "desc": "5-bit medium K-quant"},
-    
-    # 6-bit
-    "Q6_K": {"bits": 6, "desc": "6-bit K-quant"},
-    
-    # 8-bit
-    "Q8_0": {"bits": 8, "desc": "8-bit quant (highest quality)"},
-    
-    # Float types
-    "F16": {"bits": 16, "desc": "Float16 (no quantization)"},
-    "F32": {"bits": 32, "desc": "Float32 (no quantization)"},
-    "BF16": {"bits": 16, "desc": "BFloat16"},
+# Aliases
+QUANT_ALIASES = {
+    "not_quantized": "f16",
+    "fast_quantized": "q8_0",
+    "quantized": "q4_k_m",
+    "q4_k": "q4_k_m",
+    "q5_k": "q5_k_m",
 }
 
 
-class GGUFConverter:
+class GGUFExporter:
     """
-    Modern GGUF converter with support for all major open-source LLMs.
-    
-    Uses the llama.cpp ecosystem for conversion with automatic
-    tool detection and fallback options.
+    High-level GGUF exporter that auto-installs llama.cpp.
     
     Example:
-        >>> converter = GGUFConverter()
-        >>> converter.convert(
-        ...     model="meta-llama/Llama-3-8B",
-        ...     output_path="llama3-8b-q4_k_m.gguf",
-        ...     quant_type="Q4_K_M"
-        ... )
+        >>> exporter = GGUFExporter()
+        >>> exporter.export(model, tokenizer, "output.gguf", "q4_k_m")
     """
     
-    def __init__(self):
-        self._convert_script: Optional[str] = None
-        self._quantize_bin: Optional[str] = None
-        self._llama_cpp_path: Optional[str] = None
-        self._find_llama_cpp_tools()
-    
-    def _find_llama_cpp_tools(self) -> bool:
-        """Find llama.cpp conversion tools."""
-        # Method 1: Check if llama-cpp-python is installed
-        try:
-            import llama_cpp
-            pkg_path = Path(llama_cpp.__file__).parent
-            
-            # Look for convert scripts
-            possible_convert = [
-                pkg_path / "convert.py",
-                pkg_path / "convert_hf_to_gguf.py",
-                pkg_path.parent / "scripts" / "convert.py",
-            ]
-            
-            for script in possible_convert:
-                if script.exists():
-                    self._convert_script = str(script)
-                    self._llama_cpp_path = str(pkg_path)
-                    break
-            
-            # Look for quantize binary
-            possible_quantize = [
-                pkg_path / "quantize",
-                pkg_path / "quantize.exe",
-                pkg_path / "llama-quantize",
-                pkg_path / "llama-quantize.exe",
-            ]
-            
-            for qbin in possible_quantize:
-                if qbin.exists():
-                    self._quantize_bin = str(qbin)
-                    break
-                    
-        except ImportError:
-            pass
-        
-        # Method 2: Check PATH for llama.cpp tools
-        if not self._quantize_bin:
-            for name in ["llama-quantize", "quantize"]:
-                path = shutil.which(name)
-                if path:
-                    self._quantize_bin = path
-                    break
-        
-        # Method 3: Check common installation locations
-        common_paths = [
-            Path.home() / "llama.cpp",
-            Path.home() / ".local" / "llama.cpp",
-            Path("/usr/local/llama.cpp"),
-            Path("C:/llama.cpp") if sys.platform == "win32" else None,
-        ]
-        
-        for base in filter(None, common_paths):
-            if base and base.exists():
-                if not self._convert_script:
-                    conv = base / "convert_hf_to_gguf.py"
-                    if conv.exists():
-                        self._convert_script = str(conv)
-                        self._llama_cpp_path = str(base)
-                
-                if not self._quantize_bin:
-                    for name in ["llama-quantize", "quantize", "llama-quantize.exe", "quantize.exe"]:
-                        qbin = base / name
-                        if qbin.exists():
-                            self._quantize_bin = str(qbin)
-                            break
-        
-        return self._convert_script is not None or self._quantize_bin is not None
-    
-    @property
-    def tools_available(self) -> Dict[str, bool]:
-        """Check which conversion tools are available."""
-        return {
-            "convert_script": self._convert_script is not None,
-            "quantize_binary": self._quantize_bin is not None,
-            "llama_cpp_path": self._llama_cpp_path,
-        }
-    
-    @staticmethod
-    def get_model_type(model: Union[str, PreTrainedModel]) -> str:
-        """Detect the model architecture type."""
-        if isinstance(model, str):
-            try:
-                config = AutoConfig.from_pretrained(model, trust_remote_code=True)
-                model_type = getattr(config, 'model_type', 'unknown').lower()
-            except Exception:
-                model_type = 'unknown'
-        else:
-            model_type = getattr(model.config, 'model_type', 'unknown').lower()
-        
-        # Map to llama.cpp type
-        return MODEL_TYPE_MAPPING.get(model_type, MODEL_TYPE_MAPPING['default'])
-    
-    @staticmethod
-    def list_supported_models() -> List[str]:
-        """List all supported model architectures."""
-        return list(set(MODEL_TYPE_MAPPING.keys()) - {'default'})
-    
-    @staticmethod
-    def list_quant_types(bits: Optional[int] = None) -> Dict[str, Dict]:
-        """List available quantization types."""
-        if bits is None:
-            return GGUF_QUANT_TYPES
-        return {k: v for k, v in GGUF_QUANT_TYPES.items() if v['bits'] == bits}
-    
-    def convert(
+    def __init__(
         self,
-        model: Union[str, PreTrainedModel],
-        output_path: str,
-        quant_type: str = "Q4_K_M",
-        *,
-        use_imatrix: bool = False,
-        imatrix_data: Optional[str] = None,
-        keep_temp_files: bool = False,
+        llama_cpp_path: Optional[str] = None,
+        auto_install: bool = True,
         verbose: bool = True,
-    ) -> str:
+    ):
         """
-        Convert a HuggingFace model to GGUF format.
+        Initialize the GGUF exporter.
         
         Args:
-            model: HuggingFace model name or PreTrainedModel instance
-            output_path: Output path for the GGUF file
-            quant_type: GGUF quantization type (Q4_K_M, Q5_K_M, etc.)
-            use_imatrix: Use importance matrix for better quality
-            imatrix_data: Path to calibration data for imatrix
-            keep_temp_files: Keep intermediate files for debugging
-            verbose: Print progress information
+            llama_cpp_path: Path to llama.cpp directory (auto-detected if None)
+            auto_install: Automatically install llama.cpp if not found
+            verbose: Print progress messages
+        """
+        self.verbose = verbose
+        self.llama_cpp_path = llama_cpp_path
+        self.auto_install = auto_install
+        self._quantize_bin = None
+        self._convert_script = None
+        
+        # Try to find existing installation
+        self._find_llama_cpp()
+    
+    def _log(self, msg: str, level: str = "info"):
+        """Print log message."""
+        if not self.verbose:
+            return
+        icons = {"info": "📦", "success": "✅", "warning": "⚠️", "error": "❌"}
+        print(f"{icons.get(level, '  ')} {msg}")
+    
+    def _find_llama_cpp(self):
+        """Find llama.cpp installation."""
+        search_paths = [
+            self.llama_cpp_path,
+            "llama.cpp",
+            "./llama.cpp",
+            "../llama.cpp",
+            os.path.expanduser("~/llama.cpp"),
+        ]
+        
+        if IS_WINDOWS:
+            quantize_names = ["llama-quantize.exe", "quantize.exe"]
+        else:
+            quantize_names = ["llama-quantize", "quantize"]
+        
+        # Also check PATH
+        for name in quantize_names:
+            result = shutil.which(name)
+            if result:
+                self._quantize_bin = result
+                self._log(f"Found {name} in PATH")
+                return True
+        
+        for base_path in search_paths:
+            if not base_path or not os.path.exists(base_path):
+                continue
+            
+            # Check multiple locations
+            for name in quantize_names:
+                for sub in ["", "build/bin", "build/bin/Release"]:
+                    path = os.path.join(base_path, sub, name)
+                    if os.path.exists(path):
+                        self._quantize_bin = path
+                        self.llama_cpp_path = base_path
+                        self._log(f"Found llama.cpp at {base_path}")
+                        return True
+            
+            # Check for convert script
+            convert_script = os.path.join(base_path, "convert_hf_to_gguf.py")
+            if os.path.exists(convert_script):
+                self._convert_script = convert_script
+        
+        return self._quantize_bin is not None
+    
+    def install_llama_cpp(self, force: bool = False) -> bool:
+        """
+        Install llama.cpp by cloning and building.
+        
+        Args:
+            force: Force reinstall even if exists
+            
+        Returns:
+            True if installation succeeded
+        """
+        if self._quantize_bin and not force:
+            self._log("llama.cpp already installed", "success")
+            return True
+        
+        self._log("Installing llama.cpp (this may take a few minutes)...")
+        
+        install_dir = "llama.cpp"
+        
+        # Clone repository
+        if not os.path.exists(install_dir) or force:
+            if os.path.exists(install_dir) and force:
+                shutil.rmtree(install_dir)
+            
+            self._log("Cloning llama.cpp repository...")
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/ggerganov/llama.cpp"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                self._log(f"Git clone failed: {result.stderr}", "error")
+                return False
+        
+        # Install Python dependencies
+        self._log("Installing Python dependencies...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "gguf", "protobuf"],
+            capture_output=True,
+        )
+        
+        # Build llama.cpp
+        self._log("Building llama.cpp...")
+        
+        build_commands = self._get_build_commands(install_dir)
+        
+        for cmd in build_commands:
+            result = subprocess.run(
+                cmd,
+                shell=isinstance(cmd, str),
+                capture_output=True,
+                text=True,
+                cwd=install_dir if not isinstance(cmd, str) else None,
+            )
+            if result.returncode != 0:
+                # Try cmake as fallback
+                continue
+        
+        # Verify installation
+        self._find_llama_cpp()
+        if self._quantize_bin:
+            self._log("llama.cpp installed successfully!", "success")
+            return True
+        else:
+            self._log("llama.cpp build completed but quantize binary not found", "warning")
+            return False
+    
+    def _get_build_commands(self, install_dir: str) -> List:
+        """Get platform-specific build commands."""
+        import psutil
+        n_jobs = max(psutil.cpu_count() or 1, 1)
+        
+        if IS_WINDOWS:
+            return [
+                f"cmake -B build -DBUILD_SHARED_LIBS=OFF",
+                f"cmake --build build --config Release -j {n_jobs}",
+            ]
+        else:
+            return [
+                ["make", "clean"],
+                ["make", "all", f"-j{n_jobs}"],
+            ]
+    
+    def export(
+        self,
+        model,
+        tokenizer,
+        output_path: str,
+        quant_type: str = "q4_k_m",
+        model_name: Optional[str] = None,
+    ) -> str:
+        """
+        Export a HuggingFace model to GGUF format.
+        
+        Args:
+            model: HuggingFace model (or path to saved model)
+            tokenizer: HuggingFace tokenizer
+            output_path: Output GGUF file path
+            quant_type: Quantization type (q4_k_m, q8_0, etc.)
+            model_name: Optional model name for metadata
             
         Returns:
             Path to the generated GGUF file
         """
-        if quant_type not in GGUF_QUANT_TYPES:
-            raise ValueError(f"Unknown quant type: {quant_type}. Use list_quant_types() to see options.")
+        # Normalize quant type
+        quant_type = quant_type.lower()
+        if quant_type in QUANT_ALIASES:
+            quant_type = QUANT_ALIASES[quant_type]
         
-        temp_dir = None
-        temp_f16_gguf = None
-        
-        try:
-            # Step 1: Save model to HF format if needed
-            if verbose:
-                print(f"Converting to GGUF ({quant_type})...")
-            
-            if isinstance(model, str):
-                model_path = model
-                model_type = self.get_model_type(model)
-                
-                # Check if it's a local path
-                if not os.path.exists(model_path):
-                    # It's a HF hub model, need to download
-                    if verbose:
-                        print(f"  Loading model from HuggingFace: {model}")
-                    
-                    loaded_model = AutoModelForCausalLM.from_pretrained(
-                        model_path,
-                        torch_dtype=torch.float16,
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True,
-                    )
-                    
-                    # Save to temp directory
-                    temp_dir = tempfile.mkdtemp(prefix="quantllm_gguf_")
-                    model_path = temp_dir
-                    
-                    if verbose:
-                        print(f"  Saving to temporary directory...")
-                    loaded_model.save_pretrained(model_path, safe_serialization=True)
-                    
-                    # Also save tokenizer
-                    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
-                    tokenizer.save_pretrained(model_path)
-                    
-                    del loaded_model
-                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-                    
-            else:
-                # Model is already loaded
-                model_type = self.get_model_type(model)
-                temp_dir = tempfile.mkdtemp(prefix="quantllm_gguf_")
-                model_path = temp_dir
-                
-                if verbose:
-                    print(f"  Saving model to temporary directory...")
-                model.save_pretrained(model_path, safe_serialization=True)
-                
-                # Try to save tokenizer if available
-                if hasattr(model, 'config') and hasattr(model.config, '_name_or_path'):
-                    try:
-                        tokenizer = AutoTokenizer.from_pretrained(
-                            model.config._name_or_path, 
-                            trust_remote_code=True
-                        )
-                        tokenizer.save_pretrained(model_path)
-                    except Exception:
-                        pass  # Tokenizer not required for conversion
-            
-            # Step 2: Convert to F16 GGUF
-            if verbose:
-                print(f"  Converting to FP16 GGUF (model type: {model_type})...")
-            
-            # Determine output type (F16 for intermediate, final type for direct conversion)
-            intermediate_type = "f16" if quant_type not in ["F16", "F32", "BF16"] else quant_type.lower()
-            
-            if quant_type in ["F16", "F32", "BF16"]:
-                # No quantization needed, convert directly
-                temp_f16_gguf = output_path
-            else:
-                temp_f16_gguf = output_path.replace(".gguf", "_f16.gguf")
-                if temp_f16_gguf == output_path:
-                    temp_f16_gguf = output_path + "_f16.gguf"
-            
-            # Use Python-based conversion
-            success = self._convert_hf_to_gguf(
-                model_path, 
-                temp_f16_gguf, 
-                model_type,
-                outtype=intermediate_type,
-                verbose=verbose
+        if quant_type not in ALLOWED_QUANTS:
+            raise ValueError(
+                f"Invalid quantization type: {quant_type}\n"
+                f"Supported types: {list(ALLOWED_QUANTS.keys())}"
             )
+        
+        self._log(f"Exporting to GGUF with {quant_type.upper()} quantization...")
+        
+        # Ensure llama.cpp is installed
+        if not self._quantize_bin:
+            if self.auto_install:
+                if not self.install_llama_cpp():
+                    raise RuntimeError(
+                        "Failed to install llama.cpp. Please install manually:\n"
+                        "  git clone https://github.com/ggerganov/llama.cpp\n"
+                        "  cd llama.cpp && make -j\n"
+                        "Or install via pip: pip install llama-cpp-python"
+                    )
+            else:
+                raise RuntimeError(
+                    "llama.cpp not found. Set auto_install=True or install manually."
+                )
+        
+        # Create temp directory for model
+        with tempfile.TemporaryDirectory(prefix="quantllm_gguf_") as temp_dir:
+            # Save model and tokenizer
+            self._log("Saving model to temporary directory...")
             
+            if hasattr(model, 'save_pretrained'):
+                # It's a HuggingFace model
+                model.save_pretrained(temp_dir, safe_serialization=True)
+                tokenizer.save_pretrained(temp_dir)
+            elif isinstance(model, str) and os.path.isdir(model):
+                # It's a path to a saved model
+                temp_dir = model
+            else:
+                raise ValueError("model must be a HuggingFace model or path to saved model")
+            
+            # Step 1: Convert to FP16 GGUF
+            fp16_path = os.path.join(temp_dir, "model-fp16.gguf")
+            self._log("Converting to FP16 GGUF...")
+            
+            success = self._convert_to_gguf(temp_dir, fp16_path)
             if not success:
-                raise RuntimeError("Failed to convert model to GGUF format")
-            
-            # Step 3: Quantize if needed
-            if quant_type not in ["F16", "F32", "BF16"]:
-                if verbose:
-                    print(f"  Applying {quant_type} quantization...")
-                
-                success = self._quantize_gguf(
-                    temp_f16_gguf,
-                    output_path,
-                    quant_type,
-                    use_imatrix=use_imatrix,
-                    imatrix_data=imatrix_data,
-                    verbose=verbose
+                raise RuntimeError(
+                    "Failed to convert model to GGUF. "
+                    "This model architecture may not be supported yet."
                 )
-                
+            
+            # Step 2: Quantize if needed
+            if quant_type not in ["f16", "f32", "bf16"]:
+                self._log(f"Quantizing to {quant_type.upper()}...")
+                success = self._quantize_gguf(fp16_path, output_path, quant_type)
                 if not success:
-                    raise RuntimeError(f"Failed to quantize model to {quant_type}")
-            
-            if verbose:
-                file_size = os.path.getsize(output_path) / (1024**3)
-                print(f"  Done! Output: {output_path} ({file_size:.2f} GB)")
-            
-            return output_path
-            
-        finally:
-            # Cleanup
-            if not keep_temp_files:
-                if temp_dir and os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                if temp_f16_gguf and temp_f16_gguf != output_path and os.path.exists(temp_f16_gguf):
-                    os.remove(temp_f16_gguf)
+                    raise RuntimeError(f"Failed to quantize to {quant_type}")
+                # Clean up FP16 file
+                try:
+                    os.remove(fp16_path)
+                except:
+                    pass
+            else:
+                shutil.copy(fp16_path, output_path)
+        
+        self._log(f"GGUF export complete: {output_path}", "success")
+        return output_path
     
-    def _convert_hf_to_gguf(
-        self,
-        model_path: str,
-        output_path: str,
-        model_type: str,
-        outtype: str = "f16",
-        verbose: bool = True,
-    ) -> bool:
-        """Convert HuggingFace model to GGUF using available tools."""
+    def _convert_to_gguf(self, input_dir: str, output_path: str) -> bool:
+        """Convert HF model to GGUF format."""
+        # Try using the convert script from llama.cpp
+        convert_script = None
         
-        # Method 1: Use convert script if available
-        if self._convert_script:
-            try:
-                cmd = [
-                    sys.executable,
-                    self._convert_script,
-                    model_path,
-                    "--outfile", output_path,
-                    "--outtype", outtype,
-                ]
-                
-                if verbose:
-                    print(f"    Running: {' '.join(cmd)}")
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=3600,  # 1 hour timeout
-                )
-                
-                if result.returncode == 0 and os.path.exists(output_path):
-                    return True
-                else:
-                    if verbose:
-                        print(f"    Convert script failed: {result.stderr[:500]}")
-                        
-            except Exception as e:
-                if verbose:
-                    print(f"    Convert script error: {e}")
+        if self.llama_cpp_path:
+            script_path = os.path.join(self.llama_cpp_path, "convert_hf_to_gguf.py")
+            if os.path.exists(script_path):
+                convert_script = script_path
         
-        # Method 2: Use transformers' built-in GGUF export
+        if not convert_script:
+            # Try to find convert script
+            for path in ["llama.cpp/convert_hf_to_gguf.py", "convert_hf_to_gguf.py"]:
+                if os.path.exists(path):
+                    convert_script = path
+                    break
+        
+        if convert_script:
+            # Use the official convert script
+            cmd = [
+                sys.executable, convert_script,
+                input_dir,
+                "--outfile", output_path,
+                "--outtype", "f16",
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return True
+            else:
+                self._log(f"Convert script failed: {result.stderr[:500]}", "warning")
+        
+        # Try using transformers' built-in GGUF support
         try:
-            return self._convert_with_transformers(model_path, output_path, outtype, verbose)
-        except Exception as e:
-            if verbose:
-                print(f"    Transformers export failed: {e}")
+            from transformers import AutoModelForCausalLM
+            
+            # Some newer transformers versions have GGUF export
+            if hasattr(AutoModelForCausalLM, 'from_pretrained'):
+                # This is a placeholder - transformers GGUF support is limited
+                pass
+        except ImportError:
+            pass
         
-        # Method 3: Use our custom converter
+        # Fallback: Try using gguf Python package directly
         try:
-            return self._convert_manual(model_path, output_path, model_type, outtype, verbose)
+            return self._convert_with_gguf_python(input_dir, output_path)
         except Exception as e:
-            if verbose:
-                print(f"    Manual conversion failed: {e}")
+            self._log(f"Python GGUF conversion failed: {e}", "warning")
         
         return False
     
-    def _convert_with_transformers(
-        self,
-        model_path: str,
-        output_path: str,
-        outtype: str,
-        verbose: bool,
-    ) -> bool:
-        """Try to use transformers' GGUF export if available."""
+    def _convert_with_gguf_python(self, input_dir: str, output_path: str) -> bool:
+        """Convert using the gguf Python package directly."""
         try:
-            from transformers import GGUFConfig
-            from transformers.integrations import gguf
+            import gguf
+            from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+            import numpy as np
             
-            # Load model
+            self._log("Using pure Python GGUF conversion...")
+            
+            # Load model config
+            config = AutoConfig.from_pretrained(input_dir, trust_remote_code=True)
+            
+            # Determine architecture
+            arch = config.architectures[0] if config.architectures else "LlamaForCausalLM"
+            
+            # Map to GGUF architecture
+            gguf_arch = self._get_gguf_architecture(arch)
+            
+            # Create GGUF writer
+            writer = gguf.GGUFWriter(output_path, gguf_arch)
+            
+            # Add metadata
+            writer.add_name(config._name_or_path or "model")
+            writer.add_context_length(getattr(config, 'max_position_embeddings', 4096))
+            writer.add_embedding_length(getattr(config, 'hidden_size', 4096))
+            writer.add_feed_forward_length(getattr(config, 'intermediate_size', 11008))
+            writer.add_block_count(getattr(config, 'num_hidden_layers', 32))
+            writer.add_head_count(getattr(config, 'num_attention_heads', 32))
+            writer.add_head_count_kv(getattr(config, 'num_key_value_heads', 32))
+            writer.add_layer_norm_rms_eps(getattr(config, 'rms_norm_eps', 1e-5))
+            
+            # Load and add tensors
             model = AutoModelForCausalLM.from_pretrained(
-                model_path,
+                input_dir,
                 torch_dtype=torch.float16,
                 trust_remote_code=True,
             )
             
-            # Export to GGUF
-            model.save_pretrained_gguf(output_path)
+            for name, param in model.named_parameters():
+                tensor_name = self._convert_tensor_name(name)
+                data = param.detach().cpu().numpy().astype(np.float16)
+                writer.add_tensor(tensor_name, data)
             
-            return os.path.exists(output_path)
+            # Write file
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+            writer.close()
             
-        except ImportError:
-            raise ImportError("transformers GGUF export not available")
-    
-    def _convert_manual(
-        self,
-        model_path: str,
-        output_path: str,
-        model_type: str,
-        outtype: str,
-        verbose: bool,
-    ) -> bool:
-        """Manual GGUF conversion as last resort."""
-        # This is a placeholder for a pure-Python GGUF writer
-        # In practice, you'd implement the GGUF format specification here
-        raise NotImplementedError(
-            "Pure-Python GGUF conversion not implemented. "
-            "Please install llama.cpp tools: https://github.com/ggerganov/llama.cpp"
-        )
-    
-    def _quantize_gguf(
-        self,
-        input_path: str,
-        output_path: str,
-        quant_type: str,
-        use_imatrix: bool = False,
-        imatrix_data: Optional[str] = None,
-        verbose: bool = True,
-    ) -> bool:
-        """Quantize GGUF file to target type."""
-        
-        if not self._quantize_bin:
-            raise RuntimeError(
-                "llama-quantize binary not found. "
-                "Install llama.cpp or set LLAMA_CPP_PATH environment variable."
-            )
-        
-        cmd = [self._quantize_bin, input_path, output_path, quant_type]
-        
-        if use_imatrix and imatrix_data:
-            cmd.extend(["--imatrix", imatrix_data])
-        
-        if verbose:
-            print(f"    Running: {' '.join(cmd)}")
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=3600,
-            )
+            # Cleanup
+            del model
+            gc.collect()
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
             
-            if result.returncode == 0 and os.path.exists(output_path):
-                return True
-            else:
-                if verbose:
-                    print(f"    Quantization failed: {result.stderr[:500]}")
-                return False
-                
-        except subprocess.TimeoutExpired:
-            if verbose:
-                print("    Quantization timed out after 1 hour")
-            return False
+            return True
+            
         except Exception as e:
-            if verbose:
-                print(f"    Quantization error: {e}")
+            self._log(f"Pure Python GGUF failed: {e}", "error")
             return False
+    
+    def _get_gguf_architecture(self, hf_arch: str) -> str:
+        """Map HuggingFace architecture to GGUF architecture."""
+        mapping = {
+            "LlamaForCausalLM": "llama",
+            "MistralForCausalLM": "llama",
+            "Qwen2ForCausalLM": "qwen2",
+            "Phi3ForCausalLM": "phi3",
+            "PhiForCausalLM": "phi2",
+            "GemmaForCausalLM": "gemma",
+            "Gemma2ForCausalLM": "gemma2",
+            "StableLmForCausalLM": "stablelm",
+            "GPT2LMHeadModel": "gpt2",
+            "GPTNeoXForCausalLM": "gptneox",
+            "FalconForCausalLM": "falcon",
+            "MptForCausalLM": "mpt",
+            "BloomForCausalLM": "bloom",
+            "StarcoderForCausalLM": "starcoder",
+        }
+        return mapping.get(hf_arch, "llama")
+    
+    def _convert_tensor_name(self, name: str) -> str:
+        """Convert HuggingFace tensor name to GGUF format."""
+        # Basic conversion rules
+        name = name.replace("model.", "")
+        name = name.replace("layers.", "blk.")
+        name = name.replace("self_attn.q_proj", "attn_q")
+        name = name.replace("self_attn.k_proj", "attn_k")
+        name = name.replace("self_attn.v_proj", "attn_v")
+        name = name.replace("self_attn.o_proj", "attn_output")
+        name = name.replace("mlp.gate_proj", "ffn_gate")
+        name = name.replace("mlp.up_proj", "ffn_up")
+        name = name.replace("mlp.down_proj", "ffn_down")
+        name = name.replace("input_layernorm", "attn_norm")
+        name = name.replace("post_attention_layernorm", "ffn_norm")
+        name = name.replace("embed_tokens", "token_embd")
+        name = name.replace("lm_head", "output")
+        name = name.replace("norm", "output_norm")
+        name = name.replace(".weight", ".weight")
+        return name
+    
+    def _quantize_gguf(self, input_path: str, output_path: str, quant_type: str) -> bool:
+        """Quantize GGUF file."""
+        if not self._quantize_bin:
+            return False
+        
+        cmd = [self._quantize_bin, input_path, output_path, quant_type.upper()]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            self._log(f"Quantization failed: {result.stderr[:500]}", "error")
+            return False
+        
+        return os.path.exists(output_path)
 
 
-# Convenience function
-def convert_to_gguf(
-    model: Union[str, PreTrainedModel],
+def export_to_gguf(
+    model,
+    tokenizer,
     output_path: str,
-    quant_type: str = "Q4_K_M",
-    **kwargs,
+    quant_type: str = "q4_k_m",
+    auto_install: bool = True,
+    verbose: bool = True,
 ) -> str:
     """
-    Convert any model to GGUF format.
-    
-    This is the simplest way to create GGUF files for llama.cpp,
-    Ollama, LM Studio, and other GGUF-compatible runtimes.
+    One-line GGUF export function.
     
     Args:
-        model: HuggingFace model name or loaded model
+        model: HuggingFace model
+        tokenizer: HuggingFace tokenizer  
         output_path: Output GGUF file path
-        quant_type: Quantization type (Q4_K_M, Q5_K_M, etc.)
-        **kwargs: Additional arguments passed to GGUFConverter.convert()
+        quant_type: Quantization type (q4_k_m, q8_0, f16, etc.)
+        auto_install: Automatically install llama.cpp if needed
+        verbose: Print progress messages
         
     Returns:
         Path to the generated GGUF file
         
     Example:
-        >>> from quantllm.quant import convert_to_gguf
-        >>> 
-        >>> # From HuggingFace
-        >>> convert_to_gguf("meta-llama/Llama-3-8B", "llama3-q4.gguf")
-        >>> 
-        >>> # From loaded model
-        >>> model = AutoModelForCausalLM.from_pretrained(...)
-        >>> convert_to_gguf(model, "model-q4.gguf", quant_type="Q4_K_M")
+        >>> from quantllm import turbo
+        >>> model = turbo("meta-llama/Llama-3-8B")
+        >>> export_to_gguf(model.model, model.tokenizer, "llama3.gguf")
     """
-    converter = GGUFConverter()
-    return converter.convert(model, output_path, quant_type, **kwargs)
+    exporter = GGUFExporter(auto_install=auto_install, verbose=verbose)
+    return exporter.export(model, tokenizer, output_path, quant_type)
+
+
+def print_quantization_methods():
+    """Print all available quantization methods with descriptions."""
+    print("\n📦 Available GGUF Quantization Methods:\n")
+    print("-" * 60)
+    for method, description in ALLOWED_QUANTS.items():
+        print(f"  {method:<12} - {description}")
+    print("-" * 60)
+    print("\nRecommended: q4_k_m (good balance) or q8_0 (higher quality)\n")
+
+
+# Export
+__all__ = [
+    "GGUFExporter",
+    "export_to_gguf",
+    "print_quantization_methods",
+    "ALLOWED_QUANTS",
+]
