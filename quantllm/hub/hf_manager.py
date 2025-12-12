@@ -8,23 +8,53 @@ Install: pip install git+https://github.com/codewithdark-git/huggingface-lifecyc
 """
 
 import os
+import importlib.util
 from typing import Optional, Dict, Any, List
 import torch
 import torch.nn as nn
 
-# Try to import hf_lifecycle
-try:
-    from hf_lifecycle import HFManager as BaseHFManager
-    HF_LIFECYCLE_AVAILABLE = True
-except ImportError:
-    BaseHFManager = None
-    HF_LIFECYCLE_AVAILABLE = False
+# Try to import hf_lifecycle with multiple approaches
+HF_LIFECYCLE_AVAILABLE = False
+BaseHFManager = None
+
+def _try_import_hf_lifecycle():
+    """Try multiple approaches to import hf_lifecycle."""
+    global HF_LIFECYCLE_AVAILABLE, BaseHFManager
+    
+    # Approach 1: Direct import
+    try:
+        from hf_lifecycle import HFManager as _HFManager
+        BaseHFManager = _HFManager
+        HF_LIFECYCLE_AVAILABLE = True
+        return True
+    except ImportError:
+        pass
+    
+    # Approach 2: Check if module spec exists
+    try:
+        spec = importlib.util.find_spec("hf_lifecycle")
+        if spec is not None:
+            hf_lifecycle = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hf_lifecycle)
+            BaseHFManager = hf_lifecycle.HFManager
+            HF_LIFECYCLE_AVAILABLE = True
+            return True
+    except Exception:
+        pass
+    
+    return False
+
+# Run import check
+_try_import_hf_lifecycle()
 
 from ..utils.logger import logger
 
 
 def is_hf_lifecycle_available() -> bool:
     """Check if hf_lifecycle is installed."""
+    # Re-check in case it was installed after initial import
+    if not HF_LIFECYCLE_AVAILABLE:
+        _try_import_hf_lifecycle()
     return HF_LIFECYCLE_AVAILABLE
 
 

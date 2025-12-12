@@ -1,16 +1,33 @@
+# QuantLLM v2.0 Requirements
+
+# Core dependencies
 torch>=2.0.0
-transformers>=4.30.0
-datasets>=2.12.0
-accelerate>=0.20.0
-peft>=0.4.0
-bitsandbytes>=0.40.0
+transformers>=4.36.0
+datasets>=2.14.0
+accelerate>=0.24.0
+peft>=0.6.0
+bitsandbytes>=0.41.0
+
+# Utilities
 scipy>=1.10.0
-scikit-learn>=1.0.0
+scikit-learn>=1.3.0
 tqdm>=4.65.0
 numpy>=1.24.0
-wandb>=0.15.0
 sentencepiece>=0.1.99
 protobuf>=3.20.0
-einops>=0.6.1
+einops>=0.7.0
+psutil>=5.9.0
+huggingface-hub>=0.19.0
+rich>=13.0.0
+
+# Optional
+wandb>=0.15.0
+tensorboard>=2.14.0
 evaluate>=0.4.0
-tensorboard>=2.13.0
+
+# GGUF export
+ctransformers>=0.2.27
+llama-cpp-python>=0.2.20
+
+# Hub lifecycle
+git+https://github.com/codewithdark-git/huggingface-lifecycle.git

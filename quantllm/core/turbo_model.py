@@ -260,6 +260,8 @@ class TurboModel:
         top_k: int = 50,
         do_sample: bool = True,
         stream: bool = False,
+        repetition_penalty: float = 1.1,
+        stop_strings: Optional[List[str]] = None,
         **kwargs,
     ) -> str:
         """
@@ -272,16 +274,22 @@ class TurboModel:
             top_p: Nucleus sampling parameter
             top_k: Top-k sampling parameter
             do_sample: Whether to sample (False = greedy)
-            stream: Whether to stream output (not yet implemented)
+            stream: Whether to stream output token by token
+            repetition_penalty: Penalty for repeating tokens (>1.0 = less repetition)
+            stop_strings: List of strings that stop generation
             **kwargs: Additional generation parameters
             
         Returns:
             Generated text response
             
         Example:
-            >>> response = model.generate("Explain quantum computing in simple terms")
-            >>> print(response)
+            >>> response = model.generate("Explain quantum computing")
+            >>> 
+            >>> # With streaming
+            >>> response = model.generate("Tell me a story", stream=True)
         """
+        import sys
+        
         # Tokenize input
         inputs = self.tokenizer(
             prompt,
@@ -293,17 +301,28 @@ class TurboModel:
         # Move to device
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         
-        # Generate
+        # Default stop strings
+        stop_strings = stop_strings or []
+        
+        # Streaming generation
+        if stream:
+            return self._generate_streaming(
+                inputs, max_new_tokens, temperature, top_p, top_k,
+                do_sample, repetition_penalty, stop_strings, **kwargs
+            )
+        
+        # Non-streaming generation
         with torch.inference_mode():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=temperature,
+                temperature=temperature if do_sample else 1.0,
                 top_p=top_p,
                 top_k=top_k,
                 do_sample=do_sample,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
+                repetition_penalty=repetition_penalty,
                 **kwargs,
             )
         
@@ -311,7 +330,93 @@ class TurboModel:
         generated = outputs[0][inputs["input_ids"].shape[1]:]
         response = self.tokenizer.decode(generated, skip_special_tokens=True)
         
-        return response
+        # Check for stop strings and truncate
+        for stop in stop_strings:
+            if stop in response:
+                response = response.split(stop)[0]
+                break
+        
+        return response.strip()
+    
+    def _generate_streaming(
+        self,
+        inputs: Dict,
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        do_sample: bool,
+        repetition_penalty: float,
+        stop_strings: List[str],
+        **kwargs,
+    ) -> str:
+        """Generate with streaming output."""
+        import sys
+        
+        try:
+            from transformers import TextIteratorStreamer
+            from threading import Thread
+            
+            streamer = TextIteratorStreamer(
+                self.tokenizer, 
+                skip_prompt=True,
+                skip_special_tokens=True,
+            )
+            
+            generation_kwargs = {
+                **inputs,
+                "max_new_tokens": max_new_tokens,
+                "temperature": temperature if do_sample else 1.0,
+                "top_p": top_p,
+                "top_k": top_k,
+                "do_sample": do_sample,
+                "pad_token_id": self.tokenizer.pad_token_id,
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "repetition_penalty": repetition_penalty,
+                "streamer": streamer,
+                **kwargs,
+            }
+            
+            # Run generation in background thread
+            thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+            thread.start()
+            
+            # Stream output
+            generated_text = []
+            for new_text in streamer:
+                sys.stdout.write(new_text)
+                sys.stdout.flush()
+                generated_text.append(new_text)
+                
+                # Check stop strings
+                full_text = "".join(generated_text)
+                should_stop = False
+                for stop in stop_strings:
+                    if stop in full_text:
+                        should_stop = True
+                        break
+                if should_stop:
+                    break
+            
+            thread.join()
+            print()  # New line after streaming
+            
+            response = "".join(generated_text)
+            for stop in stop_strings:
+                if stop in response:
+                    response = response.split(stop)[0]
+            
+            return response.strip()
+            
+        except ImportError:
+            # Fallback to non-streaming
+            print("(Streaming not available, using batch generation)")
+            return self.generate(
+                self.tokenizer.decode(inputs["input_ids"][0]),
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                stream=False,
+            )
     
     def chat(
         self,
@@ -334,19 +439,35 @@ class TurboModel:
             ...     {"role": "user", "content": "Hello!"}
             ... ])
         """
-        # Apply chat template if available
-        if hasattr(self.tokenizer, 'apply_chat_template'):
-            prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        else:
-            # Fallback to simple formatting
-            prompt = "\n".join([
-                f"{m['role'].upper()}: {m['content']}" for m in messages
-            ])
-            prompt += "\nASSISTANT:"
+        # Try to apply chat template
+        prompt = None
+        
+        # First, try native chat template
+        if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+            try:
+                prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except Exception:
+                pass
+        
+        # If no template, use a sensible default
+        if prompt is None:
+            # Default chat format (works for most models)
+            parts = []
+            for m in messages:
+                role = m.get('role', 'user')
+                content = m.get('content', '')
+                if role == 'system':
+                    parts.append(f"System: {content}\n")
+                elif role == 'user':
+                    parts.append(f"User: {content}\n")
+                elif role == 'assistant':
+                    parts.append(f"Assistant: {content}\n")
+            parts.append("Assistant:")
+            prompt = "".join(parts)
         
         return self.generate(prompt, **kwargs)
     
