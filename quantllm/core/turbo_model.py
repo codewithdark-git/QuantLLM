@@ -18,7 +18,9 @@ from transformers import (
 
 from .smart_config import SmartConfig
 from .hardware import HardwareProfiler
-from ..utils import logger, print_header, print_success, print_error, print_info, print_warning
+from ..utils import logger, print_header, print_success, print_error, print_info, print_warning, QuantLLMProgress
+from transformers.utils.logging import disable_progress_bar as disable_hf_progress_bar
+from datasets.utils.logging import disable_progress_bar as disable_ds_progress_bar
 
 
 class TurboModel:
@@ -115,11 +117,17 @@ class TurboModel:
             >>> # For long context
             >>> model = TurboModel.from_pretrained("Qwen2-72B", max_length=32768)
         """
+        # Disable default progress bars
+        disable_hf_progress_bar()
+        disable_ds_progress_bar()
+        
         if verbose:
-            print(f"🚀 QuantLLM: Loading {model_name}")
-            print("=" * 50)
+            print_header(f"Loading {model_name}")
         
         # Auto-configure everything
+        if verbose:
+            logger.info("🚀 Detecting hardware and configuration...")
+
         smart_config = SmartConfig.detect(
             model_name,
             bits=bits,
@@ -139,7 +147,7 @@ class TurboModel:
         
         # Load tokenizer
         if verbose:
-            print("\n📝 Loading tokenizer...")
+            logger.info("📝 Loading tokenizer...")
         
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -153,7 +161,7 @@ class TurboModel:
         
         # Load model with optimizations
         if verbose:
-            print(f"📦 Loading model ({smart_config.bits}-bit)...")
+            logger.info(f"📦 Loading model ({smart_config.bits}-bit)...")
         
         model_kwargs = {
             "trust_remote_code": trust_remote_code,
@@ -171,18 +179,25 @@ class TurboModel:
         elif torch.cuda.is_available():
             model_kwargs["device_map"] = {"": smart_config.device}
         
-        # Load the model
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            **model_kwargs,
-        )
+        # Load the model with progress spinner
+        with QuantLLMProgress() as p:
+            if verbose:
+                task = p.add_task("Downloading & Loading model...", total=None)
+            
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                **model_kwargs,
+            )
+            
+            if verbose:
+                p.update(task, completed=100)
         
         # Apply additional optimizations
         if smart_config.gradient_checkpointing:
             if hasattr(model, 'gradient_checkpointing_enable'):
                 model.gradient_checkpointing_enable()
                 if verbose:
-                    print("✓ Gradient checkpointing enabled")
+                    logger.info("  ✓ Gradient checkpointing enabled")
         
         # Enable Flash Attention if available
         if smart_config.use_flash_attention:
@@ -193,14 +208,14 @@ class TurboModel:
             try:
                 model = torch.compile(model, mode="reduce-overhead")
                 if verbose:
-                    print("✓ torch.compile enabled")
+                    logger.info("  ✓ torch.compile enabled")
             except Exception as e:
                 if verbose:
-                    print(f"⚠ torch.compile failed: {e}")
+                    print_warning(f"torch.compile failed: {e}")
         
         if verbose:
-            print("\n✅ Model loaded successfully!")
-            print("=" * 50)
+            print_success("Model loaded successfully!")
+            logger.info("")
         
         instance = cls(model, tokenizer, smart_config)
         instance._is_quantized = quantize and smart_config.bits < 16
@@ -246,10 +261,10 @@ class TurboModel:
             if hasattr(model, 'config'):
                 model.config._attn_implementation = "flash_attention_2"
                 if verbose:
-                    print("✓ Flash Attention 2 enabled")
+                    logger.info("  ✓ Flash Attention 2 enabled")
         except Exception:
             if verbose:
-                print("⚠ Flash Attention not available")
+                logger.warning("  ⚠ Flash Attention not available")
     
     def generate(
         self,
@@ -580,7 +595,7 @@ class TurboModel:
             result = trainer.train()
             self._is_finetuned = True
             
-            print(f"\n✅ Training complete! Model saved to {output_dir}")
+            print_success(f"Training complete! Model saved to {output_dir}")
             
             return {
                 "train_loss": result.training_loss,

@@ -445,8 +445,8 @@ class GGUFConverter:
     def _add_tensors(self, writer: GGUFWriter, model, quant_type: str):
         """Add model tensors to GGUF file."""
         # Convert tensor names to GGUF format
-        # Convert tensor names to GGUF format
-        for name, param in track_progress(model.named_parameters(), description="Processing tensors"):
+        params = list(model.named_parameters())
+        for name, param in track_progress(params, description="Processing tensors"):
             gguf_name = self._convert_tensor_name(name)
             writer.add_tensor(gguf_name, param.detach().cpu(), quant_type)
     

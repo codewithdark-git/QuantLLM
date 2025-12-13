@@ -246,38 +246,49 @@ class SmartConfig:
         }
     
     def print_summary(self) -> None:
-        """Print a formatted summary of the configuration."""
-        print("\n" + "=" * 50)
-        print(" QUANTLLM CONFIGURATION ".center(50, "="))
-        print("=" * 50)
+        """Print a formatted summary of the configuration using Rich."""
+        from rich.console import Console
+        from rich.table import Table
+        from rich.panel import Panel
+        from rich import box
         
-        print(f"\n📦 Quantization:")
-        print(f"   Bits:       {self.bits}")
-        print(f"   Type:       {self.quant_type}")
-        print(f"   Group Size: {self.group_size}")
+        console = Console()
         
-        print(f"\n💾 Memory:")
-        print(f"   CPU Offload:      {'Enabled (Slow)' if self.cpu_offload else 'Disabled (Fast)'}")
-        print(f"   Grad Checkpoint:  {'Enabled' if self.gradient_checkpointing else 'Disabled'}")
+        # Main table
+        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        table.add_column("Category", style="bold cyan")
+        table.add_column("Details", style="white")
         
-        print(f"\n⚡ Speed:")
-        # Use descriptive status instead of X
-        fa_status = "Enabled" if self.use_flash_attention else "Disabled (Requires Ampere+ GPU)"
-        fused_status = "Enabled" if self.use_fused_kernels else "Disabled"
-        compile_status = "Enabled" if self.compile_model else "Disabled (Optional)"
+        # Quantization
+        table.add_row(
+            "📦 Quantization", 
+            f"[bold]Bits:[/ {self.bits}  [bold]Type:[/ {self.quant_type}  [bold]Group:[/ {self.group_size}"
+        )
         
-        print(f"   Flash Attention:  {fa_status}")
-        print(f"   Fused Kernels:    {fused_status}")
-        print(f"   torch.compile:    {compile_status}")
+        # Memory
+        mem_status = []
+        mem_status.append(f"Offload: [{'red' if self.cpu_offload else 'green'}]{'Yes' if self.cpu_offload else 'No'}[/]")
+        mem_status.append(f"Checkpoint: [{'green' if self.gradient_checkpointing else 'yellow'}]{'Yes' if self.gradient_checkpointing else 'No'}[/]")
+        table.add_row("💾 Memory", "  ".join(mem_status))
         
-        print(f"\n🎯 Training:")
-        print(f"   Batch Size:       {self.batch_size}")
-        print(f"   Grad Accum:       {self.gradient_accumulation_steps}")
-        print(f"   Effective Batch:  {self.batch_size * self.gradient_accumulation_steps}")
+        # Speed
+        speed_status = []
+        speed_status.append(f"FlashAttn: [{'green' if self.use_flash_attention else 'yellow'}]{'Yes' if self.use_flash_attention else 'No'}[/]")
+        speed_status.append(f"Fused: [{'green' if self.use_fused_kernels else 'yellow'}]{'Yes' if self.use_fused_kernels else 'No'}[/]")
+        speed_status.append(f"Compile: [{'green' if self.compile_model else 'dim'}]{'Yes' if self.compile_model else 'No'}[/]")
+        table.add_row("⚡ Speed", "  ".join(speed_status))
         
-        print(f"\n🖥️  Hardware:")
-        print(f"   Device:           {self.device}")
-        print(f"   Dtype:            {self.dtype}")
-        print(f"   Max Seq Length:   {self.max_seq_length}")
+        # Training
+        train_stats = f"Batch: {self.batch_size}  Accum: {self.gradient_accumulation_steps}  Eff: {self.batch_size * self.gradient_accumulation_steps}"
+        table.add_row("🎯 Training", train_stats)
         
-        print("\n" + "=" * 50)
+        # Hardware
+        hw_info = f"{str(self.device).upper()} ({str(self.dtype).split('.')[-1]})  Seq: {self.max_seq_length}"
+        table.add_row("🖥️  Hardware", hw_info)
+        
+        console.print(Panel(
+            table,
+            title="[bold white]QuantLLM Configuration[/]",
+            border_style="blue",
+            expand=False
+        ))

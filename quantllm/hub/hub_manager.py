@@ -1,6 +1,6 @@
 from huggingface_hub import login, HfApi, Repository
 from typing import Optional, Dict, Any
-from ..utils import logger, print_success, print_error
+from ..utils import logger, print_success, print_error, QuantLLMProgress
 import os
 
 class HubManager:
@@ -33,32 +33,44 @@ class HubManager:
         **kwargs
     ):
         """Push model and tokenizer to HuggingFace Hub."""
+        # Disable HF bars for this operation
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+        
         try:
-            if not self.api.repo_exists(self.model_id):
-                self.api.create_repo(
-                    repo_id=self.model_id,
-                    token=self.token,
-                    organization=self.organization
-                )
-                print_success(f"Created new repository: {self.model_id}")
-                
-            # Push model
-            model.push_to_hub(
-                self.model_id,
-                token=self.token,
-                commit_message=commit_message,
-                **kwargs
-            )
-            print_success(f"Successfully pushed model to {self.model_id}")
+            print_header(f"Pushing to {self.model_id}")
             
-            # Push tokenizer
-            tokenizer.push_to_hub(
-                self.model_id,
-                token=self.token,
-                commit_message=commit_message,
-                **kwargs
-            )
-            logger.info(f"Successfully pushed tokenizer to {self.model_id}")
+            with QuantLLMProgress() as p:
+                task = p.add_task("Pushing components...", total=None)
+                
+                if not self.api.repo_exists(self.model_id):
+                    self.api.create_repo(
+                        repo_id=self.model_id,
+                        token=self.token,
+                        organization=self.organization
+                    )
+                    logger.info(f"  ✓ Created new repository")
+                
+                # Push model
+                model.push_to_hub(
+                    self.model_id,
+                    token=self.token,
+                    commit_message=commit_message,
+                    **kwargs
+                )
+                logger.info(f"  ✓ Pushed model files")
+                
+                # Push tokenizer
+                tokenizer.push_to_hub(
+                    self.model_id,
+                    token=self.token,
+                    commit_message=commit_message,
+                    **kwargs
+                )
+                logger.info(f"  ✓ Pushed tokenizer files")
+                
+                p.update(task, completed=100)
+            
+            print_success(f"Successfully pushed to {self.model_id}")
             
         except Exception as e:
             print_error(f"Error pushing to hub: {str(e)}")
