@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from transformers import PreTrainedModel, AutoConfig, AutoModelForCausalLM, AutoTokenizer
 import numpy as np
-from ..utils.logger import logger
+from ..utils import logger
 import gc
 
 def get_device_map(model: PreTrainedModel) -> Dict[str, torch.device]:

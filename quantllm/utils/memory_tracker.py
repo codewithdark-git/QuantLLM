@@ -2,6 +2,7 @@
 
 import gc
 import time
+from .progress import logger, print_warning
 from typing import Dict, Any, Optional
 import torch
 

@@ -1,6 +1,6 @@
 from huggingface_hub import login, HfApi, Repository
 from typing import Optional, Dict, Any
-from ..utils.logger import logger
+from ..utils import logger, print_success, print_error
 import os
 
 class HubManager:
@@ -20,9 +20,9 @@ class HubManager:
         """Login to Hugging Face Hub."""
         try:
             self.api = HfApi(token=self.token)
-            logger.log_success("Successfully logged in to Hugging Face Hub.")
+            print_success("Successfully logged in to Hugging Face Hub.")
         except Exception as e:
-            logger.log_error(f"Error logging in: {str(e)}")
+            print_error(f"Error logging in: {str(e)}")
             raise
                 
     def push_model(
@@ -40,7 +40,7 @@ class HubManager:
                     token=self.token,
                     organization=self.organization
                 )
-                logger.log_success(f"Created new repository: {self.model_id}")
+                print_success(f"Created new repository: {self.model_id}")
                 
             # Push model
             model.push_to_hub(
@@ -49,7 +49,7 @@ class HubManager:
                 commit_message=commit_message,
                 **kwargs
             )
-            logger.log_success(f"Successfully pushed model to {self.model_id}")
+            print_success(f"Successfully pushed model to {self.model_id}")
             
             # Push tokenizer
             tokenizer.push_to_hub(
@@ -58,10 +58,10 @@ class HubManager:
                 commit_message=commit_message,
                 **kwargs
             )
-            logger.log_success(f"Successfully pushed tokenizer to {self.model_id}")
+            logger.info(f"Successfully pushed tokenizer to {self.model_id}")
             
         except Exception as e:
-            logger.log_error(f"Error pushing to hub: {str(e)}")
+            print_error(f"Error pushing to hub: {str(e)}")
             raise
 
     def push_folder(
@@ -84,9 +84,9 @@ class HubManager:
                 ignore_patterns=ignore_patterns,
                 **kwargs
             )
-            logger.log_success(f"Successfully pushed folder to {self.model_id}")
+            print_success(f"Successfully pushed folder to {self.model_id}")
         except Exception as e:
-            logger.log_error(f"Error pushing folder: {str(e)}")
+            print_error(f"Error pushing folder: {str(e)}")
             raise
             
     def push_checkpoint(
@@ -103,7 +103,7 @@ class HubManager:
                     token=self.token,
                     organization=self.organization
                 )
-                logger.log_success(f"Created new repository: {self.model_id}")
+                print_success(f"Created new repository: {self.model_id}")
                 
             # Push checkpoint
             self.api.upload_folder(
@@ -113,10 +113,10 @@ class HubManager:
                 commit_message=commit_message,
                 **kwargs
             )
-            logger.log_success(f"Successfully pushed checkpoint to {self.model_id}")
+            print_success(f"Successfully pushed checkpoint to {self.model_id}")
             
         except Exception as e:
-            logger.log_error(f"Error pushing checkpoint: {str(e)}")
+            print_error(f"Error pushing checkpoint: {str(e)}")
             raise
             
     def pull_model(self, local_dir: str = None):
@@ -131,9 +131,9 @@ class HubManager:
                 clone_from=self.model_id,
                 token=self.token
             )
-            logger.log_success(f"Successfully pulled model to {local_dir}")
+            print_success(f"Successfully pulled model to {local_dir}")
             return local_dir
             
         except Exception as e:
-            logger.log_error(f"Error pulling model: {str(e)}")
+            print_error(f"Error pulling model: {str(e)}")
             raise

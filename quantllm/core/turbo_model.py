@@ -18,6 +18,7 @@ from transformers import (
 
 from .smart_config import SmartConfig
 from .hardware import HardwareProfiler
+from ..utils import logger, print_header, print_success, print_error, print_info, print_warning
 
 
 class TurboModel:
@@ -506,7 +507,7 @@ class TurboModel:
             >>> # With custom settings
             >>> model.finetune(my_dataset, lora_r=32, learning_rate=1e-4)
         """
-        print("🎯 Starting fine-tuning...")
+        print_header("Starting Fine-tuning")
         
         try:
             from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -538,7 +539,7 @@ class TurboModel:
         
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.model.parameters())
-        print(f"✓ LoRA applied: {trainable:,} trainable params ({100*trainable/total:.2f}%)")
+        print_info(f"LoRA applied: {trainable:,} trainable params ({100*trainable/total:.2f}%)")
         
         # Load and prepare data
         train_dataset = self._prepare_dataset(data)
@@ -588,7 +589,7 @@ class TurboModel:
             }
             
         except Exception as e:
-            print(f"❌ Training failed: {e}")
+            print_error(f"Training failed: {e}")
             raise
     
     def _get_lora_target_modules(self) -> List[str]:
@@ -685,7 +686,7 @@ class TurboModel:
         
         # Merge LoRA if applied
         if self._lora_applied:
-            print("🔗 Merging LoRA weights...")
+            logger.info("🔗 Merging LoRA weights...")
             self.model = self.model.merge_and_unload()
             self._lora_applied = False
         
@@ -709,9 +710,9 @@ class TurboModel:
         if format not in exporters:
             raise ValueError(f"Unknown format: {format}. Supported: {list(exporters.keys())}")
         
-        print(f"📦 Exporting to {format.upper()}...")
+        print_header(f"Exporting to {format.upper()}")
         result = exporters[format](output_path, quantization=quantization, **kwargs)
-        print(f"✅ Exported to: {result}")
+        print_success(f"Exported to: {result}")
         
         return result
     

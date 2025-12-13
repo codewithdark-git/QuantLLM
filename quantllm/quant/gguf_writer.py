@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 import torch
 import torch.nn as nn
-from tqdm.auto import tqdm
+from ..utils import track_progress, logger, print_success
 import json
 
 
@@ -325,7 +325,7 @@ class GGUFWriter:
         """Write actual tensor data."""
         quantizer = FastQuantizer()
         
-        iterator = tqdm(self.tensors, desc="Writing tensors") if show_progress else self.tensors
+        iterator = track_progress(self.tensors, description="Writing tensors") if show_progress else self.tensors
         
         for tensor_info in iterator:
             tensor = tensor_info["tensor"]
@@ -394,7 +394,7 @@ class GGUFConverter:
             Path to created GGUF file
         """
         if self.verbose:
-            print(f"\n🚀 Converting to GGUF ({quant_type})...")
+            logger.info(f"🚀 Converting to GGUF ({quant_type})...")
         
         # Create GGUF writer
         writer = GGUFWriter(output_path, arch="llama")
@@ -410,7 +410,7 @@ class GGUFConverter:
         
         if self.verbose:
             size_mb = os.path.getsize(output_path) / (1024**2)
-            print(f"✅ GGUF file created: {output_path} ({size_mb:.2f} MB)")
+            print_success(f"GGUF file created: {output_path} ({size_mb:.2f} MB)")
         
         return output_path
     
@@ -445,7 +445,8 @@ class GGUFConverter:
     def _add_tensors(self, writer: GGUFWriter, model, quant_type: str):
         """Add model tensors to GGUF file."""
         # Convert tensor names to GGUF format
-        for name, param in tqdm(model.named_parameters(), desc="Processing tensors"):
+        # Convert tensor names to GGUF format
+        for name, param in track_progress(model.named_parameters(), description="Processing tensors"):
             gguf_name = self._convert_tensor_name(name)
             writer.add_tensor(gguf_name, param.detach().cpu(), quant_type)
     
