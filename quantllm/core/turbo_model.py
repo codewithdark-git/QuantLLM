@@ -52,6 +52,7 @@ class TurboModel:
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
         config: SmartConfig,
+        verbose: bool = False,
     ):
         """
         Initialize TurboModel. Use from_pretrained() instead of direct init.
@@ -67,6 +68,10 @@ class TurboModel:
         self._is_quantized = False
         self._is_finetuned = False
         self._lora_applied = False
+        self._is_quantized = False
+        self._is_finetuned = False
+        self._lora_applied = False
+        self.verbose = verbose
     
     @classmethod
     def from_pretrained(
@@ -100,6 +105,8 @@ class TurboModel:
             device: Override device (default: best available GPU)
             dtype: Override dtype (default: bf16 if available, else fp16)
             trust_remote_code: Trust remote code in model
+            quantize: Whether to quantize the model
+            config_override: Dict to override any auto-detected settings
             quantize: Whether to quantize the model
             config_override: Dict to override any auto-detected settings
             verbose: Print loading progress
@@ -168,6 +175,7 @@ class TurboModel:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         
         # Load model with optimizations
+        # Load model with optimizations
         if verbose:
             logger.info(f"📦 Loading model ({smart_config.bits}-bit)...")
         
@@ -191,8 +199,10 @@ class TurboModel:
                 
                 if is_bnb and is_8bit and smart_config.bits == 4:
                     allow_requantize = True
+                if is_bnb and is_8bit and smart_config.bits == 4:
+                    allow_requantize = True
                     if verbose:
-                         logger.info("  ℹ️ Re-quantizing 8-bit model to 4-bit")
+                        logger.info("  ℹ️ Re-quantizing 8-bit model to 4-bit")
                 
                 if not allow_requantize:
                     if verbose:
@@ -213,6 +223,7 @@ class TurboModel:
         elif torch.cuda.is_available():
             model_kwargs["device_map"] = {"": smart_config.device}
         
+        # Load the model with progress spinner
         # Load the model with progress spinner
         with QuantLLMProgress() as p:
             if verbose:
@@ -279,6 +290,16 @@ class TurboModel:
         if verbose:
             print_header(f"Loading GGUF: {model_id}")
             
+        # Check for GGUF package
+        try:
+            import gguf
+        except ImportError:
+            print_error("❌ Missing 'gguf' package!")
+            raise ImportError(
+                "Loading GGUF models requires the 'gguf' package.\n"
+                "Please run: pip install gguf>=0.10.0"
+            )
+            
         smart_config = SmartConfig.detect(model_id, device=device)
         smart_config.quant_type = "GGUF"
         
@@ -286,21 +307,29 @@ class TurboModel:
             if verbose:
                  p.add_task("Loading GGUF model...", total=None)
                  
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                gguf_file=filename,
-                torch_dtype=smart_config.dtype,
-                trust_remote_code=True,
-                **kwargs
-            )
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    gguf_file=filename,
+                    torch_dtype=smart_config.dtype,
+                    trust_remote_code=True,
+                    **kwargs
+                )
+            except ImportError as e:
+                if "gguf" in str(e).lower():
+                     raise ImportError(
+                         "transformers requires a newer version of 'gguf'.\n"
+                         "Please run: pip install --upgrade gguf>=0.10.0"
+                     ) from e
+                raise
             
             try:
                 tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=filename)
             except:
                 tokenizer = AutoTokenizer.from_pretrained(model_id)
                 
-        if verbose:
-             print_success("GGUF Model loaded!")
+            if verbose:
+                 print_success("GGUF Model loaded!")
              
         instance = cls(model, tokenizer, smart_config)
         instance._is_quantized = True
@@ -828,7 +857,7 @@ class TurboModel:
             model_name = self.model.config._name_or_path.split('/')[-1]
             if format == "gguf":
                 quant = quantization or self.config.quant_type
-                output_path = f"{model_name}-{quant}.gguf"
+                output_path = f"{model_name}.{quant}.gguf"
             elif format == "safetensors":
                 output_path = f"./{model_name}-quantllm/"
             elif format == "onnx":
@@ -864,6 +893,7 @@ class TurboModel:
             token: HF Token
             format: "safetensors" or "gguf"
             commit_message: Commit message
+            quantization: Quantization type
             **kwargs: Arguments for export (quantization, etc.)
         """
         from ..hub import QuantLLMHubManager
@@ -875,11 +905,11 @@ class TurboModel:
             # Export GGUF directly to staging
             # Handle output name
             model_name = self.model.config._name_or_path.split('/')[-1]
-            filename = f"{model_name}.gguf"
+            filename = f"{model_name}.{quantization}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             
             # Export using existing logic
-            self.export(format="gguf", output_path=save_path, **kwargs)
+            self.export(format="gguf", output_path=save_path, quantization=quantization, **kwargs)
             
             # Generate basic card
             manager.track_hyperparameters({
@@ -932,7 +962,7 @@ class TurboModel:
             self.tokenizer,
             output_path,
             quant_type=quant_type,
-            verbose=True,
+            verbose=self.verbose,
         )
     
     def _export_safetensors(
