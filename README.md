@@ -112,7 +112,7 @@ Llama 2/3, Mistral, Mixtral, Qwen/Qwen2, Phi-1/2/3, Gemma, Falcon, GPT-NeoX, Sta
 <td>
 
 ### 📦 6 Export Formats
-- **GGUF** - llama.cpp, Ollama, LM Studio
+- **GGUF** - Pure Python export (No binaries!)
 - **ONNX** - ONNX Runtime, TensorRT
 - **SafeTensors** - HuggingFace
 - **MLX** - Apple Silicon
@@ -125,19 +125,20 @@ Llama 2/3, Mistral, Mixtral, Qwen/Qwen2, Phi-1/2/3, Gemma, Falcon, GPT-NeoX, Sta
 <td>
 
 ### 🔧 Zero-Config Smart Defaults
-- Hardware auto-detection (GPU, memory, capabilities)
-- Optimal quantization selection
-- Automatic batch size calculation
+- **SmartConfig Stats Panel** (See size before loading)
+- Hardware auto-detection & optimization
+- Automatic quantization selection
 - Memory-aware loading
 
 </td>
 <td>
 
 ### 💾 Memory Optimizations
+- **Dynamic Padding** (Efficient training)
+- **OOM Prevention** (Expandable segments)
 - Dynamic CPU ↔ GPU offloading
 - Gradient checkpointing
 - CPU optimizer states
-- Layer-wise memory tracking
 
 </td>
 </tr>

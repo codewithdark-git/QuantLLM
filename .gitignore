@@ -188,3 +188,4 @@ cython_debug/
 .pypirc.pypirc
 venv
 upcoming.md
+post.md
