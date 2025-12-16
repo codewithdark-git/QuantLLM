@@ -301,8 +301,7 @@ pip install git+https://github.com/codewithdark-git/huggingface-lifecycle.git
 
 | Configuration | RAM | GPU VRAM | Recommended For |
 |---------------|-----|----------|-----------------|
-| 🟢 **CPU Only** | 8GB+ | None | Testing, small models (1-3B) |
-| 🔵 **Entry GPU** | 16GB | 6-8GB | 7B models (4-bit) |
+| 🔵 **Entry GPU** | 16GB | 6-8GB | 1-7B models (4-bit) |
 | 🟣 **Mid-Range** | 32GB | 12-24GB | 13B-30B models |
 | 🟠 **High-End** | 64GB+ | 24-80GB | 70B+ models |
 
@@ -318,8 +317,7 @@ pip install git+https://github.com/codewithdark-git/huggingface-lifecycle.git
 | Resource | Description |
 |----------|-------------|
 | 📖 [Examples](./examples/) | Working code examples |
-| 📚 [API Reference](./docs/) | Full API documentation |
-| 🎓 [Tutorials](./docs/tutorials/) | Step-by-step guides |
+| 📚 [API Reference](https://quantllm.readthedocs.io/en/latest/) | Full API documentation |
 | 🐛 [Issues](https://github.com/codewithdark-git/QuantLLM/issues) | Report bugs |
 
 ---
