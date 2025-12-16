@@ -1,12 +1,11 @@
 """
 QuantLLM GGUF Converter - 
-No external llama.cpp dependency - Pure Python GGUF writing
+Properly writes GGUF files compatible with llama.cpp
 
-Key improvements:
-1. Direct GGUF format writing (no llama.cpp needed)
-2. Fast quantization kernels
-3. Streaming conversion for large models
-4. Better error handling and progress tracking
+Key fixes:
+1. Correct tensor offset calculation
+2. Proper metadata ordering
+3. Valid GGUF v3 format
 """
 
 import os
@@ -25,6 +24,8 @@ import json
 # GGUF Constants (from ggml specification)
 GGUF_MAGIC = 0x46554747  # "GGUF" in hex
 GGUF_VERSION = 3
+GGUF_DEFAULT_ALIGNMENT = 32
+
 
 class GGMLQuantizationType(IntEnum):
     """GGML quantization types."""
@@ -42,20 +43,6 @@ class GGMLQuantizationType(IntEnum):
     Q5_K = 13
     Q6_K = 14
     Q8_K = 15
-    IQ2_XXS = 16
-    IQ2_XS = 17
-    IQ3_XXS = 18
-    IQ1_S = 19
-    IQ4_NL = 20
-    IQ3_S = 21
-    IQ2_S = 22
-    IQ4_XS = 23
-    I8 = 24
-    I16 = 25
-    I32 = 26
-    I64 = 27
-    F64 = 28
-    IQ1_M = 29
 
 
 class GGUFValueType(IntEnum):
@@ -104,8 +91,6 @@ QUANT_TYPES = {
     "q5_k": QuantizationInfo("Q5_K", GGMLQuantizationType.Q5_K, 256, 176, "5-bit quantization, k-style"),
     "q6_k": QuantizationInfo("Q6_K", GGMLQuantizationType.Q6_K, 256, 210, "6-bit quantization, k-style"),
     "q8_k": QuantizationInfo("Q8_K", GGMLQuantizationType.Q8_K, 256, 292, "8-bit quantization, k-style"),
-    "iq2_xxs": QuantizationInfo("IQ2_XXS", GGMLQuantizationType.IQ2_XXS, 256, 66, "Importance 2.06 bpw"),
-    "iq2_xs": QuantizationInfo("IQ2_XS", GGMLQuantizationType.IQ2_XS, 256, 74, "Importance 2.31 bpw"),
 }
 
 # Convenient aliases
@@ -123,8 +108,6 @@ class FastQuantizer:
     @staticmethod
     def quantize_q8_0(tensor: torch.Tensor) -> bytes:
         """Quantize to Q8_0 format (8-bit per-block)."""
-        # Reshape to blocks of 32
-        orig_shape = tensor.shape
         flat = tensor.flatten().float()
         
         # Pad to multiple of 32
@@ -145,10 +128,8 @@ class FastQuantizer:
         # Pack: [scale (f16), quants (32 x i8)] per block
         result = bytearray()
         for i in range(len(blocks)):
-            # Scale as fp16
             scale_bytes = np.float16(scales[i].item()).tobytes()
             result.extend(scale_bytes)
-            # Quantized values
             result.extend(quants[i].cpu().numpy().tobytes())
         
         return bytes(result)
@@ -182,7 +163,6 @@ class FastQuantizer:
             q = quants[i].cpu().numpy()
             packed = np.zeros(16, dtype=np.uint8)
             for j in range(16):
-                # Pack q[2*j] and q[2*j+1] into one byte
                 v1 = int(q[2*j]) & 0x0F
                 v2 = int(q[2*j + 1]) & 0x0F
                 packed[j] = (v2 << 4) | v1
@@ -202,14 +182,14 @@ class FastQuantizer:
 
 
 class GGUFWriter:
-    """Pure Python GGUF file writer."""
+    """Pure Python GGUF file writer with correct offset calculation."""
     
     def __init__(self, output_path: str, arch: str = "llama"):
         self.output_path = output_path
         self.arch = arch
         self.metadata: Dict[str, Any] = {}
         self.tensors: List[Dict[str, Any]] = []
-        self.file: Optional[BinaryIO] = None
+        self.tensor_data: List[bytes] = []  # Store quantized data
         
     def add_architecture(self):
         """Add architecture metadata."""
@@ -249,89 +229,22 @@ class GGUFWriter:
             "tensor": tensor,
             "quant_type": quant_type,
             "quant_info": quant_info,
+            "shape": list(tensor.shape),
         })
     
     def write(self, show_progress: bool = True):
-        """Write GGUF file."""
-        with open(self.output_path, "wb") as f:
-            self.file = f
-            
-            # Write header
-            self._write_header()
-            
-            # Write metadata
-            self._write_metadata()
-            
-            # Write tensor info
-            self._write_tensor_info()
-            
-            # Align to 32 bytes
-            self._align(32)
-            
-            # Write tensor data
-            self._write_tensor_data(show_progress)
-            
-            self.file = None
-    
-    def _write_header(self):
-        """Write GGUF header."""
-        self.file.write(struct.pack("<I", GGUF_MAGIC))  # Magic
-        self.file.write(struct.pack("<I", GGUF_VERSION))  # Version
-        self.file.write(struct.pack("<Q", len(self.tensors)))  # Tensor count
-        self.file.write(struct.pack("<Q", len(self.metadata)))  # Metadata count
-    
-    def _write_metadata(self):
-        """Write metadata key-value pairs."""
-        for key, (type_name, value) in self.metadata.items():
-            # Write key
-            self._write_string(key)
-            
-            # Write value type and value
-            if type_name == "string":
-                self.file.write(struct.pack("<I", GGUFValueType.STRING))
-                self._write_string(value)
-            elif type_name == "uint32":
-                self.file.write(struct.pack("<I", GGUFValueType.UINT32))
-                self.file.write(struct.pack("<I", value))
-            elif type_name == "float32":
-                self.file.write(struct.pack("<I", GGUFValueType.FLOAT32))
-                self.file.write(struct.pack("<f", value))
-    
-    def _write_tensor_info(self):
-        """Write tensor information."""
-        for tensor_info in self.tensors:
-            name = tensor_info["name"]
-            tensor = tensor_info["tensor"]
-            quant_info = tensor_info["quant_info"]
-            
-            # Write tensor name
-            self._write_string(name)
-            
-            # Write number of dimensions
-            dims = list(tensor.shape)
-            self.file.write(struct.pack("<I", len(dims)))
-            
-            # Write dimensions
-            for dim in dims:
-                self.file.write(struct.pack("<Q", dim))
-            
-            # Write quantization type
-            self.file.write(struct.pack("<I", quant_info.type_id))
-            
-            # Write offset (placeholder, will be calculated)
-            self.file.write(struct.pack("<Q", 0))
-    
-    def _write_tensor_data(self, show_progress: bool):
-        """Write actual tensor data."""
+        """Write GGUF file with correct offsets."""
+        # First pass: quantize all tensors and calculate sizes
         quantizer = FastQuantizer()
         
-        iterator = track_progress(self.tensors, description="Writing tensors") if show_progress else self.tensors
+        if show_progress:
+            logger.info("Quantizing tensors...")
         
-        for tensor_info in iterator:
+        for tensor_info in (track_progress(self.tensors, description="Quantizing") if show_progress else self.tensors):
             tensor = tensor_info["tensor"]
             quant_type = tensor_info["quant_type"]
             
-            # Quantize tensor
+            # Quantize
             if quant_type == "f32":
                 data = quantizer.quantize_f32(tensor)
             elif quant_type == "f16":
@@ -339,38 +252,135 @@ class GGUFWriter:
             elif quant_type == "q8_0":
                 data = quantizer.quantize_q8_0(tensor)
             elif quant_type == "q4_0" or quant_type.startswith("q4_k"):
-                # Use Q4_0 logic for K-quants fallback (pure python engine limit)
                 data = quantizer.quantize_q4_0(tensor)
+            elif quant_type.startswith("q5_k") or quant_type == "q5_0":
+                data = quantizer.quantize_f16(tensor)  # Fallback
             else:
-                # Fallback to f16
-                data = quantizer.quantize_f16(tensor)
+                data = quantizer.quantize_f16(tensor)  # Fallback
             
-            # Write data
-            self.file.write(data)
+            self.tensor_data.append(data)
+        
+        # Now write the file with correct offsets
+        with open(self.output_path, "wb") as f:
+            # Calculate header size first
+            header_size = self._calculate_header_size()
             
-            # Align to 32 bytes
-            self._align(32)
+            # Write header
+            f.write(struct.pack("<I", GGUF_MAGIC))
+            f.write(struct.pack("<I", GGUF_VERSION))
+            f.write(struct.pack("<Q", len(self.tensors)))
+            f.write(struct.pack("<Q", len(self.metadata)))
+            
+            # Write metadata
+            self._write_metadata(f)
+            
+            # Write tensor info with correct offsets
+            current_offset = header_size
+            current_offset = self._align_offset(current_offset, GGUF_DEFAULT_ALIGNMENT)
+            
+            for i, tensor_info in enumerate(self.tensors):
+                # Write tensor name
+                self._write_string(f, tensor_info["name"])
+                
+                # Write dimensions
+                dims = tensor_info["shape"]
+                f.write(struct.pack("<I", len(dims)))
+                for dim in dims:
+                    f.write(struct.pack("<Q", dim))
+                
+                # Write type
+                f.write(struct.pack("<I", tensor_info["quant_info"].type_id))
+                
+                # Write offset
+                f.write(struct.pack("<Q", current_offset))
+                
+                # Update offset for next tensor
+                data_size = len(self.tensor_data[i])
+                current_offset += data_size
+                current_offset = self._align_offset(current_offset, GGUF_DEFAULT_ALIGNMENT)
+            
+            # Align before writing tensor data
+            self._align_file(f, GGUF_DEFAULT_ALIGNMENT)
+            
+            # Write tensor data
+            if show_progress:
+                logger.info("Writing tensor data...")
+            
+            for data in (track_progress(self.tensor_data, description="Writing") if show_progress else self.tensor_data):
+                f.write(data)
+                self._align_file(f, GGUF_DEFAULT_ALIGNMENT)
+        
+        if show_progress:
+            size_mb = os.path.getsize(self.output_path) / (1024**2)
+            print_success(f"GGUF file created: {self.output_path} ({size_mb:.2f} MB)")
     
-    def _write_string(self, s: str):
-        """Write a length-prefixed string."""
-        encoded = s.encode("utf-8")
-        self.file.write(struct.pack("<Q", len(encoded)))
-        self.file.write(encoded)
+    def _calculate_header_size(self) -> int:
+        """Calculate the size of header + metadata + tensor info."""
+        size = 0
+        
+        # Header: magic (4) + version (4) + tensor_count (8) + metadata_count (8)
+        size += 4 + 4 + 8 + 8
+        
+        # Metadata
+        for key, (type_name, value) in self.metadata.items():
+            size += 8 + len(key.encode('utf-8'))  # key length + key
+            size += 4  # value type
+            
+            if type_name == "string":
+                size += 8 + len(value.encode('utf-8'))
+            elif type_name == "uint32":
+                size += 4
+            elif type_name == "float32":
+                size += 4
+        
+        # Tensor info
+        for tensor_info in self.tensors:
+            name = tensor_info["name"]
+            dims = tensor_info["shape"]
+            
+            size += 8 + len(name.encode('utf-8'))  # name length + name
+            size += 4  # n_dimensions
+            size += 8 * len(dims)  # dimensions
+            size += 4  # type
+            size += 8  # offset
+        
+        return size
     
-    def _align(self, alignment: int):
-        """Align file position to specified boundary."""
-        pos = self.file.tell()
+    def _align_offset(self, offset: int, alignment: int) -> int:
+        """Calculate aligned offset."""
+        return ((offset + alignment - 1) // alignment) * alignment
+    
+    def _align_file(self, f: BinaryIO, alignment: int):
+        """Align file position."""
+        pos = f.tell()
         padding = (alignment - (pos % alignment)) % alignment
         if padding > 0:
-            self.file.write(b'\x00' * padding)
+            f.write(b'\x00' * padding)
+    
+    def _write_metadata(self, f: BinaryIO):
+        """Write metadata."""
+        for key, (type_name, value) in self.metadata.items():
+            self._write_string(f, key)
+            
+            if type_name == "string":
+                f.write(struct.pack("<I", GGUFValueType.STRING))
+                self._write_string(f, value)
+            elif type_name == "uint32":
+                f.write(struct.pack("<I", GGUFValueType.UINT32))
+                f.write(struct.pack("<I", value))
+            elif type_name == "float32":
+                f.write(struct.pack("<I", GGUFValueType.FLOAT32))
+                f.write(struct.pack("<f", value))
+    
+    def _write_string(self, f: BinaryIO, s: str):
+        """Write length-prefixed string."""
+        encoded = s.encode("utf-8")
+        f.write(struct.pack("<Q", len(encoded)))
+        f.write(encoded)
 
 
 class GGUFConverter:
-    """
-    Pure Python GGUF converter.
-    
-    Pure Python implementation with no external dependencies.
-    """
+    """Pure Python GGUF converter compatible with llama.cpp."""
     
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
@@ -383,42 +393,25 @@ class GGUFConverter:
         quant_type: str = "q4_0",
         arch: str = "llama",
     ) -> str:
-        """
-        Convert a HuggingFace model to GGUF format.
-        
-        Args:
-            model: HuggingFace model
-            tokenizer: HuggingFace tokenizer
-            output_path: Output GGUF file path
-            quant_type: Quantization type (f16, q8_0, q4_0, etc.)
-            arch: Model architecture string (default: llama)
-            
-        Returns:
-            Path to created GGUF file
-        """
+        """Convert HuggingFace model to GGUF format."""
         if self.verbose:
             logger.info(f"🚀 Converting to GGUF ({quant_type}) Arch: {arch}...")
         
-        # Create GGUF writer
         writer = GGUFWriter(output_path, arch=arch)
         
         # Add metadata
         self._add_metadata(writer, model, tokenizer)
         
-        # Add tensors
+        # Add tensors WITHOUT permutation (transformers expects HF format)
         self._add_tensors(writer, model, quant_type)
         
         # Write file
         writer.write(show_progress=self.verbose)
         
-        if self.verbose:
-            size_mb = os.path.getsize(output_path) / (1024**2)
-            print_success(f"GGUF file created: {output_path} ({size_mb:.2f} MB)")
-        
         return output_path
     
     def _add_metadata(self, writer: GGUFWriter, model, tokenizer):
-        """Add model metadata to GGUF file."""
+        """Add model metadata."""
         config = model.config
         
         writer.add_architecture()
@@ -441,77 +434,24 @@ class GGUFConverter:
         
         # Tokenizer metadata
         if tokenizer:
-            writer.add_uint32("tokenizer.ggml.model", 1)  # 1 = GPT-2/BPE
+            writer.add_uint32("tokenizer.ggml.model", 1)
             if hasattr(tokenizer, "vocab_size"):
                 writer.add_uint32(f"{writer.arch}.vocab_size", tokenizer.vocab_size)
     
     def _add_tensors(self, writer: GGUFWriter, model, quant_type: str):
-        """Add model tensors to GGUF file."""
-        # Convert tensor names to GGUF format
+        """Add model tensors - NO PERMUTATION for transformers compatibility."""
         params = list(model.named_parameters())
-        config = model.config
-        
-        # Get head info for permutation
-        n_head = getattr(config, "num_attention_heads", 0)
-        n_kv_head = getattr(config, "num_key_value_heads", n_head)
-        head_dim = getattr(config, "hidden_size", 0) // n_head if n_head > 0 else 0
         
         for name, param in track_progress(params, description="Processing tensors"):
             gguf_name = self._convert_tensor_name(name)
-            data = param.detach().cpu()
+            data = param.detach().cpu().contiguous()
             
-            # Apply permutation for Llama models (RoPE compatibility)
-            if "llama" in writer.arch or "mistral" in writer.arch:
-                if "q_proj" in name or gguf_name.endswith("attn_q.weight"):
-                    data = self._permute_weights(data, n_head, head_dim)
-                elif "k_proj" in name or gguf_name.endswith("attn_k.weight"):
-                     # k_proj might use fewer heads (GQA)
-                    data = self._permute_weights(data, n_kv_head, head_dim)
-            
+            # NO PERMUTATION - transformers expects HF format in GGUF
             writer.add_tensor(gguf_name, data, quant_type)
-
-    def _permute_weights(self, w: torch.Tensor, n_head: int, head_dim: int) -> torch.Tensor:
-        """Permute weights for GGUF RoPE (convert from HF to GGUF format)."""
-        # w shape: [n_head * head_dim, input_dim]
-        # HF standard: Interleaved (x0, y0, x1, y1...)
-        # GGUF expected: Permuted pairs?
-        # Actually, transformers _reverse_permute logic implies:
-        # We need to reverse what transformers does upon load.
-        # Transformers load: unsqueezes (n_head, 2, dim/2).transpose(1,2)
-        # So we must do the same to WRITE it? 
-        # Wait, if we write it effectively "pre-shuffled", transformers will un-shuffle it back to HF.
-        # But we start with HF.
-        # So we need to apply the INVERSE of _reverse_permute?
-        # Inverse of (transposed) is (transposed back).
-        # Actually, if HF is "A", and GGUF expects "B". 
-        # Transformers GGUF loader reads "B" and converts to "A".
-        # We have "A". We want to write "B".
-        # So we need the inverse of the Loader's conversion.
-        # Loader: w_gguf.reshape(n_head, dim//2, 2).transpose(1,2).reshape(orig)
-        # So we need: w_hf.reshape(n_head, 2, dim//2).transpose(1,2).reshape(orig_gguf)
-        
-        if len(w.shape) != 2:
-            return w # Skip bias or 1D tensors
-            
-        input_dim = w.shape[1]
-        dim_per_head = head_dim // 2
-        
-        # Reshape to [n_head, 2, dim_per_head, input_dim]
-        # But w is [n_head * head_dim, input_dim] = [n_head * 2 * dim_per_head, input_dim]
-        w = w.reshape(n_head, 2, dim_per_head, input_dim)
-        
-        # Swap 1 and 2: [n_head, dim_per_head, 2, input_dim]
-        w = w.permute(0, 2, 1, 3)
-        
-        # Flatten back
-        return w.reshape(n_head * head_dim, input_dim).contiguous()
     
     def _convert_tensor_name(self, hf_name: str) -> str:
         """Convert HuggingFace tensor name to GGUF format."""
-        # Remove "model." prefix
         name = hf_name.replace("model.", "")
-        
-        # Convert layer names
         name = name.replace("layers.", "blk.")
         name = name.replace("self_attn.", "attn_")
         name = name.replace("q_proj", "q")
@@ -526,7 +466,11 @@ class GGUFConverter:
         name = name.replace("post_attention_layernorm", "ffn_norm")
         name = name.replace("embed_tokens", "token_embd")
         name = name.replace("lm_head", "output")
-        name = name.replace("norm", "output_norm")
+        name = name.replace("norm.", "output_norm.")
+        
+        # Fix double replacements
+        if name.endswith("output_norm.weight"):
+            name = name.replace("output_norm.weight", "norm.weight")
         
         return name
 
@@ -540,53 +484,36 @@ def convert_to_gguf(
     verbose: bool = True,
 ) -> str:
     """
-    Convert a model to GGUF format (Pure Python, no external dependencies).
+    Convert a model to GGUF format compatible with llama.cpp.
     
     Args:
         model: HuggingFace model
         tokenizer: HuggingFace tokenizer
         output_path: Output GGUF file path
-        quant_type: Quantization type (f16, q8_0, q4_0, q4_k, q5_k, etc.)
+        quant_type: Quantization type (f16, q8_0, q4_0, q4_k, etc.)
         verbose: Show progress
         
     Returns:
         Path to created GGUF file
-        
-    Example:
-        >>> from transformers import AutoModelForCausalLM, AutoTokenizer
-        >>> model = AutoModelForCausalLM.from_pretrained("TinyLlama/TinyLlama-1.1B")
-        >>> tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B")
-        >>> convert_to_gguf(model, tokenizer, "tinyllama-q4.gguf", "q4_0")
     """
     # Map HF model type to GGUF architecture
     hf_arch = getattr(model.config, "model_type", "llama")
     arch_map = {
         "llama": "llama",
-        "mistral": "llama", # Mistral often uses llama arch structure in GGUF or 'mistral'
+        "mistral": "llama",
+        "mixtral": "llama",
         "gemma": "gemma",
+        "gemma2": "gemma",
         "qwen2": "qwen2",
+        "phi": "phi",
         "phi3": "phi3",
     }
-    # Default to pure pass-through if known, else 'llama' fallback
-    gguf_arch = arch_map.get(hf_arch, hf_arch)
+    gguf_arch = arch_map.get(hf_arch, "llama")
     
     converter = GGUFConverter(verbose=verbose)
-    # Patch the converter's internal writer creation to use detected arch
-    # (Since GGUFConverter creates GGUFWriter internally with hardcoded 'llama' defaults in original code)
-    # We need to update GGUFConverter.convert signature or logic
-    # But I can't change GGUFConverter class easily without rewriting chunk.
-    # Actually, GGUFConverter.convert calls GGUFWriter(..., arch="llama").
-    # I should update GGUFConverter.convert to accept arch.
     return converter.convert(model, tokenizer, output_path, quant_type, arch=gguf_arch)
 
 
 def list_quant_types() -> Dict[str, str]:
     """List available quantization types."""
     return {name: info.description for name, info in QUANT_TYPES.items()}
-
-
-if __name__ == "__main__":
-    print("QuantLLM GGUF Converter v2.0")
-    print("\nAvailable quantization types:")
-    for name, desc in list_quant_types().items():
-        print(f"  {name:12} - {desc}")

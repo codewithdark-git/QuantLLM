@@ -224,7 +224,7 @@ class TurboModel:
             model_kwargs["device_map"] = {"": smart_config.device}
         
         # Load the model with progress spinner
-        with QuantLLMProgress(disable_bar=True) as p:
+        with QuantLLMProgress() as p:
             if verbose:
                 task = p.add_task("Downloading & Loading model...", total=None)
             
@@ -302,7 +302,7 @@ class TurboModel:
         smart_config = SmartConfig.detect(model_id, device=device)
         smart_config.quant_type = "GGUF"
         
-        with QuantLLMProgress(disable_bar=True) as p:
+        with QuantLLMProgress() as p:
             if verbose:
                  p.add_task("Loading GGUF model...", total=None)
                  
