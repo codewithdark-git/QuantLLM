@@ -139,7 +139,6 @@ class QuantLLMHubManager:
                 self.api.create_repo(
                     repo_id=self.repo_id,
                     token=self.token,
-                    organization=self.organization,
                     exist_ok=True
                 )
 
