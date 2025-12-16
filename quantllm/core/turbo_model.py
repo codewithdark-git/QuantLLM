@@ -136,11 +136,13 @@ class TurboModel:
             dtype=dtype,
         )
         
+        from dataclasses import asdict
+        
         # Apply user overrides
         if config_override:
             # Handle SmartConfig objects
             if isinstance(config_override, SmartConfig):
-                override_dict = config_override.to_dict()
+                override_dict = asdict(config_override)
             else:
                 override_dict = config_override
                 
@@ -604,6 +606,7 @@ class TurboModel:
                 lr_scheduler_type="cosine",
                 gradient_checkpointing=self.config.gradient_checkpointing,
                 optim="paged_adamw_32bit" if self.config.bits <= 4 else "adamw_torch",
+                torch_compile=self.config.compile_model,
                 **kwargs,
             )
             

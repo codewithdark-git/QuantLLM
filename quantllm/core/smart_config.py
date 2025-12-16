@@ -48,6 +48,9 @@ class SmartConfig:
     # Model settings
     max_seq_length: int = 4096
     
+    # Statistics
+    stats: Dict[str, Any] = field(default_factory=dict)
+    
     @classmethod
     def detect(
         cls,
@@ -144,6 +147,13 @@ class SmartConfig:
             config.max_seq_length = max_seq_length
         else:
             config.max_seq_length = min(model_info.max_position_embeddings, 8192)
+            
+        # Store stats for display
+        config.stats = {
+            "params": model_info.num_params,
+            "fp16_size": model_info.size_gb / 2.0, # Approximate FP16 size
+            "quant_size": model_info.estimated_size_at_bits(config.bits)
+        }
         
         return config
     
@@ -285,6 +295,17 @@ class SmartConfig:
         # Hardware
         hw_info = f"{str(self.device).upper()} ({str(self.dtype).split('.')[-1]})  Seq: {self.max_seq_length}"
         table.add_row("🖥️  Hardware", hw_info)
+        
+        # Stats
+        params = self.stats.get("params", 0) / 1e9
+        fp16_size = self.stats.get("fp16_size", 0)
+        quant_size = self.stats.get("quant_size", 0)
+        savings = (1 - quant_size / fp16_size) * 100 if fp16_size > 0 else 0
+        
+        table.add_row(
+            "📊 Model Stats",
+            f"Params: {params:.2f}B  Size: {fp16_size:.2f}GB ➔ {quant_size:.2f}GB  (Saved: {savings:.0f}%)"
+        )
         
         console.print(Panel(
             table,
