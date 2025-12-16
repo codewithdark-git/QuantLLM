@@ -2,6 +2,6 @@
 QuantLLM Hub Module - HuggingFace Hub Integration
 """
 
-from .hub_manager import HubManager
+from .hub_manager import QuantLLMHubManager
 
-__all__ = ["HubManager"]
+__all__ = ["QuantLLMHubManager"]

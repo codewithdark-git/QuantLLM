@@ -176,6 +176,32 @@ class TurboModel:
             "torch_dtype": smart_config.dtype,
         }
         
+        # Check if model is already quantized to prevent conflicts
+        try:
+            from transformers import AutoConfig
+            hf_config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+            
+            existing_quant = getattr(hf_config, "quantization_config", None)
+            if existing_quant:
+                allow_requantize = False
+                
+                # Allow 8-bit -> 4-bit re-quantization (if B&B)
+                is_bnb = "BitsAndBytesConfig" in existing_quant.__class__.__name__
+                is_8bit = getattr(existing_quant, "load_in_8bit", False)
+                
+                if is_bnb and is_8bit and smart_config.bits == 4:
+                    allow_requantize = True
+                    if verbose:
+                         logger.info("  ℹ️ Re-quantizing 8-bit model to 4-bit")
+                
+                if not allow_requantize:
+                    if verbose:
+                        logger.warning(f"⚠️ Model is already quantized ({existing_quant.__class__.__name__}). Disabling dynamic quantization.")
+                    quantize = False
+                
+        except Exception:
+            pass # Ignore config loading errors, proceed with defaults
+
         # Apply quantization if requested
         if quantize and smart_config.bits < 16:
             model_kwargs.update(cls._get_quantization_kwargs(smart_config))
@@ -230,6 +256,56 @@ class TurboModel:
         
         return instance
     
+    @classmethod
+    def from_gguf(
+        cls,
+        model_id: str,
+        filename: Optional[str] = None,
+        *,
+        device: Optional[str] = None,
+        verbose: bool = True,
+        **kwargs
+    ) -> "TurboModel":
+        """
+        Load a GGUF model directly (wrapper for transformers GGUF support).
+        
+        Args:
+            model_id: HuggingFace repo ID or local directory
+            filename: GGUF filename (e.g. "model.Q4_K_M.gguf"). If None, tries to auto-find.
+            device: Override device
+            verbose: Print progress
+            **kwargs: args for AutoModelForCausalLM.from_pretrained
+        """
+        if verbose:
+            print_header(f"Loading GGUF: {model_id}")
+            
+        smart_config = SmartConfig.detect(model_id, device=device)
+        smart_config.quant_type = "GGUF"
+        
+        with QuantLLMProgress() as p:
+            if verbose:
+                 p.add_task("Loading GGUF model...", total=None)
+                 
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                gguf_file=filename,
+                torch_dtype=smart_config.dtype,
+                trust_remote_code=True,
+                **kwargs
+            )
+            
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=filename)
+            except:
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                
+        if verbose:
+             print_success("GGUF Model loaded!")
+             
+        instance = cls(model, tokenizer, smart_config)
+        instance._is_quantized = True
+        return instance
+
     @staticmethod
     def _get_quantization_kwargs(config: SmartConfig) -> Dict[str, Any]:
         """Get kwargs for quantized model loading."""
@@ -505,6 +581,7 @@ class TurboModel:
         lora_r: Optional[int] = None,
         lora_alpha: Optional[int] = None,
         output_dir: Optional[str] = None,
+        hub_manager: Optional[Any] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -518,20 +595,14 @@ class TurboModel:
             lora_r: LoRA rank (default: auto)
             lora_alpha: LoRA alpha (default: 2x lora_r)
             output_dir: Where to save (default: ./output/{model_name})
+            hub_manager: QuantLLMHubManager instance for auto-tracking
             **kwargs: Additional training arguments
             
         Returns:
             Training results dictionary
-            
-        Example:
-            >>> # Simple fine-tuning
-            >>> model.finetune("my_data.json", epochs=3)
-            >>> 
-            >>> # With custom settings
-            >>> model.finetune(my_dataset, lora_r=32, learning_rate=1e-4)
         """
         print_header("Starting Fine-tuning")
-    
+
         # 1. Memory & Environment Optimizations
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         if "WANDB_DISABLED" not in os.environ:
@@ -590,6 +661,18 @@ class TurboModel:
         learning_rate = learning_rate or 2e-4
         output_dir = output_dir or f"./output/{self.model.config._name_or_path.split('/')[-1]}"
         
+        # Auto-track parameters if hub_manager provided
+        if hub_manager:
+            hub_manager.track_hyperparameters({
+                "epochs": epochs,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "lora_r": r,
+                "lora_alpha": alpha,
+                "base_model": getattr(self.config, "model_name", "unknown"),
+                "output_dir": output_dir
+            })
+        
         # Training loop
         try:
             training_args = TrainingArguments(
@@ -627,10 +710,14 @@ class TurboModel:
                 "train_loss": result.training_loss,
                 "epochs": epochs,
                 "output_dir": output_dir,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "lora_r": r
             }
             
         except Exception as e:
             print_error(f"Training failed: {e}")
+            raise
             # Hint about OOM
             if "out of memory" in str(e).lower():
                 print_info("Tip: Try reducing batch_size or enabling gradient_checkpointing in config.")
@@ -752,7 +839,6 @@ class TurboModel:
             "safetensors": self._export_safetensors,
             "onnx": self._export_onnx,
         }
-        
         if format not in exporters:
             raise ValueError(f"Unknown format: {format}. Supported: {list(exporters.keys())}")
         
@@ -761,6 +847,53 @@ class TurboModel:
         print_success(f"Exported to: {result}")
         
         return result
+
+    def push_to_hub(
+        self,
+        repo_id: str,
+        token: Optional[str] = None,
+        format: str = "safetensors",
+        commit_message: str = "Upload model via QuantLLM",
+        **kwargs
+    ):
+        """
+        Push model to HuggingFace Hub.
+        
+        Args:
+            repo_id: Repository ID (e.g. "username/model")
+            token: HF Token
+            format: "safetensors" or "gguf"
+            commit_message: Commit message
+            **kwargs: Arguments for export (quantization, etc.)
+        """
+        from ..hub import QuantLLMHubManager
+        
+        print_header(f"Pushing to {repo_id}")
+        manager = QuantLLMHubManager(repo_id=repo_id, hf_token=token)
+        
+        if format.lower() == "gguf":
+            # Export GGUF directly to staging
+            # Handle output name
+            model_name = self.model.config._name_or_path.split('/')[-1]
+            filename = f"{model_name}.gguf"
+            save_path = os.path.join(manager.staging_dir, filename)
+            
+            # Export using existing logic
+            self.export(format="gguf", output_path=save_path, **kwargs)
+            
+            # Generate basic card
+            manager.track_hyperparameters({
+                "format": "gguf",
+                "base_model": model_name
+            })
+            manager._generate_model_card()
+        else:
+            manager.save_final_model(self, format=format)
+            
+        manager.push(commit_message=commit_message)
+        
+    # Alias for convenience
+    push = push_to_hub
     
     def _export_gguf(
         self, 

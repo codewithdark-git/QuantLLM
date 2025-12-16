@@ -272,7 +272,7 @@ class SmartConfig:
         # Quantization
         table.add_row(
             "📦 Quantization", 
-            f"[bold]Bits:[/ {self.bits}  [bold]Type:[/ {self.quant_type}  [bold]Group:[/ {self.group_size}"
+            f"[bold]Bits:[/bold] {self.bits}  [bold]Type:[/bold] {self.quant_type}  [bold]Group:[/bold] {self.group_size}"
         )
         
         # Memory

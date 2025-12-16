@@ -172,6 +172,17 @@ response = model.chat(messages)
 print(response)
 ```
 
+### Load GGUF Models
+```python
+# Load a GGUF model directly from HuggingFace
+model = turbo.from_gguf(
+    "TheBloke/Llama-2-7B-Chat-GGUF", 
+    filename="llama-2-7b-chat.Q4_K_M.gguf"
+)
+
+print(model.generate("Hello!"))
+```
+
 ### Fine-Tune with Your Data
 
 ```python
@@ -181,6 +192,13 @@ model = turbo("mistralai/Mistral-7B")
 
 # Simple - everything auto-configured
 model.finetune("training_data.json", epochs=3)
+
+# With Auto-Tracking to Hub
+from quantllm import QuantLLMHubManager
+manager = QuantLLMHubManager("user/repo", "hf_token")
+
+# Automatically tracks params (epochs, lr, etc) to manager
+model.finetune("training_data.json", hub_manager=manager)
 
 # Advanced - full control
 model.finetune(
@@ -228,29 +246,34 @@ model.export("mlx", "./phi3-mlx/", quantization="4bit")
 
 ### Push to HuggingFace Hub
 
+#### Method 1: The One-Liner (Recommended)
 ```python
 from quantllm import turbo
-from quantllm.hub import QuantLLMHubManager
 
-# Load and fine-tune
+model = turbo("meta-llama/Llama-3-8B")
+
+# Standard Push
+model.push("username/my-model", token="hf_...")
+
+# GGUF Push (Auto-Export + Upload)
+model.push("username/my-gguf-model", format="gguf", quantization="Q4_K_M")
+```
+
+#### Method 2: Advanced Control
+```python
+from quantllm import turbo, QuantLLMHubManager
+
 model = turbo("microsoft/phi-2")
-model.finetune("my_data.json", epochs=3)
+manager = QuantLLMHubManager("username/my-repo", "hf_token")
 
-# Setup Hub manager
-manager = QuantLLMHubManager(
-    repo_id="username/my-fine-tuned-model",
-    hf_token="your_token",
-)
+# Auto-train & track params
+model.finetune("my_data.json", hub_manager=manager)
 
-# Track training
-manager.track_hyperparameters({
-    "learning_rate": 0.001,
-    "epochs": 3,
-    "base_model": "microsoft/phi-2",
-})
+# Manual tracking
+manager.track_hyperparameters({"custom_metric": 0.95})
 
-# Save and push
-manager.save_final_model(model.model, format="safetensors")
+# Save & Push
+manager.save_final_model(model.model)
 manager.push()
 ```
 

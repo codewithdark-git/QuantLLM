@@ -31,7 +31,7 @@ from .quant import (
 )
 
 # ====== Hub Integration ======
-from .hub import HubManager
+from .hub import QuantLLMHubManager
 
 # ====== Utilities ======
 from .utils import (
@@ -65,7 +65,7 @@ __all__ = [
     "FastQuantizer",
     
     # Hub
-    "HubManager",
+    "QuantLLMHubManager",
     
     # Utils
     "configure_logging",

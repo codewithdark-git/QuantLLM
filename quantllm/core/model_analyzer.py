@@ -111,17 +111,25 @@ class ModelAnalyzer:
             # Fallback to estimation from model name
             return cls._estimate_from_name(model_name)
     
+    @staticmethod
+    def _get_config_attr(config: Any, keys: list, default: Any) -> Any:
+        """Get attribute from config using multiple possible keys."""
+        for key in keys:
+            if hasattr(config, key):
+                return getattr(config, key)
+        return default
+
     @classmethod
     def _extract_info_from_config(cls, model_name: str, config: Any) -> ModelInfo:
         """Extract model info from HuggingFace config."""
-        # Get common attributes with defaults
-        hidden_size = getattr(config, 'hidden_size', 4096)
-        num_layers = getattr(config, 'num_hidden_layers', 32)
-        num_attention_heads = getattr(config, 'num_attention_heads', 32)
-        num_kv_heads = getattr(config, 'num_key_value_heads', num_attention_heads)
-        intermediate_size = getattr(config, 'intermediate_size', hidden_size * 4)
+        # Get common attributes with defaults (support alternate keys for GPT/Falcon etc)
+        hidden_size = cls._get_config_attr(config, ['hidden_size', 'n_embd', 'd_model'], 4096)
+        num_layers = cls._get_config_attr(config, ['num_hidden_layers', 'n_layer', 'n_layers'], 32)
+        num_attention_heads = cls._get_config_attr(config, ['num_attention_heads', 'n_head', 'n_heads'], 32)
+        num_kv_heads = cls._get_config_attr(config, ['num_key_value_heads', 'n_head_kv', 'num_kv_heads'], num_attention_heads)
+        intermediate_size = cls._get_config_attr(config, ['intermediate_size', 'n_inner'], hidden_size * 4)
         vocab_size = getattr(config, 'vocab_size', 32000)
-        max_position_embeddings = getattr(config, 'max_position_embeddings', 4096)
+        max_position_embeddings = cls._get_config_attr(config, ['max_position_embeddings', 'n_positions', 'seq_length'], 4096)
         model_type = getattr(config, 'model_type', 'unknown')
         
         # Calculate total parameters
