@@ -138,7 +138,13 @@ class TurboModel:
         
         # Apply user overrides
         if config_override:
-            for key, value in config_override.items():
+            # Handle SmartConfig objects
+            if isinstance(config_override, SmartConfig):
+                override_dict = config_override.to_dict()
+            else:
+                override_dict = config_override
+                
+            for key, value in override_dict.items():
                 if hasattr(smart_config, key):
                     setattr(smart_config, key, value)
         
@@ -523,17 +529,32 @@ class TurboModel:
             >>> model.finetune(my_dataset, lora_r=32, learning_rate=1e-4)
         """
         print_header("Starting Fine-tuning")
+    
+        # 1. Memory & Environment Optimizations
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        if "WANDB_DISABLED" not in os.environ:
+            os.environ["WANDB_DISABLED"] = "true"
+            
+        # Suppress noise
+        import warnings
+        warnings.filterwarnings("ignore", module="peft")
+        warnings.filterwarnings("ignore", category=FutureWarning)
         
         try:
             from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+            from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
         except ImportError:
             raise ImportError("peft is required for fine-tuning. Install with: pip install peft")
         
-        # Prepare model for training
+        # 2. Prepare model for training
         if self._is_quantized:
             self.model = prepare_model_for_kbit_training(self.model)
+            
+        # Enable gradient checkpointing if configured
+        if self.config.gradient_checkpointing:
+            self.model.gradient_checkpointing_enable()
         
-        # Auto-configure LoRA
+        # 3. Auto-configure LoRA
         r = lora_r or (16 if self.model.num_parameters() < 10e9 else 64)
         alpha = lora_alpha or (r * 2)
         
@@ -549,17 +570,19 @@ class TurboModel:
             task_type="CAUSAL_LM",
         )
         
-        self.model = get_peft_model(self.model, lora_config)
-        self._lora_applied = True
+        # Apply LoRA if not already applied
+        if not self._lora_applied:
+            self.model = get_peft_model(self.model, lora_config)
+            self._lora_applied = True
         
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.model.parameters())
         print_info(f"LoRA applied: {trainable:,} trainable params ({100*trainable/total:.2f}%)")
         
-        # Load and prepare data
+        # 4. Load and prepare data
         train_dataset = self._prepare_dataset(data)
         
-        # Auto-configure training
+        # 5. Auto-configure training settings
         epochs = epochs or 3
         batch_size = batch_size or self.config.batch_size
         learning_rate = learning_rate or 2e-4
@@ -567,8 +590,6 @@ class TurboModel:
         
         # Training loop
         try:
-            from transformers import TrainingArguments, Trainer
-            
             training_args = TrainingArguments(
                 output_dir=output_dir,
                 num_train_epochs=epochs,
@@ -582,6 +603,7 @@ class TurboModel:
                 warmup_ratio=0.03,
                 lr_scheduler_type="cosine",
                 gradient_checkpointing=self.config.gradient_checkpointing,
+                optim="paged_adamw_32bit" if self.config.bits <= 4 else "adamw_torch",
                 **kwargs,
             )
             
@@ -589,7 +611,8 @@ class TurboModel:
                 model=self.model,
                 args=training_args,
                 train_dataset=train_dataset,
-                tokenizer=self.tokenizer,
+                tokenizer=self.tokenizer, # Use new argument name
+                data_collator=DataCollatorForLanguageModeling(self.tokenizer, mlm=False),
             )
             
             result = trainer.train()
@@ -605,6 +628,9 @@ class TurboModel:
             
         except Exception as e:
             print_error(f"Training failed: {e}")
+            # Hint about OOM
+            if "out of memory" in str(e).lower():
+                print_info("Tip: Try reducing batch_size or enabling gradient_checkpointing in config.")
             raise
     
     def _get_lora_target_modules(self) -> List[str]:
@@ -656,13 +682,15 @@ class TurboModel:
                 texts,
                 truncation=True,
                 max_length=self.config.max_seq_length,
-                padding="max_length",
+                padding=False, # Use DataCollator for dynamic padding
             )
         
         tokenized = dataset.map(
             tokenize_function,
             batched=True,
             remove_columns=dataset.column_names,
+            load_from_cache_file=False, # Avoid hash warnings
+            desc="Tokenizing dataset",
         )
         
         return tokenized

@@ -256,7 +256,7 @@ class SmartConfig:
         
         # Main table
         table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-        table.add_column("Category", style="bold cyan")
+        table.add_column("Category", style="bold orange1")
         table.add_column("Details", style="white")
         
         # Quantization
@@ -289,6 +289,6 @@ class SmartConfig:
         console.print(Panel(
             table,
             title="[bold white]QuantLLM Configuration[/]",
-            border_style="blue",
+            border_style="orange1",
             expand=False
         ))

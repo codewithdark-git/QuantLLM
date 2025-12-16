@@ -21,7 +21,7 @@ from rich.theme import Theme
 
 # Custom theme
 custom_theme = Theme({
-    "info": "cyan",
+    "info": "orange1",
     "warning": "yellow",
     "error": "red",
     "success": "green",
@@ -65,7 +65,7 @@ class QuantLLMProgress:
     def __init__(self, transient: bool = True):
         self.progress = Progress(
             SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
+            TextColumn("[bold orange1]{task.description}"),
             BarColumn(bar_width=40),
             TaskProgressColumn(),
             "•",
@@ -90,7 +90,7 @@ def track_progress(
     """Simple wrapper around rich.progress.track."""
     columns = [
         SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
+        TextColumn("[bold orange1]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
         "•",
@@ -112,9 +112,9 @@ def print_header(title: str, icon: str = "🚀") -> None:
     """Print a styled header."""
     width = 60
     console.print()
-    console.print(f"[bold blue]{'=' * width}[/]")
+    console.print(f"[bold orange1]{'=' * width}[/]")
     console.print(f"{icon} [bold white]{title.center(width - 4)}[/]")
-    console.print(f"[bold blue]{'=' * width}[/]")
+    console.print(f"[bold orange1]{'=' * width}[/]")
     console.print()
 
 def print_success(msg: str) -> None:
@@ -131,4 +131,4 @@ def print_error(msg: str) -> None:
 
 def print_info(msg: str) -> None:
     """Print info message."""
-    console.print(f"[bold cyan]ℹ️  Info:[/][white] {msg}[/]")
+    console.print(f"[bold orange1]ℹ️  Info:[/][white] {msg}[/]")
