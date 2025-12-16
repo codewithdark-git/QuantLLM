@@ -882,6 +882,7 @@ class TurboModel:
         repo_id: str,
         token: Optional[str] = None,
         format: str = "safetensors",
+        quantization: Optional[str] = None,
         commit_message: str = "Upload model via QuantLLM",
         **kwargs
     ):
@@ -892,8 +893,8 @@ class TurboModel:
             repo_id: Repository ID (e.g. "username/model")
             token: HF Token
             format: "safetensors" or "gguf"
-            commit_message: Commit message
             quantization: Quantization type
+            commit_message: Commit message
             **kwargs: Arguments for export (quantization, etc.)
         """
         from ..hub import QuantLLMHubManager
