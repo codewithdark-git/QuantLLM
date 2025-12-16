@@ -224,8 +224,7 @@ class TurboModel:
             model_kwargs["device_map"] = {"": smart_config.device}
         
         # Load the model with progress spinner
-        # Load the model with progress spinner
-        with QuantLLMProgress() as p:
+        with QuantLLMProgress(disable_bar=True) as p:
             if verbose:
                 task = p.add_task("Downloading & Loading model...", total=None)
             
@@ -303,7 +302,7 @@ class TurboModel:
         smart_config = SmartConfig.detect(model_id, device=device)
         smart_config.quant_type = "GGUF"
         
-        with QuantLLMProgress() as p:
+        with QuantLLMProgress(disable_bar=True) as p:
             if verbose:
                  p.add_task("Loading GGUF model...", total=None)
                  
@@ -906,11 +905,13 @@ class TurboModel:
             # Export GGUF directly to staging
             # Handle output name
             model_name = self.model.config._name_or_path.split('/')[-1]
-            filename = f"{model_name}.{quantization}.gguf"
+            # Resolve quantization label for filename
+            quant_label = quantization or (self.config.quant_type if self.config.quant_type != "GGUF" else "q4_0") or "q4_0"
+            filename = f"{model_name}.{quant_label}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             
             # Export using existing logic
-            self.export(format="gguf", output_path=save_path, quantization=quantization, **kwargs)
+            self.export(format="gguf", output_path=save_path, quantization=quant_label, **kwargs)
             
             # Generate basic card
             manager.track_hyperparameters({

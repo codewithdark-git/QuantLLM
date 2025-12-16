@@ -62,14 +62,22 @@ class QuantLLMProgress:
             p.update(task, advance=1)
     """
     
-    def __init__(self, transient: bool = True):
-        self.progress = Progress(
+    def __init__(self, transient: bool = True, disable_bar: bool = False):
+        columns = [
             SpinnerColumn(),
             TextColumn("[bold orange1]{task.description}"),
-            BarColumn(bar_width=40),
-            TaskProgressColumn(),
-            "•",
-            TimeRemainingColumn(),
+        ]
+        
+        if not disable_bar:
+            columns.extend([
+                BarColumn(bar_width=40),
+                TaskProgressColumn(),
+                "•",
+                TimeRemainingColumn(),
+            ])
+            
+        self.progress = Progress(
+            *columns,
             console=console,
             transient=transient,
         )

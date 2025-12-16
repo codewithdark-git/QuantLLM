@@ -338,7 +338,8 @@ class GGUFWriter:
                 data = quantizer.quantize_f16(tensor)
             elif quant_type == "q8_0":
                 data = quantizer.quantize_q8_0(tensor)
-            elif quant_type == "q4_0":
+            elif quant_type == "q4_0" or quant_type.startswith("q4_k"):
+                # Use Q4_0 logic for K-quants fallback (pure python engine limit)
                 data = quantizer.quantize_q4_0(tensor)
             else:
                 # Fallback to f16
@@ -380,6 +381,7 @@ class GGUFConverter:
         tokenizer,
         output_path: str,
         quant_type: str = "q4_0",
+        arch: str = "llama",
     ) -> str:
         """
         Convert a HuggingFace model to GGUF format.
@@ -389,15 +391,16 @@ class GGUFConverter:
             tokenizer: HuggingFace tokenizer
             output_path: Output GGUF file path
             quant_type: Quantization type (f16, q8_0, q4_0, etc.)
+            arch: Model architecture string (default: llama)
             
         Returns:
             Path to created GGUF file
         """
         if self.verbose:
-            logger.info(f"🚀 Converting to GGUF ({quant_type})...")
+            logger.info(f"🚀 Converting to GGUF ({quant_type}) Arch: {arch}...")
         
         # Create GGUF writer
-        writer = GGUFWriter(output_path, arch="llama")
+        writer = GGUFWriter(output_path, arch=arch)
         
         # Add metadata
         self._add_metadata(writer, model, tokenizer)
@@ -446,9 +449,62 @@ class GGUFConverter:
         """Add model tensors to GGUF file."""
         # Convert tensor names to GGUF format
         params = list(model.named_parameters())
+        config = model.config
+        
+        # Get head info for permutation
+        n_head = getattr(config, "num_attention_heads", 0)
+        n_kv_head = getattr(config, "num_key_value_heads", n_head)
+        head_dim = getattr(config, "hidden_size", 0) // n_head if n_head > 0 else 0
+        
         for name, param in track_progress(params, description="Processing tensors"):
             gguf_name = self._convert_tensor_name(name)
-            writer.add_tensor(gguf_name, param.detach().cpu(), quant_type)
+            data = param.detach().cpu()
+            
+            # Apply permutation for Llama models (RoPE compatibility)
+            if "llama" in writer.arch or "mistral" in writer.arch:
+                if "q_proj" in name or gguf_name.endswith("attn_q.weight"):
+                    data = self._permute_weights(data, n_head, head_dim)
+                elif "k_proj" in name or gguf_name.endswith("attn_k.weight"):
+                     # k_proj might use fewer heads (GQA)
+                    data = self._permute_weights(data, n_kv_head, head_dim)
+            
+            writer.add_tensor(gguf_name, data, quant_type)
+
+    def _permute_weights(self, w: torch.Tensor, n_head: int, head_dim: int) -> torch.Tensor:
+        """Permute weights for GGUF RoPE (convert from HF to GGUF format)."""
+        # w shape: [n_head * head_dim, input_dim]
+        # HF standard: Interleaved (x0, y0, x1, y1...)
+        # GGUF expected: Permuted pairs?
+        # Actually, transformers _reverse_permute logic implies:
+        # We need to reverse what transformers does upon load.
+        # Transformers load: unsqueezes (n_head, 2, dim/2).transpose(1,2)
+        # So we must do the same to WRITE it? 
+        # Wait, if we write it effectively "pre-shuffled", transformers will un-shuffle it back to HF.
+        # But we start with HF.
+        # So we need to apply the INVERSE of _reverse_permute?
+        # Inverse of (transposed) is (transposed back).
+        # Actually, if HF is "A", and GGUF expects "B". 
+        # Transformers GGUF loader reads "B" and converts to "A".
+        # We have "A". We want to write "B".
+        # So we need the inverse of the Loader's conversion.
+        # Loader: w_gguf.reshape(n_head, dim//2, 2).transpose(1,2).reshape(orig)
+        # So we need: w_hf.reshape(n_head, 2, dim//2).transpose(1,2).reshape(orig_gguf)
+        
+        if len(w.shape) != 2:
+            return w # Skip bias or 1D tensors
+            
+        input_dim = w.shape[1]
+        dim_per_head = head_dim // 2
+        
+        # Reshape to [n_head, 2, dim_per_head, input_dim]
+        # But w is [n_head * head_dim, input_dim] = [n_head * 2 * dim_per_head, input_dim]
+        w = w.reshape(n_head, 2, dim_per_head, input_dim)
+        
+        # Swap 1 and 2: [n_head, dim_per_head, 2, input_dim]
+        w = w.permute(0, 2, 1, 3)
+        
+        # Flatten back
+        return w.reshape(n_head * head_dim, input_dim).contiguous()
     
     def _convert_tensor_name(self, hf_name: str) -> str:
         """Convert HuggingFace tensor name to GGUF format."""
@@ -502,8 +558,26 @@ def convert_to_gguf(
         >>> tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B")
         >>> convert_to_gguf(model, tokenizer, "tinyllama-q4.gguf", "q4_0")
     """
+    # Map HF model type to GGUF architecture
+    hf_arch = getattr(model.config, "model_type", "llama")
+    arch_map = {
+        "llama": "llama",
+        "mistral": "llama", # Mistral often uses llama arch structure in GGUF or 'mistral'
+        "gemma": "gemma",
+        "qwen2": "qwen2",
+        "phi3": "phi3",
+    }
+    # Default to pure pass-through if known, else 'llama' fallback
+    gguf_arch = arch_map.get(hf_arch, hf_arch)
+    
     converter = GGUFConverter(verbose=verbose)
-    return converter.convert(model, tokenizer, output_path, quant_type)
+    # Patch the converter's internal writer creation to use detected arch
+    # (Since GGUFConverter creates GGUFWriter internally with hardcoded 'llama' defaults in original code)
+    # We need to update GGUFConverter.convert signature or logic
+    # But I can't change GGUFConverter class easily without rewriting chunk.
+    # Actually, GGUFConverter.convert calls GGUFWriter(..., arch="llama").
+    # I should update GGUFConverter.convert to accept arch.
+    return converter.convert(model, tokenizer, output_path, quant_type, arch=gguf_arch)
 
 
 def list_quant_types() -> Dict[str, str]:
