@@ -5,6 +5,8 @@ Load, quantize, fine-tune, and export LLMs with one line each.
 """
 
 import os
+import shutil
+import tempfile
 from typing import Optional, Dict, Any, Union, List
 import torch
 import torch.nn as nn
@@ -934,38 +936,46 @@ class TurboModel:
         **kwargs
     ) -> str:
         """
-        Export to GGUF format using pure Python converter.
+        Export to GGUF format using optimized llama.cpp converter.
         
-        No external llama.cpp dependency required!
+        Automatically installs and configures llama.cpp tools.
         """
-        from ..quant import convert_to_gguf, QUANT_TYPES, QUANT_ALIASES
+        from ..quant import convert_to_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
         
-        quant_type = quantization or self.config.quant_type or "q4_0"
-        
-        # Normalize quant type
+        quant_type = quantization or self.config.quant_type or "q4_k_m"
         quant_type = quant_type.lower()
         
-        # Handle aliases
-        if quant_type in QUANT_ALIASES:
-            quant_type = QUANT_ALIASES[quant_type]
+        # Ensure llama.cpp
+        ensure_llama_cpp_installed()
         
-        # Validate quant type
-        if quant_type not in QUANT_TYPES:
-            available = list(QUANT_TYPES.keys())
-            raise ValueError(
-                f"❌ Unknown quantization type: {quant_type}\n"
-                f"   Available: {available}\n"
-                f"   Recommended: q4_0, q8_0, f16"
+        # Create temp dir for conversion source
+        with tempfile.TemporaryDirectory() as temp_dir:
+            if self.verbose:
+                print_info(f"Staging model to {temp_dir} for conversion...")
+                
+            # Save transformers model to temp dir
+            self.model.save_pretrained(temp_dir)
+            self.tokenizer.save_pretrained(temp_dir)
+            
+            # Convert
+            output_files, _ = convert_to_gguf(
+                model_name=self.model.config._name_or_path.split('/')[-1],
+                input_folder=temp_dir,
+                model_dtype=self.config.dtype if isinstance(self.config.dtype, str) else "f16",
+                quantization_type=quant_type,
+                print_output=self.verbose
             )
-        
-        # Use the new pure Python converter (no llama.cpp needed!)
-        return convert_to_gguf(
-            self.model,
-            self.tokenizer,
-            output_path,
-            quant_type=quant_type,
-            verbose=self.verbose,
-        )
+            
+            # Move result to output_path
+            if output_files:
+                src = output_files[0]
+                if self.verbose:
+                   print_success(f"Moving {src} to {output_path}")
+                shutil.move(src, output_path)
+            else:
+                raise RuntimeError("GGUF Conversion failed to produce output file.")
+                
+        return output_path
     
     def _export_safetensors(
         self,
@@ -1006,6 +1016,55 @@ class TurboModel:
             f"  finetuned={self._is_finetuned}\n"
             f")"
         )
+
+
+    def optimize_inference(self, backend: str = "triton", bits: int = 4):
+        """
+        Optimize model for inference using high-performance kernels.
+        
+        Args:
+            backend: Optimization backend ("triton")
+            bits: Quantization bits (4 or 8)
+        """
+        if backend == "triton":
+            from ..kernels.triton import TritonQuantizedLinear, is_triton_available
+            if not is_triton_available():
+                print_warning("Triton is not available or no GPU detected. Skipping optimization.")
+                return
+            
+            if self.verbose:
+                print_header("Optimizing with Triton Kernels ⚡")
+                
+            count = self._replace_with_triton(self.model, bits)
+            
+            if self.verbose:
+                print_success(f"Optimized {count} layers with Triton fused kernels!")
+                
+    def _replace_with_triton(self, module: nn.Module, bits: int) -> int:
+        """Recursively replace Linear layers with TritonQuantizedLinear."""
+        from ..kernels.triton import TritonQuantizedLinear
+        count = 0
+        for name, child in module.named_children():
+            if isinstance(child, nn.Linear):
+                # Replace with Triton Linear
+                if self.verbose:
+                    print_info(f"Quantizing {name}...")
+                
+                quantized = TritonQuantizedLinear(
+                    child.in_features, 
+                    child.out_features, 
+                    bits=bits, 
+                    bias=child.bias is not None,
+                    group_size=128
+                )
+                quantized.to(child.weight.device)
+                quantized.quantize_from(child)
+                
+                setattr(module, name, quantized)
+                count += 1
+            else:
+                count += self._replace_with_triton(child, bits)
+        return count
 
 
 def turbo(

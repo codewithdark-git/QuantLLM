@@ -112,7 +112,7 @@ Llama 2/3, Mistral, Mixtral, Qwen/Qwen2, Phi-1/2/3, Gemma, Falcon, GPT-NeoX, Sta
 <td>
 
 ### 📦 6 Export Formats
-- **GGUF** - Pure Python export (No binaries!)
+- **GGUF** - Optimized export via llama.cpp integration
 - **ONNX** - ONNX Runtime, TensorRT
 - **SafeTensors** - HuggingFace
 - **MLX** - Apple Silicon
