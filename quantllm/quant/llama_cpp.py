@@ -32,8 +32,11 @@ IS_COLAB_ENVIRONMENT, IS_KAGGLE_ENVIRONMENT = detect_environment()
 
 
 def get_llama_cpp_dir() -> str:
-    """Get the llama.cpp directory path."""
-    return os.path.join(os.getcwd(), "llama.cpp")
+    """Get the llama.cpp directory path (stored in user cache)."""
+    # Use user cache directory to avoid polluting CWD and nesting issues
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "quantllm")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, "llama.cpp")
 
 
 def check_llama_cpp() -> Tuple[Optional[str], Optional[str]]:
@@ -56,6 +59,9 @@ def check_llama_cpp() -> Tuple[Optional[str], Optional[str]]:
         os.path.join(llama_dir, "quantize.exe"),
         os.path.join(llama_dir, "build", "bin", "llama-quantize"),
         os.path.join(llama_dir, "build", "bin", "quantize"),
+        # Common linux install locations if system-wide
+        "/usr/local/bin/llama-quantize",
+        "/usr/bin/llama-quantize",
     ]
     
     quantizer_path = None
@@ -79,12 +85,12 @@ def check_llama_cpp() -> Tuple[Optional[str], Optional[str]]:
     
     if not quantizer_path:
         raise FileNotFoundError(
-            "llama-quantize not found. llama.cpp may not be properly installed."
+            f"llama-quantize not found in {llama_dir}. llama.cpp may not be properly installed."
         )
     
     if not converter_path:
         raise FileNotFoundError(
-            "convert_hf_to_gguf.py not found. llama.cpp may not be properly installed."
+            f"convert_hf_to_gguf.py not found in {llama_dir}. llama.cpp may not be properly installed."
         )
     
     return quantizer_path, converter_path
@@ -99,7 +105,7 @@ def install_llama_cpp(
     Install llama.cpp by cloning and compiling.
     
     Args:
-        gpu_support: Whether to compile with CUDA support (Note: conversion works better without GPU)
+        gpu_support: Whether to compile with CUDA support
         print_output: Whether to print compilation output
         force_reinstall: Force reinstallation even if already exists
         
@@ -115,17 +121,25 @@ def install_llama_cpp(
         except FileNotFoundError:
             pass  # Continue with installation
     
-    # Remove existing directory if force reinstall
-    if force_reinstall and os.path.exists(llama_dir):
-        logger.info("Removing existing llama.cpp installation...")
-        shutil.rmtree(llama_dir, ignore_errors=True)
+    # Remove existing directory if force reinstall or broken
+    if os.path.exists(llama_dir):
+        if force_reinstall:
+            logger.info("Removing existing llama.cpp installation...")
+            shutil.rmtree(llama_dir, ignore_errors=True)
+        else:
+            # If it exists but check failed, it's broken. Remove it.
+            logger.warning("Found broken llama.cpp installation. Reinstalling...")
+            shutil.rmtree(llama_dir, ignore_errors=True)
     
     # Step 1: Clone llama.cpp
+    # Ensure parent dir exists
+    os.makedirs(os.path.dirname(llama_dir), exist_ok=True)
+    
     if not os.path.exists(llama_dir):
-        logger.info("Cloning llama.cpp repository...")
+        logger.info(f"Cloning llama.cpp to {llama_dir}...")
         try:
             subprocess.run(
-                ["git", "clone", "--recursive", "https://github.com/ggerganov/llama.cpp"],
+                ["git", "clone", "--recursive", "https://github.com/ggerganov/llama.cpp", llama_dir],
                 check=True,
                 stdout=subprocess.DEVNULL if not print_output else None,
                 stderr=subprocess.STDOUT if not print_output else None,
