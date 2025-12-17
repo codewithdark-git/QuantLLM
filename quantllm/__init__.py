@@ -2,7 +2,6 @@
 QuantLLM v2.0 - Ultra-fast LLM Quantization
 
 The simplest way to load, quantize, fine-tune, and export LLMs.
-No external dependencies for GGUF export!
 
 Example:
     >>> from quantllm import turbo
@@ -24,10 +23,9 @@ from .core import (
 from .quant import (
     convert_to_gguf,
     export_to_gguf,
-    list_quant_types,
-    QUANT_TYPES,
-    GGUFWriter,
-    FastQuantizer,
+    check_llama_cpp,
+    install_llama_cpp,
+    GGUF_QUANT_TYPES,
 )
 
 # ====== Hub Integration ======
@@ -45,7 +43,7 @@ configure_logging()
 
 __version__ = "2.0.0"
 __title__ = "QuantLLM"
-__description__ = "Ultra-fast LLM Quantization - Pure Python GGUF Export"
+__description__ = "Ultra-fast LLM Quantization - GGUF Export"
 __author__ = "QuantLLM Team"
 
 __all__ = [
@@ -59,10 +57,9 @@ __all__ = [
     # GGUF Export
     "convert_to_gguf",
     "export_to_gguf",
-    "list_quant_types",
-    "QUANT_TYPES",
-    "GGUFWriter",
-    "FastQuantizer",
+    "check_llama_cpp",
+    "install_llama_cpp",
+    "GGUF_QUANT_TYPES",
     
     # Hub
     "QuantLLMHubManager",
