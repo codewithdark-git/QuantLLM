@@ -112,6 +112,8 @@ def install_llama_cpp(
     Returns:
         Tuple of (quantizer_path, converter_path)
     """
+    from ..utils import QuantLLMProgress, print_step
+    
     llama_dir = get_llama_cpp_dir()
     
     # Check if already installed and working
@@ -124,69 +126,82 @@ def install_llama_cpp(
     # Remove existing directory if force reinstall or broken
     if os.path.exists(llama_dir):
         if force_reinstall:
-            logger.info("Removing existing llama.cpp installation...")
+            print_info("Removing existing llama.cpp installation...")
             shutil.rmtree(llama_dir, ignore_errors=True)
         else:
-            # If it exists but check failed, it's broken. Remove it.
-            logger.warning("Found broken llama.cpp installation. Reinstalling...")
+            print_warning("Found broken llama.cpp installation. Reinstalling...")
             shutil.rmtree(llama_dir, ignore_errors=True)
     
+    total_steps = 4
+    
     # Step 1: Clone llama.cpp
-    # Ensure parent dir exists
     os.makedirs(os.path.dirname(llama_dir), exist_ok=True)
     
     if not os.path.exists(llama_dir):
-        logger.info(f"Cloning llama.cpp to {llama_dir}...")
+        print_step(1, total_steps, "Cloning llama.cpp repository...")
         try:
-            subprocess.run(
-                ["git", "clone", "--recursive", "https://github.com/ggerganov/llama.cpp", llama_dir],
-                check=True,
-                stdout=subprocess.DEVNULL if not print_output else None,
-                stderr=subprocess.STDOUT if not print_output else None,
-            )
-            print_success("✓ llama.cpp cloned successfully")
+            with QuantLLMProgress(style="spinner") as progress:
+                task = progress.add_task("Cloning llama.cpp...", total=None)
+                subprocess.run(
+                    ["git", "clone", "--depth", "1", "https://github.com/ggerganov/llama.cpp", llama_dir],
+                    check=True,
+                    stdout=subprocess.DEVNULL if not print_output else None,
+                    stderr=subprocess.STDOUT if not print_output else None,
+                )
+            print_success("llama.cpp cloned successfully")
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to clone llama.cpp: {e}")
     
     # Step 2: Install Python dependencies
-    logger.info("Installing Python dependencies...")
+    print_step(2, total_steps, "Installing Python dependencies...")
     try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "gguf", "protobuf"],
-            check=True,
-            stdout=subprocess.DEVNULL if not print_output else None,
-        )
-        print_success("✓ Dependencies installed")
+        with QuantLLMProgress(style="spinner") as progress:
+            task = progress.add_task("Installing gguf, protobuf...", total=None)
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "gguf>=0.10.0", "protobuf"],
+                check=True,
+                stdout=subprocess.DEVNULL if not print_output else None,
+            )
+        print_success("Dependencies installed")
     except subprocess.CalledProcessError as e:
         print_warning(f"Failed to install some dependencies: {e}")
     
     # Step 3: Compile llama.cpp
-    logger.info("Compiling llama.cpp (this may take 3-5 minutes)...")
+    print_step(3, total_steps, "Compiling llama.cpp (this may take 3-5 minutes)...")
     
     n_cpus = psutil.cpu_count(logical=False) or psutil.cpu_count() or 1
     n_jobs = max(int(n_cpus * 1.5), 1)
     
+    print_info(f"Using {n_jobs} parallel jobs for compilation")
+    if gpu_support:
+        print_info("CUDA support enabled")
+    
     # Try CMAKE first (newer method)
     try:
-        is_cmake = _compile_with_cmake(llama_dir, n_jobs, gpu_support, print_output)
-        print_success("✓ llama.cpp compiled successfully with CMAKE")
+        with QuantLLMProgress(style="spinner") as progress:
+            task = progress.add_task("Compiling with CMAKE...", total=None)
+            _compile_with_cmake(llama_dir, n_jobs, gpu_support, print_output)
+        print_success("llama.cpp compiled successfully with CMAKE")
     except Exception as e:
-        logger.warning(f"CMAKE compilation failed: {e}")
-        logger.info("Trying MAKE compilation...")
+        print_warning(f"CMAKE compilation failed: {e}")
+        print_info("Trying MAKE compilation...")
         
         # Fallback to MAKE (older method)
         try:
-            _compile_with_make(llama_dir, n_jobs, gpu_support, print_output)
-            print_success("✓ llama.cpp compiled successfully with MAKE")
+            with QuantLLMProgress(style="spinner") as progress:
+                task = progress.add_task("Compiling with MAKE...", total=None)
+                _compile_with_make(llama_dir, n_jobs, gpu_support, print_output)
+            print_success("llama.cpp compiled successfully with MAKE")
         except Exception as e2:
             raise RuntimeError(f"Both CMAKE and MAKE compilation failed. CMAKE: {e}, MAKE: {e2}")
     
     # Step 4: Verify installation
+    print_step(4, total_steps, "Verifying installation...")
     try:
         quantizer_path, converter_path = check_llama_cpp()
-        print_success(f"✓ llama.cpp installed successfully!")
-        logger.info(f"  Quantizer: {quantizer_path}")
-        logger.info(f"  Converter: {converter_path}")
+        print_success("llama.cpp installed successfully!")
+        print_info(f"Quantizer: {quantizer_path}")
+        print_info(f"Converter: {converter_path}")
         return quantizer_path, converter_path
     except FileNotFoundError as e:
         raise RuntimeError(f"llama.cpp compiled but executables not found: {e}")
@@ -298,7 +313,17 @@ def quantize_gguf(
         
     Returns:
         Path to output GGUF file
+        
+    Supported quantization types:
+        - q2_k, q3_k_s, q3_k_m, q3_k_l (very small)
+        - q4_k_s, q4_k_m (recommended balance)
+        - q5_k_s, q5_k_m (higher quality)
+        - q6_k, q8_0 (near full quality)
+        - f16, f32 (full precision)
     """
+    from ..utils import QuantLLMProgress, print_info
+    import re
+    
     # Get quantizer
     if quantizer_location is None:
         quantizer_location, _ = check_llama_cpp()
@@ -312,6 +337,9 @@ def quantize_gguf(
     # Get CPU count for threading
     n_threads = psutil.cpu_count() or 1
     
+    # Get input file size for progress estimation
+    input_size_mb = os.path.getsize(input_gguf) / (1024 * 1024)
+    
     # Build command
     cmd = [
         quantizer_location,
@@ -322,44 +350,79 @@ def quantize_gguf(
     ]
     
     if print_output:
-        logger.info(f"Quantizing with {quant_type}...")
-        logger.info(f"Command: {' '.join(cmd)}")
+        print_info(f"Quantizing to {quant_type} using {n_threads} threads...")
+        print_info(f"Input: {input_gguf} ({input_size_mb:.1f} MB)")
     
-    # Run quantization
+    # Run quantization with progress tracking
     try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+        )
+        
+        output_lines = []
+        last_progress = 0
+        
+        # Pattern to detect progress from llama-quantize output
+        # Typically looks like: "[123/456] ..." or percentage patterns
+        progress_pattern = re.compile(r'\[(\d+)/(\d+)\]')
+        percent_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*%')
+        
         if print_output:
-            # Stream output
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-            )
-            
-            for line in process.stdout:
-                print(line, end='', flush=True)
-            
-            process.wait()
-            
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd)
+            with QuantLLMProgress() as progress:
+                task = progress.add_task(f"Quantizing to {quant_type}...", total=100)
+                
+                for line in process.stdout:
+                    output_lines.append(line)
+                    
+                    # Try to parse progress
+                    match = progress_pattern.search(line)
+                    if match:
+                        current, total = int(match.group(1)), int(match.group(2))
+                        pct = (current / total) * 100
+                        progress.update(task, completed=pct)
+                        last_progress = pct
+                    else:
+                        # Try percentage pattern
+                        match = percent_pattern.search(line)
+                        if match:
+                            pct = float(match.group(1))
+                            progress.update(task, completed=pct)
+                            last_progress = pct
+                
+                progress.update(task, completed=100)
         else:
-            # Silent mode
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            for line in process.stdout:
+                output_lines.append(line)
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            error_output = ''.join(output_lines[-20:])
+            raise RuntimeError(
+                f"Quantization failed with exit code {process.returncode}\n"
+                f"Output:\n{error_output}"
             )
         
         if print_output:
-            print_success(f"✓ Quantized to {output_gguf}")
+            # Show compression stats
+            if os.path.exists(output_gguf):
+                output_size_mb = os.path.getsize(output_gguf) / (1024 * 1024)
+                compression = (1 - output_size_mb / input_size_mb) * 100
+                print_success(f"Quantized to {output_gguf}")
+                print_info(f"Output size: {output_size_mb:.1f} MB (compressed {compression:.1f}%)")
         
         return output_gguf
         
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Quantization failed: {e}")
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        raise RuntimeError(f"Unexpected error during quantization: {e}")
 
 
 def convert_to_gguf(
@@ -459,13 +522,15 @@ def convert_to_gguf(
     ]
     
     if print_output:
-        logger.info(f"Converting to GGUF format...")
-        logger.info(f"Command: {' '.join(cmd)}")
-        logger.info(f"Output: {output_file}")
+        print_info(f"Converting to GGUF format...")
+        print_info(f"Output: {output_file}")
     
-    # Run conversion with proper error capture
+    # Import progress utilities
+    from ..utils import QuantLLMProgress
+    import re
+    
+    # Run conversion with proper error capture and progress tracking
     try:
-        # Always capture output for better error messages
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -477,28 +542,61 @@ def convert_to_gguf(
         stdout_lines = []
         stderr_lines = []
         
-        # Read stdout and stderr
-        stdout, stderr = process.communicate()
+        # Progress patterns for convert_hf_to_gguf.py output
+        # Typically shows: "Loading model..." "Writing tensor [X/Y]..."
+        tensor_pattern = re.compile(r'\[(\d+)/(\d+)\]')
+        writing_pattern = re.compile(r'Writing\s+(\d+)\s+tensors')
         
-        if stdout:
-            stdout_lines = stdout.strip().split('\n')
-            if print_output:
-                for line in stdout_lines:
-                    print(line)
+        if print_output:
+            with QuantLLMProgress() as progress:
+                task = progress.add_task("Converting to GGUF...", total=100)
+                total_tensors = None
+                
+                for line in iter(process.stdout.readline, ''):
+                    if not line:
+                        break
+                    line = line.strip()
+                    stdout_lines.append(line)
+                    
+                    # Try to find total tensors
+                    if total_tensors is None:
+                        match = writing_pattern.search(line)
+                        if match:
+                            total_tensors = int(match.group(1))
+                    
+                    # Try to parse tensor progress
+                    match = tensor_pattern.search(line)
+                    if match:
+                        current, total = int(match.group(1)), int(match.group(2))
+                        pct = (current / total) * 100
+                        progress.update(task, completed=pct, description=f"Converting tensor [{current}/{total}]...")
+                    elif "Loading" in line:
+                        progress.update(task, description="Loading model...")
+                    elif "Writing" in line:
+                        progress.update(task, description="Writing GGUF...")
+                
+                progress.update(task, completed=100, description="Conversion complete!")
+                
+                # Read any remaining stderr
+                stderr_output = process.stderr.read()
+                if stderr_output:
+                    stderr_lines = stderr_output.strip().split('\n')
+        else:
+            stdout, stderr = process.communicate()
+            if stdout:
+                stdout_lines = stdout.strip().split('\n')
+            if stderr:
+                stderr_lines = stderr.strip().split('\n')
         
-        if stderr:
-            stderr_lines = stderr.strip().split('\n')
-            if print_output:
-                for line in stderr_lines:
-                    print(f"[stderr] {line}")
+        process.wait()
         
         if process.returncode != 0:
             # Collect all error information
             error_details = []
             if stdout_lines:
-                error_details.append("STDOUT:\n" + '\n'.join(stdout_lines[-20:]))  # Last 20 lines
+                error_details.append("STDOUT:\n" + '\n'.join(stdout_lines[-20:]))
             if stderr_lines:
-                error_details.append("STDERR:\n" + '\n'.join(stderr_lines[-20:]))  # Last 20 lines
+                error_details.append("STDERR:\n" + '\n'.join(stderr_lines[-20:]))
             
             error_msg = f"GGUF conversion failed with exit code {process.returncode}\n"
             if error_details:
@@ -509,7 +607,7 @@ def convert_to_gguf(
             raise RuntimeError(error_msg)
         
         if print_output:
-            print_success(f"✓ Converted to {output_file}")
+            print_success(f"Converted to {output_file}")
         
         return [output_file], is_vlm
         

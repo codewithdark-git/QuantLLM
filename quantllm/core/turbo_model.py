@@ -279,14 +279,34 @@ class TurboModel:
         **kwargs
     ) -> "TurboModel":
         """
-        Load a GGUF model directly (wrapper for transformers GGUF support).
+        Load a GGUF model directly from HuggingFace Hub or local path.
+        
+        This uses transformers' native GGUF support (requires transformers>=4.36.0).
         
         Args:
-            model_id: HuggingFace repo ID or local directory
-            filename: GGUF filename (e.g. "model.Q4_K_M.gguf"). If None, tries to auto-find.
-            device: Override device
+            model_id: HuggingFace repo ID (e.g., "TheBloke/Llama-2-7B-GGUF") or local directory
+            filename: GGUF filename (e.g., "llama-2-7b.Q4_K_M.gguf"). 
+                      If None, tries to auto-find. Use list_gguf_files() to see available options.
+            device: Override device (default: auto-detect best GPU)
             verbose: Print progress
-            **kwargs: args for AutoModelForCausalLM.from_pretrained
+            **kwargs: Additional args for AutoModelForCausalLM.from_pretrained
+            
+        Returns:
+            TurboModel with loaded GGUF model
+            
+        Example:
+            >>> # List available GGUF files in a repo
+            >>> files = TurboModel.list_gguf_files("TheBloke/Llama-2-7B-GGUF")
+            >>> print(files)
+            >>> 
+            >>> # Load specific quantization
+            >>> model = TurboModel.from_gguf(
+            ...     "TheBloke/Llama-2-7B-GGUF", 
+            ...     filename="llama-2-7b.Q4_K_M.gguf"
+            ... )
+            >>> 
+            >>> # Generate text
+            >>> model.generate("Hello!")
         """
         if verbose:
             print_header(f"Loading GGUF: {model_id}")
@@ -294,19 +314,41 @@ class TurboModel:
         # Check for GGUF package
         try:
             import gguf
+            gguf_version = getattr(gguf, '__version__', 'unknown')
+            if verbose:
+                print_info(f"Using gguf version: {gguf_version}")
         except ImportError:
-            print_error("❌ Missing 'gguf' package!")
+            print_error("Missing 'gguf' package!")
             raise ImportError(
                 "Loading GGUF models requires the 'gguf' package.\n"
                 "Please run: pip install gguf>=0.10.0"
             )
+        
+        # If no filename specified, try to find one
+        if filename is None:
+            if verbose:
+                print_info("No filename specified, searching for GGUF files...")
+            try:
+                available_files = cls.list_gguf_files(model_id)
+                if available_files:
+                    # Prefer Q4_K_M if available, otherwise take first
+                    q4_files = [f for f in available_files if 'q4_k_m' in f.lower()]
+                    filename = q4_files[0] if q4_files else available_files[0]
+                    if verbose:
+                        print_info(f"Found {len(available_files)} GGUF files, using: {filename}")
+            except Exception as e:
+                if verbose:
+                    print_warning(f"Could not list GGUF files: {e}")
+        
+        if verbose and filename:
+            print_info(f"Loading: {filename}")
             
         smart_config = SmartConfig.detect(model_id, device=device)
         smart_config.quant_type = "GGUF"
         
-        with QuantLLMProgress() as p:
+        with QuantLLMProgress() as progress:
             if verbose:
-                 p.add_task("Loading GGUF model...", total=None)
+                task = progress.add_task("Loading GGUF model...", total=None)
                  
             try:
                 model = AutoModelForCausalLM.from_pretrained(
@@ -318,23 +360,89 @@ class TurboModel:
                 )
             except ImportError as e:
                 if "gguf" in str(e).lower():
-                     raise ImportError(
-                         "transformers requires a newer version of 'gguf'.\n"
-                         "Please run: pip install --upgrade gguf>=0.10.0"
-                     ) from e
+                    raise ImportError(
+                        "transformers requires a newer version of 'gguf'.\n"
+                        "Please run: pip install --upgrade gguf>=0.10.0"
+                    ) from e
+                raise
+            except Exception as e:
+                if "gguf" in str(e).lower() and "not found" in str(e).lower():
+                    available = cls.list_gguf_files(model_id)
+                    raise FileNotFoundError(
+                        f"GGUF file '{filename}' not found in {model_id}.\n"
+                        f"Available files: {available}"
+                    ) from e
                 raise
             
+            # Load tokenizer
             try:
                 tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=filename)
-            except:
-                tokenizer = AutoTokenizer.from_pretrained(model_id)
-                
+            except Exception:
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(model_id)
+                except Exception:
+                    # Some GGUF repos might not have tokenizer, try base model
+                    if verbose:
+                        print_warning("Could not load tokenizer from GGUF repo, using default")
+                    tokenizer = None
+                    
             if verbose:
-                 print_success("GGUF Model loaded!")
+                print_success("GGUF Model loaded successfully!")
+                
+                # Print model info
+                if hasattr(model, 'num_parameters'):
+                    params = model.num_parameters() / 1e9
+                    print_info(f"Parameters: {params:.2f}B")
              
-        instance = cls(model, tokenizer, smart_config)
+        instance = cls(model, tokenizer, smart_config, verbose=verbose)
         instance._is_quantized = True
         return instance
+    
+    @staticmethod
+    def list_gguf_files(model_id: str) -> List[str]:
+        """
+        List available GGUF files in a HuggingFace repository.
+        
+        Args:
+            model_id: HuggingFace repo ID (e.g., "TheBloke/Llama-2-7B-GGUF")
+            
+        Returns:
+            List of GGUF filenames available in the repository
+            
+        Example:
+            >>> files = TurboModel.list_gguf_files("TheBloke/Llama-2-7B-GGUF")
+            >>> print(files)
+            ['llama-2-7b.Q2_K.gguf', 'llama-2-7b.Q4_K_M.gguf', ...]
+        """
+        try:
+            from huggingface_hub import list_repo_files
+            
+            all_files = list_repo_files(model_id)
+            gguf_files = [f for f in all_files if f.endswith('.gguf')]
+            
+            # Sort by quantization quality (Q4_K_M before Q2_K, etc.)
+            def quant_sort_key(name):
+                name_lower = name.lower()
+                # Higher number = better quality, listed first
+                if 'f32' in name_lower: return 0
+                if 'f16' in name_lower: return 1
+                if 'q8' in name_lower: return 2
+                if 'q6' in name_lower: return 3
+                if 'q5_k_m' in name_lower: return 4
+                if 'q5_k_s' in name_lower: return 5
+                if 'q4_k_m' in name_lower: return 6
+                if 'q4_k_s' in name_lower: return 7
+                if 'q3_k' in name_lower: return 8
+                if 'q2_k' in name_lower: return 9
+                return 10
+            
+            return sorted(gguf_files, key=quant_sort_key)
+            
+        except Exception as e:
+            # If it's a local path, list directory
+            if os.path.isdir(model_id):
+                return [f for f in os.listdir(model_id) if f.endswith('.gguf')]
+            raise ValueError(f"Could not list GGUF files from {model_id}: {e}")
 
     @staticmethod
     def _get_quantization_kwargs(config: SmartConfig) -> Dict[str, Any]:
@@ -940,13 +1048,26 @@ class TurboModel:
         
         Automatically installs and configures llama.cpp tools.
         Handles BitsAndBytes quantized models by dequantizing first.
+        
+        Flow:
+            1. Save model to temp directory (dequantize if needed)
+            2. Convert to F16 GGUF using convert_hf_to_gguf.py
+            3. Quantize to target format (Q4_K_M, Q5_K_M, etc.) using llama-quantize
         """
-        from ..quant import convert_to_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
+        from ..quant import convert_to_gguf, quantize_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
+        from ..utils import QuantLLMProgress
         
         quant_type = quantization or self.config.quant_type or "q4_k_m"
-        quant_type = quant_type.lower()
+        quant_type_upper = quant_type.upper()
+        quant_type_lower = quant_type.lower()
+        
+        # Check if this is a passthrough format (f16, bf16, f32 - no quantization needed)
+        passthrough_types = {'f16', 'f32', 'bf16', 'float16', 'float32', 'bfloat16'}
+        needs_quantization = quant_type_lower not in passthrough_types
         
         # Ensure llama.cpp
+        if self.verbose:
+            print_info("Checking llama.cpp installation...")
         ensure_llama_cpp_installed()
         
         # Check if model is BitsAndBytes quantized and needs dequantization
@@ -962,58 +1083,112 @@ class TurboModel:
             if self.verbose:
                 print_success("Model dequantized successfully!")
         
-        # Determine dtype for conversion
-        if isinstance(self.config.dtype, str):
-            model_dtype = self.config.dtype
-        elif self.config.dtype == torch.float16:
-            model_dtype = "f16"
-        elif self.config.dtype == torch.bfloat16:
-            model_dtype = "bf16"
-        else:
-            model_dtype = "f16"  # Default to f16
+        # Determine dtype for initial conversion (always F16 for best quality)
+        model_dtype = "f16"
         
-        # Create temp dir for conversion source
+        # Get model name for file naming
+        model_name = self.model.config._name_or_path.split('/')[-1]
+        
+        # Create temp dir for conversion
         with tempfile.TemporaryDirectory() as temp_dir:
+            # Step 1: Save model to temp directory
             if self.verbose:
-                print_info(f"Staging model to {temp_dir} for conversion...")
+                print_header("Step 1/3: Saving Model", icon="💾")
+                print_info(f"Staging model to {temp_dir}...")
+            
+            with QuantLLMProgress() as progress:
+                task = progress.add_task("Saving model weights...", total=None)
+                try:
+                    model_to_save.save_pretrained(temp_dir, safe_serialization=True)
+                except Exception as e:
+                    if self.verbose:
+                        print_warning(f"SafeTensors save failed ({e}), using PyTorch format...")
+                    model_to_save.save_pretrained(temp_dir, safe_serialization=False)
                 
-            # Save model to temp dir (use dequantized model if needed)
-            try:
-                model_to_save.save_pretrained(temp_dir, safe_serialization=True)
-            except Exception as e:
-                # Fallback to non-safe serialization
-                if self.verbose:
-                    print_warning(f"SafeTensors save failed ({e}), using PyTorch format...")
-                model_to_save.save_pretrained(temp_dir, safe_serialization=False)
-            
-            self.tokenizer.save_pretrained(temp_dir)
+                self.tokenizer.save_pretrained(temp_dir)
+                progress.update(task, completed=100)
             
             if self.verbose:
-                print_info("Model saved, starting GGUF conversion...")
+                print_success("Model saved to staging area!")
             
-            # Convert
+            # Step 2: Convert to F16 GGUF
+            if self.verbose:
+                print_header("Step 2/3: Converting to GGUF", icon="🔄")
+            
+            # F16 intermediate file (or final if no quantization needed)
+            if needs_quantization:
+                f16_gguf_file = os.path.join(temp_dir, f"{model_name}.F16.gguf")
+            else:
+                f16_gguf_file = f"{model_name}.{quant_type_upper}.gguf"
+            
             output_files, _ = convert_to_gguf(
-                model_name=self.model.config._name_or_path.split('/')[-1],
+                model_name=model_name,
                 input_folder=temp_dir,
                 model_dtype=model_dtype,
-                quantization_type=quant_type,
+                quantization_type="f16" if needs_quantization else quant_type_lower,
                 print_output=self.verbose
             )
             
-            # Move result to output_path
-            if output_files:
-                src = output_files[0]
+            if not output_files:
+                raise RuntimeError("GGUF conversion failed to produce output file.")
+            
+            f16_file = output_files[0]
+            
+            # If conversion produced a different name, use that
+            if os.path.exists(f16_file):
+                f16_gguf_file = f16_file
+            
+            if self.verbose:
+                print_success(f"F16 GGUF created: {f16_gguf_file}")
+            
+            # Step 3: Apply quantization if needed
+            if needs_quantization:
                 if self.verbose:
-                    print_success(f"Moving {src} to {output_path}")
-                shutil.move(src, output_path)
+                    print_header(f"Step 3/3: Quantizing to {quant_type_upper}", icon="⚡")
+                    print_info(f"Applying {quant_type_upper} quantization...")
+                
+                # Final quantized output
+                quantized_file = f"{model_name}.{quant_type_upper}.gguf"
+                
+                quantize_gguf(
+                    input_gguf=f16_gguf_file,
+                    output_gguf=quantized_file,
+                    quant_type=quant_type_upper,
+                    print_output=self.verbose
+                )
+                
+                final_file = quantized_file
+                
+                # Clean up intermediate F16 file
+                if os.path.exists(f16_gguf_file) and f16_gguf_file != quantized_file:
+                    os.remove(f16_gguf_file)
+                
+                if self.verbose:
+                    print_success(f"Quantization complete: {quantized_file}")
             else:
-                raise RuntimeError("GGUF Conversion failed to produce output file.")
+                final_file = f16_gguf_file
+                if self.verbose:
+                    print_info("No quantization needed (already in target format)")
+            
+            # Move to output path if different
+            if os.path.abspath(final_file) != os.path.abspath(output_path):
+                if self.verbose:
+                    print_info(f"Moving {final_file} → {output_path}")
+                shutil.move(final_file, output_path)
         
         # Clean up dequantized model if created
         if is_bnb_quantized and model_to_save is not self.model:
             del model_to_save
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+        
+        # Print final summary
+        if self.verbose:
+            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            print_header("Export Complete! 🎉", icon="✅")
+            print_info(f"Output: {output_path}")
+            print_info(f"Format: GGUF {quant_type_upper}")
+            print_info(f"Size: {file_size_mb:.2f} MB")
                 
         return output_path
     

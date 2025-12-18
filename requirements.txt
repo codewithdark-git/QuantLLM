@@ -25,7 +25,8 @@ wandb>=0.15.0
 tensorboard>=2.14.0
 evaluate>=0.4.0
 
-# GGUF export
+# GGUF export & loading
+gguf>=0.10.0
 ctransformers>=0.2.27
 llama-cpp-python>=0.2.20
 
