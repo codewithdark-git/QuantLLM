@@ -393,6 +393,10 @@ def convert_to_gguf(
         
     Returns:
         Tuple of (list of output files, is_vlm_updated)
+        
+    Raises:
+        RuntimeError: If conversion fails (includes detailed error message)
+        FileNotFoundError: If converter script is not found
     """
     # Get converter
     if converter_location is None:
@@ -401,11 +405,49 @@ def convert_to_gguf(
     if not os.path.exists(converter_location):
         raise FileNotFoundError(f"Converter not found: {converter_location}")
     
+    # Validate input folder contains required files
+    config_path = os.path.join(input_folder, "config.json")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(
+            f"config.json not found in {input_folder}. "
+            "Make sure the model is properly saved in HuggingFace format."
+        )
+    
+    # Check for BitsAndBytes quantized models (they cannot be directly converted)
+    import json
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    if 'quantization_config' in config:
+        quant_config = config['quantization_config']
+        quant_method = quant_config.get('quant_method', '')
+        if quant_method in ['bitsandbytes', 'bnb'] or quant_config.get('load_in_4bit') or quant_config.get('load_in_8bit'):
+            raise RuntimeError(
+                "Cannot convert BitsAndBytes quantized model directly to GGUF.\n"
+                "The model weights are in BNB format which is incompatible with llama.cpp.\n\n"
+                "Solutions:\n"
+                "1. Load the model in full precision first:\n"
+                "   model = TurboModel.from_pretrained('model_name', quantize=False)\n"
+                "   model.export('gguf', quantization='Q4_K_M')\n\n"
+                "2. Or use a pre-trained model without BitsAndBytes quantization."
+            )
+    
     # Determine output filename
     if quantization_type and quantization_type.lower() != "none":
         output_file = f"{model_name}.{quantization_type.upper()}.gguf"
     else:
         output_file = f"{model_name}.{model_dtype.upper()}.gguf"
+    
+    # Normalize model_dtype for llama.cpp
+    dtype_map = {
+        "float16": "f16",
+        "bfloat16": "bf16",
+        "float32": "f32",
+        "torch.float16": "f16",
+        "torch.bfloat16": "bf16",
+        "torch.float32": "f32",
+    }
+    model_dtype = dtype_map.get(str(model_dtype).lower(), model_dtype)
     
     # Build conversion command
     cmd = [
@@ -418,34 +460,53 @@ def convert_to_gguf(
     
     if print_output:
         logger.info(f"Converting to GGUF format...")
+        logger.info(f"Command: {' '.join(cmd)}")
         logger.info(f"Output: {output_file}")
     
-    # Run conversion
+    # Run conversion with proper error capture
     try:
-        if print_output:
-            # Stream output
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-            )
+        # Always capture output for better error messages
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            bufsize=1,
+        )
+        
+        stdout_lines = []
+        stderr_lines = []
+        
+        # Read stdout and stderr
+        stdout, stderr = process.communicate()
+        
+        if stdout:
+            stdout_lines = stdout.strip().split('\n')
+            if print_output:
+                for line in stdout_lines:
+                    print(line)
+        
+        if stderr:
+            stderr_lines = stderr.strip().split('\n')
+            if print_output:
+                for line in stderr_lines:
+                    print(f"[stderr] {line}")
+        
+        if process.returncode != 0:
+            # Collect all error information
+            error_details = []
+            if stdout_lines:
+                error_details.append("STDOUT:\n" + '\n'.join(stdout_lines[-20:]))  # Last 20 lines
+            if stderr_lines:
+                error_details.append("STDERR:\n" + '\n'.join(stderr_lines[-20:]))  # Last 20 lines
             
-            for line in process.stdout:
-                print(line, end='', flush=True)
+            error_msg = f"GGUF conversion failed with exit code {process.returncode}\n"
+            if error_details:
+                error_msg += "\n--- Conversion Output ---\n" + '\n'.join(error_details)
+            else:
+                error_msg += "\nNo error output captured. Try running with print_output=True for more details."
             
-            process.wait()
-            
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd)
-        else:
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            raise RuntimeError(error_msg)
         
         if print_output:
             print_success(f"✓ Converted to {output_file}")
@@ -454,6 +515,10 @@ def convert_to_gguf(
         
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Conversion failed: {e}")
+    except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
+        raise RuntimeError(f"Unexpected error during GGUF conversion: {e}")
 
 
 def use_local_gguf():

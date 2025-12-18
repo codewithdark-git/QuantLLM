@@ -939,6 +939,7 @@ class TurboModel:
         Export to GGUF format using optimized llama.cpp converter.
         
         Automatically installs and configures llama.cpp tools.
+        Handles BitsAndBytes quantized models by dequantizing first.
         """
         from ..quant import convert_to_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
         
@@ -948,20 +949,53 @@ class TurboModel:
         # Ensure llama.cpp
         ensure_llama_cpp_installed()
         
+        # Check if model is BitsAndBytes quantized and needs dequantization
+        model_to_save = self.model
+        is_bnb_quantized = self._is_bnb_quantized()
+        
+        if is_bnb_quantized:
+            if self.verbose:
+                print_warning("Model is BitsAndBytes quantized. Dequantizing for GGUF export...")
+                print_info("This may use significant memory. For large models, consider loading with quantize=False.")
+            
+            model_to_save = self._dequantize_model()
+            if self.verbose:
+                print_success("Model dequantized successfully!")
+        
+        # Determine dtype for conversion
+        if isinstance(self.config.dtype, str):
+            model_dtype = self.config.dtype
+        elif self.config.dtype == torch.float16:
+            model_dtype = "f16"
+        elif self.config.dtype == torch.bfloat16:
+            model_dtype = "bf16"
+        else:
+            model_dtype = "f16"  # Default to f16
+        
         # Create temp dir for conversion source
         with tempfile.TemporaryDirectory() as temp_dir:
             if self.verbose:
                 print_info(f"Staging model to {temp_dir} for conversion...")
                 
-            # Save transformers model to temp dir
-            self.model.save_pretrained(temp_dir)
+            # Save model to temp dir (use dequantized model if needed)
+            try:
+                model_to_save.save_pretrained(temp_dir, safe_serialization=True)
+            except Exception as e:
+                # Fallback to non-safe serialization
+                if self.verbose:
+                    print_warning(f"SafeTensors save failed ({e}), using PyTorch format...")
+                model_to_save.save_pretrained(temp_dir, safe_serialization=False)
+            
             self.tokenizer.save_pretrained(temp_dir)
+            
+            if self.verbose:
+                print_info("Model saved, starting GGUF conversion...")
             
             # Convert
             output_files, _ = convert_to_gguf(
                 model_name=self.model.config._name_or_path.split('/')[-1],
                 input_folder=temp_dir,
-                model_dtype=self.config.dtype if isinstance(self.config.dtype, str) else "f16",
+                model_dtype=model_dtype,
                 quantization_type=quant_type,
                 print_output=self.verbose
             )
@@ -970,12 +1004,139 @@ class TurboModel:
             if output_files:
                 src = output_files[0]
                 if self.verbose:
-                   print_success(f"Moving {src} to {output_path}")
+                    print_success(f"Moving {src} to {output_path}")
                 shutil.move(src, output_path)
             else:
                 raise RuntimeError("GGUF Conversion failed to produce output file.")
+        
+        # Clean up dequantized model if created
+        if is_bnb_quantized and model_to_save is not self.model:
+            del model_to_save
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
                 
         return output_path
+    
+    def _is_bnb_quantized(self) -> bool:
+        """Check if model is BitsAndBytes quantized."""
+        # Check config for quantization_config
+        if hasattr(self.model, 'config'):
+            quant_config = getattr(self.model.config, 'quantization_config', None)
+            if quant_config:
+                # Check if it's BitsAndBytes
+                quant_method = getattr(quant_config, 'quant_method', None)
+                if quant_method in ['bitsandbytes', 'bnb']:
+                    return True
+                if getattr(quant_config, 'load_in_4bit', False):
+                    return True
+                if getattr(quant_config, 'load_in_8bit', False):
+                    return True
+        
+        # Check for BNB linear layers in the model
+        try:
+            import bitsandbytes as bnb
+            for module in self.model.modules():
+                if isinstance(module, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)):
+                    return True
+        except ImportError:
+            pass
+        
+        return False
+    
+    def _dequantize_model(self) -> nn.Module:
+        """
+        Dequantize a BitsAndBytes model to full precision for GGUF export.
+        
+        Returns:
+            Dequantized model in float16/bfloat16
+        """
+        import gc
+        
+        # Get the model name for reloading
+        model_name = getattr(self.model.config, '_name_or_path', None)
+        
+        if model_name:
+            # Best approach: Reload model in full precision
+            if self.verbose:
+                print_info(f"Reloading {model_name} in full precision...")
+            
+            # Determine target dtype
+            target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
+            
+            try:
+                dequant_model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=target_dtype,
+                    trust_remote_code=True,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    low_cpu_mem_usage=True,
+                )
+                return dequant_model
+            except Exception as e:
+                if self.verbose:
+                    print_warning(f"Failed to reload model: {e}")
+                    print_info("Attempting in-place dequantization...")
+        
+        # Fallback: In-place dequantization (less reliable but works for some models)
+        try:
+            import bitsandbytes as bnb
+            
+            target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
+            
+            # Create a copy of the model state dict with dequantized weights
+            dequant_model = AutoModelForCausalLM.from_config(
+                self.model.config,
+                torch_dtype=target_dtype,
+            )
+            
+            # Copy and dequantize weights
+            with torch.no_grad():
+                for name, module in self.model.named_modules():
+                    if isinstance(module, bnb.nn.Linear4bit):
+                        # Dequantize 4-bit weights
+                        target_module = dict(dequant_model.named_modules()).get(name)
+                        if target_module is not None and hasattr(target_module, 'weight'):
+                            # Get dequantized weight
+                            weight = module.weight
+                            if hasattr(weight, 'dequantize'):
+                                dequant_weight = weight.dequantize()
+                            else:
+                                # Manual dequantization for older versions
+                                dequant_weight = bnb.functional.dequantize_4bit(
+                                    weight.data, weight.quant_state
+                                )
+                            target_module.weight.data.copy_(dequant_weight.to(target_dtype))
+                            
+                            if module.bias is not None:
+                                target_module.bias.data.copy_(module.bias.data.to(target_dtype))
+                    
+                    elif isinstance(module, bnb.nn.Linear8bitLt):
+                        # Dequantize 8-bit weights
+                        target_module = dict(dequant_model.named_modules()).get(name)
+                        if target_module is not None and hasattr(target_module, 'weight'):
+                            weight = module.weight
+                            if hasattr(weight, 'dequantize'):
+                                dequant_weight = weight.dequantize()
+                            else:
+                                dequant_weight = weight.data.to(target_dtype)
+                            target_module.weight.data.copy_(dequant_weight.to(target_dtype))
+                            
+                            if module.bias is not None:
+                                target_module.bias.data.copy_(module.bias.data.to(target_dtype))
+            
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            return dequant_model
+            
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to dequantize BitsAndBytes model: {e}\n\n"
+                "To export to GGUF, please reload your model without quantization:\n"
+                "  model = TurboModel.from_pretrained('your-model', quantize=False)\n"
+                "  model.export('gguf', quantization='Q4_K_M')"
+            )
     
     def _export_safetensors(
         self,
