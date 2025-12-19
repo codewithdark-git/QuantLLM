@@ -1,5 +1,5 @@
 from huggingface_hub import HfApi
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from ..utils import (
     logger, 
     print_success, 
@@ -10,6 +10,7 @@ from ..utils import (
     QuantLLMProgress,
     format_size,
 )
+from .model_card import ModelCardGenerator, generate_model_card
 import os
 
 class QuantLLMHubManager:
@@ -75,7 +76,7 @@ class QuantLLMHubManager:
             tokenizer: The tokenizer object
             format: 'safetensors' or 'pytorch'
         """
-        print_header("Saving Model for Hub")
+        print_header("Saving Model for Hub", icon="💾")
         
         save_path = self.staging_dir
         
@@ -83,6 +84,10 @@ class QuantLLMHubManager:
         if hasattr(model, "model"):
             model_obj = model.model
             tokenizer_obj = getattr(model, "tokenizer", tokenizer)
+            # Get base model name
+            if hasattr(model_obj, 'config') and hasattr(model_obj.config, '_name_or_path'):
+                base_model = model_obj.config._name_or_path
+                self.hyperparameters['base_model'] = base_model
         else:
             model_obj = model
             tokenizer_obj = tokenizer
@@ -100,39 +105,42 @@ class QuantLLMHubManager:
         if tokenizer_obj:
             print_info("Saving tokenizer...")
             tokenizer_obj.save_pretrained(save_path)
-            
-        # Generate Model Card with hyperparameters
-        self._generate_model_card()
         
         print_success("Model saved to staging area")
 
-    def _generate_model_card(self):
-        """Generate a proper README.md for the model card."""
+    def _generate_model_card(self, format: str = "safetensors"):
+        """
+        Generate a proper README.md with format-specific usage examples.
+        
+        Args:
+            format: Export format (gguf, onnx, mlx, safetensors)
+        """
         readme_path = os.path.join(self.staging_dir, "README.md")
         
-        content = [
-            "---",
-            f"base_model: {self.hyperparameters.get('base_model', 'unknown')}",
-            "library_name: quantllm",
-            "tags:",
-            "  - quantllm",
-            "  - generated_from_trainer",
-            "---",
-            "",
-            f"# {self.repo_id.split('/')[-1]}",
-            "",
-            "This model was fine-tuned using [QuantLLM](https://github.com/codewithdark-git/QuantLLM).",
-            "",
-            "## Hyperparameters",
-            "The following hyperparameters were used during training:",
-            ""
-        ]
+        # Get parameters
+        base_model = self.hyperparameters.get('base_model', 'unknown')
+        quantization = self.hyperparameters.get('quantization')
+        license_type = self.hyperparameters.get('license', 'apache-2.0')
         
-        for k, v in self.hyperparameters.items():
-            content.append(f"- **{k}**: {v}")
-            
+        # Collect tags
+        extra_tags = []
+        if self.hyperparameters.get('finetuned'):
+            extra_tags.append("finetuned")
+        
+        # Generate model card
+        content = generate_model_card(
+            repo_id=self.repo_id,
+            base_model=base_model,
+            format=format,
+            quantization=quantization,
+            license=license_type,
+            tags=extra_tags,
+        )
+        
         with open(readme_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(content))
+            f.write(content)
+        
+        print_info(f"Generated model card for {format.upper()} format")
 
     def push(self, commit_message: str = "Upload model via QuantLLM"):
         """Push the staged model to HuggingFace Hub."""

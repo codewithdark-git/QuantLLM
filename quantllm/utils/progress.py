@@ -360,22 +360,18 @@ def print_model_card(
     console.print(table)
 
 
-def print_banner() -> None:
-    """Print QuantLLM banner."""
-    banner = """
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                                                           ║
-    ║   ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗            ║
-    ║  ██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝            ║
-    ║  ██║   ██║██║   ██║███████║██╔██╗ ██║   ██║               ║
-    ║  ██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║               ║
-    ║  ╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║   LLM         ║
-    ║   ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝               ║
-    ║                                                           ║
-    ║          Ultra-fast LLM Quantization & Export             ║
-    ╚═══════════════════════════════════════════════════════════╝
-    """
-    console.print(f"[bold {QUANTLLM_ORANGE}]{banner}[/]")
+def print_banner(version: str = "2.0.0") -> None:
+    """Print QuantLLM banner with version info."""
+    console.print()
+    console.print(f"[bold {QUANTLLM_ORANGE}]╔════════════════════════════════════════════════════════════╗[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/]   🚀 [bold white]QuantLLM[/] [dim]v{version}[/]                                     [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/]   [dim]Ultra-fast LLM Quantization & Export[/]                   [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/]   [green]✓[/] GGUF  [green]✓[/] ONNX  [green]✓[/] MLX  [green]✓[/] SafeTensors             [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]╚════════════════════════════════════════════════════════════╝[/]")
+    console.print()
 
 
 def format_size(size_bytes: int) -> str:

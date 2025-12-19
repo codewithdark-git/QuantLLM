@@ -1004,17 +1004,19 @@ class TurboModel:
         format: str = "safetensors",
         quantization: Optional[str] = None,
         commit_message: str = "Upload model via QuantLLM",
+        license: str = "apache-2.0",
         **kwargs
     ):
         """
-        Push model to HuggingFace Hub.
+        Push model to HuggingFace Hub with proper model card.
         
         Args:
             repo_id: Repository ID (e.g. "username/model")
             token: HF Token
             format: "safetensors", "gguf", "onnx", or "mlx"
-            quantization: Quantization type (for gguf/onnx)
+            quantization: Quantization type (for gguf/onnx/mlx)
             commit_message: Commit message
+            license: License type (default: apache-2.0)
             **kwargs: Arguments for export
             
         Supported formats:
@@ -1022,14 +1024,23 @@ class TurboModel:
             - gguf: For llama.cpp, Ollama, LM Studio
             - onnx: For ONNX Runtime, TensorRT
             - mlx: For Apple Silicon (requires macOS)
+            
+        The model card will be automatically generated with:
+            - Proper YAML frontmatter for HuggingFace
+            - Format-specific usage examples
+            - "Use this model" button compatibility
         """
         from ..hub import QuantLLMHubManager
         
         format_lower = format.lower()
-        model_name = self.model.config._name_or_path.split('/')[-1]
+        
+        # Get the original base model name (full path for HuggingFace link)
+        base_model_full = self.model.config._name_or_path
+        model_name = base_model_full.split('/')[-1]
         
         print_header(f"Pushing to {repo_id}")
         print_info(f"Format: {format_lower.upper()}")
+        print_info(f"Base model: {base_model_full}")
         
         manager = QuantLLMHubManager(repo_id=repo_id, hf_token=token)
         
@@ -1044,9 +1055,10 @@ class TurboModel:
             manager.track_hyperparameters({
                 "format": "gguf",
                 "quantization": quant_label.upper(),
-                "base_model": model_name
+                "base_model": base_model_full,
+                "license": license,
             })
-            manager._generate_model_card()
+            manager._generate_model_card(format="gguf")
             
         elif format_lower == "onnx":
             # Export to ONNX format
@@ -1057,10 +1069,11 @@ class TurboModel:
             
             manager.track_hyperparameters({
                 "format": "onnx",
-                "quantization": quantization or "none",
-                "base_model": model_name
+                "quantization": quantization,
+                "base_model": base_model_full,
+                "license": license,
             })
-            manager._generate_model_card()
+            manager._generate_model_card(format="onnx")
             
         elif format_lower == "mlx":
             # Export to MLX format
@@ -1071,14 +1084,21 @@ class TurboModel:
             
             manager.track_hyperparameters({
                 "format": "mlx",
-                "quantization": quantization or "none",
-                "base_model": model_name
+                "quantization": quantization,
+                "base_model": base_model_full,
+                "license": license,
             })
-            manager._generate_model_card()
+            manager._generate_model_card(format="mlx")
             
         else:
             # SafeTensors or PyTorch format
+            manager.track_hyperparameters({
+                "format": format_lower,
+                "base_model": base_model_full,
+                "license": license,
+            })
             manager.save_final_model(self, format=format)
+            manager._generate_model_card(format=format_lower)
             
         manager.push(commit_message=commit_message)
     

@@ -5,9 +5,9 @@ The simplest way to load, quantize, fine-tune, and export LLMs.
 
 Features:
     - Load any HuggingFace model with automatic quantization
-    - Export to GGUF format with proper quantization (Q4_K_M, Q5_K_M, etc.)
+    - Export to GGUF, ONNX, MLX formats with proper quantization
     - Fine-tune with LoRA
-    - Push to HuggingFace Hub
+    - Push to HuggingFace Hub with auto-generated model cards
 
 Example:
     >>> from quantllm import turbo
@@ -21,9 +21,11 @@ Example:
     >>> # Export to GGUF with Q4_K_M quantization
     >>> model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
     >>> 
-    >>> # Load existing GGUF model
-    >>> gguf_model = TurboModel.from_gguf("TheBloke/Llama-2-7B-GGUF", filename="llama-2-7b.Q4_K_M.gguf")
+    >>> # Push to HuggingFace Hub
+    >>> model.push("username/my-model", format="gguf", quantization="Q4_K_M")
 """
+
+import os
 
 # ====== MAIN API (Recommended) ======
 from .core import (
@@ -47,7 +49,7 @@ from .quant import (
 )
 
 # ====== Hub Integration ======
-from .hub import QuantLLMHubManager
+from .hub import QuantLLMHubManager, ModelCardGenerator, generate_model_card
 
 # ====== Utilities ======
 from .utils import (
@@ -60,6 +62,9 @@ from .utils import (
     print_error,
     print_info,
     print_warning,
+    print_banner,
+    console,
+    QUANTLLM_ORANGE,
 )
 
 # Configure logging (minimal by default)
@@ -67,8 +72,18 @@ configure_logging("WARNING")
 
 __version__ = "2.0.0"
 __title__ = "QuantLLM"
-__description__ = "Ultra-fast LLM Quantization & GGUF Export"
-__author__ = "QuantLLM Team"
+__description__ = "Ultra-fast LLM Quantization & Export (GGUF, ONNX, MLX)"
+__author__ = "Dark Coder"
+
+# Show banner on import if QUANTLLM_BANNER=1
+if os.environ.get("QUANTLLM_BANNER", "0") == "1":
+    print_banner(__version__)
+
+
+def show_banner():
+    """Display the QuantLLM banner."""
+    print_banner(__version__)
+
 
 __all__ = [
     # Main API
@@ -90,6 +105,8 @@ __all__ = [
     
     # Hub
     "QuantLLMHubManager",
+    "ModelCardGenerator",
+    "generate_model_card",
     
     # Utils
     "configure_logging",
@@ -101,4 +118,8 @@ __all__ = [
     "print_error",
     "print_info",
     "print_warning",
+    "print_banner",
+    "show_banner",
+    "console",
+    "QUANTLLM_ORANGE",
 ]
