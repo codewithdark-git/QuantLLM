@@ -1,30 +1,38 @@
-# Quick Start
+# 🚀 Quick Start
 
 Get up and running with QuantLLM in 5 minutes.
 
-## Basic Usage
+---
 
-### Load a Model
+## Your First Model
 
 ```python
 from quantllm import turbo
 
-# Load any HuggingFace model with auto-quantization
-model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+# Load any HuggingFace model with automatic optimization
+model = turbo("meta-llama/Llama-3.2-3B")
+
+# Generate text
+response = model.generate("Explain machine learning in simple terms")
+print(response)
 ```
 
-The `turbo()` function automatically:
-- Detects your hardware (GPU memory, CUDA version)
-- Chooses optimal quantization (4-bit, 8-bit, etc.)
-- Enables Flash Attention if available
-- Configures memory settings
+**That's it!** QuantLLM automatically:
+- ✅ Detects your GPU and available memory
+- ✅ Applies optimal 4-bit quantization
+- ✅ Enables Flash Attention 2 when available
+- ✅ Configures memory management
+
+---
+
+## Basic Usage
 
 ### Generate Text
 
 ```python
 response = model.generate(
-    "Explain quantum computing in simple terms.",
-    max_new_tokens=100,
+    "Write a Python function to calculate fibonacci numbers",
+    max_new_tokens=200,
     temperature=0.7,
 )
 print(response)
@@ -34,11 +42,11 @@ print(response)
 
 ```python
 messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "What is Python?"},
+    {"role": "system", "content": "You are a helpful coding assistant."},
+    {"role": "user", "content": "How do I read a file in Python?"},
 ]
 
-response = model.chat(messages, max_new_tokens=100)
+response = model.chat(messages, max_new_tokens=200)
 print(response)
 ```
 
@@ -49,59 +57,162 @@ for token in model.generate("Count to 10:", stream=True):
     print(token, end="", flush=True)
 ```
 
-## Export to GGUF
+---
 
-Export your model for use with llama.cpp, Ollama, or LM Studio:
+## Export to Different Formats
+
+### GGUF (llama.cpp, Ollama, LM Studio)
 
 ```python
-# Export with 4-bit quantization
-model.export("gguf", "my-model.gguf", quantization="q4_0")
+# Export with recommended Q4_K_M quantization
+model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
 
-# Higher quality 8-bit
-model.export("gguf", "my-model-q8.gguf", quantization="q8_0")
+# Other quantization options
+model.export("gguf", "model.Q8_0.gguf", quantization="Q8_0")   # Higher quality
+model.export("gguf", "model.Q2_K.gguf", quantization="Q2_K")   # Smallest size
 ```
 
-**No llama.cpp installation required!** QuantLLM uses pure Python for GGUF conversion.
-
-## Fine-tuning
-
-Train your model with LoRA:
+### ONNX (ONNX Runtime, TensorRT)
 
 ```python
-training_data = [
-    {"text": "Question: What is AI?\nAnswer: Artificial Intelligence."},
-    {"text": "Question: What is ML?\nAnswer: Machine Learning."},
+model.export("onnx", "./model-onnx/")
+```
+
+### MLX (Apple Silicon)
+
+```python
+model.export("mlx", "./model-mlx/", quantization="4bit")
+```
+
+### SafeTensors (HuggingFace)
+
+```python
+model.export("safetensors", "./model-hf/")
+```
+
+---
+
+## Fine-Tune Your Model
+
+Train with your own data in one line:
+
+```python
+# Simple training
+model.finetune("training_data.json", epochs=3)
+
+# With more control
+model.finetune(
+    "training_data.json",
+    epochs=5,
+    learning_rate=2e-4,
+    lora_r=16,
+    batch_size=4,
+)
+```
+
+**Supported data formats:**
+
+```json
+[
+  {"instruction": "What is Python?", "output": "Python is a programming language..."},
+  {"text": "Full text for language modeling"},
+  {"prompt": "Question here", "completion": "Answer here"}
 ]
-
-result = model.finetune(
-    data=training_data,
-    epochs=3,
-    lora_r=8,
-)
 ```
 
-## Configuration
+---
 
-View or customize the auto-detected configuration:
+## Push to HuggingFace
+
+Share your model with the world:
 
 ```python
-# Print configuration summary
-model.config.print_summary()
-
-# Manual configuration
-from quantllm import turbo
-
-model = turbo(
-    "meta-llama/Llama-2-7b",
-    bits=4,                    # Force 4-bit quantization
-    max_seq_length=4096,       # Context length
-    device="cuda:0",           # Specific GPU
+# Push with auto-generated model card
+model.push(
+    "your-username/my-awesome-model",
+    format="gguf",
+    quantization="Q4_K_M",
+    license="apache-2.0"
 )
 ```
+
+The model card includes:
+- ✅ Proper YAML frontmatter for HuggingFace
+- ✅ Format-specific usage examples
+- ✅ "Use this model" button compatibility
+- ✅ Quantization details
+
+---
+
+## Configuration Options
+
+### Override Auto-Detection
+
+```python
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    bits=4,                    # Force 4-bit quantization
+    max_length=4096,           # Context length
+    device="cuda:0",           # Specific GPU
+    dtype="bfloat16",          # Data type
+)
+```
+
+### View Current Configuration
+
+```python
+print(model.config)
+```
+
+---
+
+## Load GGUF Models
+
+Load pre-quantized GGUF models directly:
+
+```python
+from quantllm import TurboModel
+
+model = TurboModel.from_gguf(
+    "TheBloke/Llama-2-7B-Chat-GGUF",
+    filename="llama-2-7b-chat.Q4_K_M.gguf"
+)
+
+print(model.generate("Hello!"))
+```
+
+---
+
+## Show the Banner
+
+Display the QuantLLM banner anytime:
+
+```python
+import quantllm
+
+quantllm.show_banner()
+```
+
+```
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   🚀 QuantLLM v2.0.0                                       ║
+║   Ultra-fast LLM Quantization & Export                     ║
+║                                                            ║
+║   ✓ GGUF  ✓ ONNX  ✓ MLX  ✓ SafeTensors                     ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+```
+
+---
 
 ## Next Steps
 
-- [Loading Models](guide/loading-models.md) - Advanced model loading options
-- [GGUF Export](guide/gguf-export.md) - All quantization types
-- [Fine-tuning](guide/finetuning.md) - Training guide
-- [API Reference](api/turbomodel.md) - Full API documentation
+Now that you know the basics, explore more:
+
+- [Loading Models →](guide/loading-models.md) — Advanced model loading options
+- [Text Generation →](guide/generation.md) — Generation parameters and modes
+- [GGUF Export →](guide/gguf-export.md) — All quantization types explained
+- [Fine-tuning →](guide/finetuning.md) — Training with LoRA
+- [Hub Integration →](guide/hub-integration.md) — Push and pull from HuggingFace
+- [API Reference →](api/turbomodel.md) — Full API documentation

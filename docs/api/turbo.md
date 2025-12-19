@@ -1,35 +1,48 @@
-# turbo()
+# 🚀 turbo()
 
-The main entry point for QuantLLM - a one-liner to load any model.
+The main entry point for QuantLLM — load any model in one line.
+
+---
 
 ## Signature
 
 ```python
 def turbo(
-    model_name: str,
+    model: str,
+    *,
     bits: Optional[int] = None,
-    max_seq_length: Optional[int] = None,
+    max_length: Optional[int] = None,
     device: Optional[str] = None,
     dtype: Optional[str] = None,
+    quantize: bool = True,
     trust_remote_code: bool = False,
+    verbose: bool = True,
     **kwargs
 ) -> TurboModel
 ```
+
+---
 
 ## Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model_name` | str | required | HuggingFace model name or local path |
-| `bits` | int | auto | Quantization bits (2, 3, 4, 5, 6, 8, 16) |
-| `max_seq_length` | int | auto | Maximum sequence length |
-| `device` | str | auto | Device ("cuda", "cpu", "cuda:0") |
+| `model` | str | required | HuggingFace model name or local path |
+| `bits` | int | auto | Quantization bits (4, 8, 16) |
+| `max_length` | int | auto | Maximum context length |
+| `device` | str | auto | Device ("cuda", "cpu", "cuda:0", "auto") |
 | `dtype` | str | auto | Data type ("float16", "bfloat16") |
+| `quantize` | bool | True | Whether to apply quantization |
 | `trust_remote_code` | bool | False | Trust remote code in model |
+| `verbose` | bool | True | Show loading progress and stats |
+
+---
 
 ## Returns
 
-A `TurboModel` instance ready for generation.
+A [`TurboModel`](turbomodel.md) instance ready for generation, fine-tuning, and export.
+
+---
 
 ## Examples
 
@@ -38,18 +51,31 @@ A `TurboModel` instance ready for generation.
 ```python
 from quantllm import turbo
 
-model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+# Load with automatic optimization
+model = turbo("meta-llama/Llama-3.2-3B")
+
+# Generate text
+response = model.generate("What is machine learning?")
+print(response)
 ```
 
-### With Options
+### With Custom Settings
 
 ```python
 model = turbo(
-    "meta-llama/Llama-2-7b",
-    bits=4,
-    max_seq_length=4096,
-    device="cuda:0",
+    "meta-llama/Llama-3.2-3B",
+    bits=4,                    # Force 4-bit quantization
+    max_length=4096,           # Context length
+    device="cuda:0",           # Specific GPU
+    dtype="bfloat16",          # Use bfloat16
 )
+```
+
+### Without Quantization
+
+```python
+# Load in full precision
+model = turbo("meta-llama/Llama-3.2-3B", quantize=False)
 ```
 
 ### Local Model
@@ -58,16 +84,61 @@ model = turbo(
 model = turbo("./my-local-model/")
 ```
 
+### Silent Loading
+
+```python
+model = turbo("meta-llama/Llama-3.2-3B", verbose=False)
+```
+
+---
+
 ## Auto-Configuration
 
 When parameters are not specified, `turbo()` automatically:
 
-1. **Detects hardware** (GPU memory, CUDA version, CPU cores)
-2. **Analyzes model** (size, architecture, optimal settings)
-3. **Chooses quantization** (4-bit if memory limited, 8-bit if available)
-4. **Enables optimizations** (Flash Attention, fused kernels)
+1. **Detects hardware**
+   - GPU memory and CUDA version
+   - CPU cores and available RAM
+   - Flash Attention availability
+
+2. **Analyzes model**
+   - Parameter count and size
+   - Architecture type
+   - Optimal settings
+
+3. **Chooses quantization**
+   - 4-bit if GPU memory < 16GB
+   - 8-bit if GPU memory >= 16GB
+   - No quantization if explicitly disabled
+
+4. **Enables optimizations**
+   - Flash Attention 2 when available
+   - torch.compile for training
+   - Dynamic memory management
+
+---
+
+## Output
+
+When `verbose=True` (default), you'll see:
+
+```
+╔════════════════════════════════════════════════════════════╗
+║  🚀 QuantLLM v2.0.0                                        ║
+╚════════════════════════════════════════════════════════════╝
+
+📊 Loading: meta-llama/Llama-3.2-3B
+   Parameters: 3.21B
+   Original: 6.4 GB
+   Quantized: 1.9 GB (70% saved)
+   
+✓ Model loaded successfully
+```
+
+---
 
 ## See Also
 
-- [TurboModel](turbomodel.md) - Full class documentation
-- [SmartConfig](turbomodel.md#smartconfig) - Configuration details
+- [TurboModel](turbomodel.md) — Full class documentation
+- [SmartConfig](turbomodel.md#smartconfig) — Configuration details
+- [Loading Models Guide](../guide/loading-models.md) — Detailed loading guide
