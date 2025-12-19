@@ -31,9 +31,9 @@ class ModelCardGenerator:
     
     # Format-specific tags
     FORMAT_TAGS = {
-        "gguf": ["gguf", "llama-cpp", "quantized"],
-        "onnx": ["onnx", "onnxruntime"],
-        "mlx": ["mlx", "mlx-lm", "apple-silicon"],
+        "gguf": ["gguf", "llama-cpp", "quantized", "transformers"],
+        "onnx": ["onnx", "onnxruntime", "transformers"],
+        "mlx": ["mlx", "mlx-lm", "apple-silicon", "transformers"],
         "safetensors": ["transformers", "safetensors"],
         "pytorch": ["transformers", "pytorch"],
     }
