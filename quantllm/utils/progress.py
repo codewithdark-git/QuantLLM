@@ -2,7 +2,7 @@
 Unified Progress Tracking and Logging System for QuantLLM.
 
 Uses `rich` for beautiful output and progress bars.
-Similar to Unsloth's clean UI but with QuantLLM styling.
+Consistent orange theme across the entire project.
 """
 
 import logging
@@ -29,18 +29,30 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.live import Live
 
-# Custom theme - inspired by modern CLI tools
+# QuantLLM Brand Colors - Orange Theme
+QUANTLLM_ORANGE = "orange1"
+QUANTLLM_ORANGE_LIGHT = "dark_orange"
+QUANTLLM_ACCENT = "orange3"
+
+# Custom theme - QuantLLM Orange Theme
 custom_theme = Theme({
-    "info": "cyan",
+    # Primary colors
+    "info": QUANTLLM_ORANGE,
     "warning": "yellow",
     "error": "red bold",
     "success": "green bold",
-    "progress.description": "bold cyan",
-    "progress.percentage": "bold magenta",
-    "progress.remaining": "dim",
-    "bar.complete": "green",
+    
+    # Progress bar styling
+    "progress.description": f"bold {QUANTLLM_ORANGE}",
+    "progress.percentage": f"bold {QUANTLLM_ORANGE}",
+    "progress.remaining": "dim white",
+    "bar.complete": QUANTLLM_ORANGE,
     "bar.finished": "green",
-    "bar.pulse": "cyan",
+    "bar.pulse": QUANTLLM_ORANGE_LIGHT,
+    
+    # Table styling
+    "table.header": f"bold {QUANTLLM_ORANGE}",
+    "table.border": QUANTLLM_ACCENT,
 })
 
 console = Console(theme=custom_theme)
@@ -85,34 +97,34 @@ class QuantLLMProgress:
     
     STYLES = {
         "default": [
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(bar_width=40, complete_style="green", finished_style="green"),
+            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
+            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
+            BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE, finished_style="green"),
             TaskProgressColumn(),
-            TextColumn("•"),
+            TextColumn("[dim]•[/]"),
             TimeElapsedColumn(),
-            TextColumn("•"),
+            TextColumn("[dim]•[/]"),
             TimeRemainingColumn(),
         ],
         "spinner": [
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}"),
+            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
+            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
         ],
         "download": [
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(bar_width=40),
+            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
+            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
+            BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE),
             DownloadColumn(),
-            TextColumn("•"),
+            TextColumn("[dim]•[/]"),
             TransferSpeedColumn(),
-            TextColumn("•"),
+            TextColumn("[dim]•[/]"),
             TimeRemainingColumn(),
         ],
         "steps": [
-            SpinnerColumn(spinner_name="dots"),
-            TextColumn("[bold cyan]{task.description}"),
+            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
+            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
             MofNCompleteColumn(),
-            BarColumn(bar_width=30),
+            BarColumn(bar_width=30, complete_style=QUANTLLM_ORANGE),
             TimeElapsedColumn(),
         ],
     }
@@ -145,7 +157,7 @@ class QuantLLMProgress:
 
 class StepProgress:
     """
-    Multi-step progress tracker for complex operations.
+    Multi-step progress tracker for complex operations with orange theme.
     
     Usage:
         with StepProgress(["Download", "Convert", "Quantize"]) as steps:
@@ -175,9 +187,9 @@ class StepProgress:
     def _print_status(self):
         """Print current status of all steps."""
         icons = {"pending": "○", "running": "◐", "complete": "●", "error": "✗"}
-        colors = {"pending": "dim", "running": "cyan", "complete": "green", "error": "red"}
+        colors = {"pending": "dim", "running": QUANTLLM_ORANGE, "complete": "green", "error": "red"}
         
-        lines = [f"[bold]{self.title}[/]"]
+        lines = [f"[bold {QUANTLLM_ORANGE}]{self.title}[/]"]
         for i, step in enumerate(self.steps, 1):
             status = self.step_status[step]
             icon = icons[status]
@@ -189,7 +201,7 @@ class StepProgress:
     def start(self, step: str):
         """Mark step as running."""
         self.step_status[step] = "running"
-        console.print(f"[cyan]▶[/] Starting: {step}...")
+        console.print(f"[{QUANTLLM_ORANGE}]▶[/] Starting: {step}...")
     
     def complete(self, step: str):
         """Mark step as complete."""
@@ -207,13 +219,13 @@ def track_progress(
     description: str = "Processing...",
     total: Optional[int] = None
 ) -> Iterable:
-    """Simple wrapper around rich.progress.track."""
+    """Simple wrapper around rich.progress.track with orange theme."""
     columns = [
-        SpinnerColumn(spinner_name="dots"),
-        TextColumn("[bold cyan]{task.description}"),
-        BarColumn(bar_width=40),
+        SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
+        TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
+        BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE),
         TaskProgressColumn(),
-        TextColumn("•"),
+        TextColumn("[dim]•[/]"),
         TimeRemainingColumn(),
     ]
     
@@ -280,20 +292,20 @@ def stream_subprocess_output(
 
 
 # ============================================
-# Helper Functions
+# Helper Functions - Orange Theme
 # ============================================
 
 def print_header(title: str, icon: str = "🚀") -> None:
-    """Print a styled header."""
+    """Print a styled header with orange theme."""
     width = 60
     console.print()
-    console.print(f"[bold cyan]{'═' * width}[/]")
-    console.print(f"[bold cyan]║[/] {icon} [bold white]{title.center(width - 6)}[/] [bold cyan]║[/]")
-    console.print(f"[bold cyan]{'═' * width}[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]{'═' * width}[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]║[/] {icon} [bold white]{title.center(width - 6)}[/] [bold {QUANTLLM_ORANGE}]║[/]")
+    console.print(f"[bold {QUANTLLM_ORANGE}]{'═' * width}[/]")
 
 def print_subheader(title: str) -> None:
     """Print a smaller styled subheader."""
-    console.print(f"\n[bold cyan]── {title} ──[/]")
+    console.print(f"\n[bold {QUANTLLM_ORANGE}]── {title} ──[/]")
 
 def print_success(msg: str) -> None:
     """Print success message."""
@@ -308,16 +320,16 @@ def print_error(msg: str) -> None:
     console.print(f"[red bold]✗ Error:[/] {msg}")
 
 def print_info(msg: str) -> None:
-    """Print info message."""
-    console.print(f"[cyan]ℹ[/] {msg}")
+    """Print info message with orange icon."""
+    console.print(f"[{QUANTLLM_ORANGE}]ℹ[/] {msg}")
 
 def print_step(step: int, total: int, msg: str) -> None:
     """Print a step in a multi-step process."""
-    console.print(f"[bold cyan][{step}/{total}][/] {msg}")
+    console.print(f"[bold {QUANTLLM_ORANGE}][{step}/{total}][/] {msg}")
 
 def print_table(title: str, data: dict) -> None:
-    """Print a formatted table."""
-    table = Table(title=title, show_header=False, border_style="cyan")
+    """Print a formatted table with orange theme."""
+    table = Table(title=title, show_header=False, border_style=QUANTLLM_ORANGE)
     table.add_column("Key", style="bold")
     table.add_column("Value")
     
@@ -333,9 +345,9 @@ def print_model_card(
     memory: str,
     **extras
 ) -> None:
-    """Print a model summary card."""
-    table = Table(title=f"[bold]{model_name}[/]", border_style="cyan", show_header=False)
-    table.add_column("Property", style="bold cyan")
+    """Print a model summary card with orange theme."""
+    table = Table(title=f"[bold]{model_name}[/]", border_style=QUANTLLM_ORANGE, show_header=False)
+    table.add_column("Property", style=f"bold {QUANTLLM_ORANGE}")
     table.add_column("Value")
     
     table.add_row("Parameters", params)
@@ -346,3 +358,44 @@ def print_model_card(
         table.add_row(key.replace("_", " ").title(), str(value))
     
     console.print(table)
+
+
+def print_banner() -> None:
+    """Print QuantLLM banner."""
+    banner = """
+    ╔═══════════════════════════════════════════════════════════╗
+    ║                                                           ║
+    ║   ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗            ║
+    ║  ██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝            ║
+    ║  ██║   ██║██║   ██║███████║██╔██╗ ██║   ██║               ║
+    ║  ██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║               ║
+    ║  ╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║   LLM         ║
+    ║   ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝               ║
+    ║                                                           ║
+    ║          Ultra-fast LLM Quantization & Export             ║
+    ╚═══════════════════════════════════════════════════════════╝
+    """
+    console.print(f"[bold {QUANTLLM_ORANGE}]{banner}[/]")
+
+
+def format_size(size_bytes: int) -> str:
+    """Format bytes to human readable size."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.2f} PB"
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds to human readable time."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        return f"{hours}h {mins}m"

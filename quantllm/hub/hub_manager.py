@@ -1,6 +1,15 @@
-from huggingface_hub import login, HfApi, Repository
+from huggingface_hub import HfApi
 from typing import Optional, Dict, Any
-from ..utils import logger, print_success, print_header, print_info, print_error, QuantLLMProgress
+from ..utils import (
+    logger, 
+    print_success, 
+    print_header, 
+    print_info, 
+    print_error, 
+    print_warning,
+    QuantLLMProgress,
+    format_size,
+)
 import os
 
 class QuantLLMHubManager:
@@ -131,7 +140,7 @@ class QuantLLMHubManager:
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         
         try:
-            print_header(f"Pushing to {self.repo_id}")
+            print_header(f"Pushing to {self.repo_id}", icon="📤")
             
             # Ensure repo exists
             if not self.api.repo_exists(self.repo_id):
@@ -142,8 +151,16 @@ class QuantLLMHubManager:
                     exist_ok=True
                 )
 
+            # Calculate total size
+            total_size = 0
+            for root, dirs, files in os.walk(self.staging_dir):
+                for f in files:
+                    total_size += os.path.getsize(os.path.join(root, f))
+            
+            print_info(f"Uploading {format_size(total_size)}...")
+
             with QuantLLMProgress() as p:
-                task = p.add_task("Uploading artifacts...", total=None)
+                task = p.add_task("Uploading to HuggingFace Hub...", total=None)
                 
                 self.api.upload_folder(
                     repo_id=self.repo_id,
@@ -154,9 +171,7 @@ class QuantLLMHubManager:
                 
                 p.update(task, completed=100)
             
-            print_success(f"Successfully pushed to https://huggingface.co/{self.repo_id}")
-            
-            # Clean up staging? Maybe keep it for safety.
+            print_success(f"Pushed to https://huggingface.co/{self.repo_id}")
             
         except Exception as e:
             print_error(f"Error pushing to Hub: {str(e)}")

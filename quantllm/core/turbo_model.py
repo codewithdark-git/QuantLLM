@@ -935,14 +935,18 @@ class TurboModel:
         Export model to various formats.
         
         Supported formats:
-            - "gguf": For llama.cpp, Ollama, LM Studio
+            - "gguf": For llama.cpp, Ollama, LM Studio (Q4_K_M, Q5_K_M, etc.)
             - "safetensors": For HuggingFace ecosystem
-            - "onnx": For ONNX Runtime
+            - "onnx": For ONNX Runtime, TensorRT
+            - "mlx": For Apple Silicon Macs
         
         Args:
-            format: Target format (gguf, safetensors, onnx)
+            format: Target format (gguf, safetensors, onnx, mlx)
             output_path: Output file/directory path
-            quantization: For GGUF: Q4_K_M, Q5_K_M, Q2_K, etc.
+            quantization: Format-specific quantization:
+                - GGUF: Q4_K_M, Q5_K_M, Q8_0, etc.
+                - ONNX: dynamic, int8
+                - MLX: 4bit, 8bit
             **kwargs: Format-specific options
             
         Returns:
@@ -951,13 +955,15 @@ class TurboModel:
         Example:
             >>> model.export("gguf")  # Uses auto name
             >>> model.export("gguf", "my_model.gguf", quantization="Q4_K_M")
-            >>> model.export("safetensors", "./my_model/")
+            >>> model.export("onnx", "./my_model_onnx/")
+            >>> model.export("mlx", "./my_model_mlx/", quantization="4bit")
         """
         format = format.lower()
         
         # Merge LoRA if applied
         if self._lora_applied:
-            logger.info("🔗 Merging LoRA weights...")
+            if self.verbose:
+                print_info("Merging LoRA weights before export...")
             self.model = self.model.merge_and_unload()
             self._lora_applied = False
         
@@ -965,17 +971,22 @@ class TurboModel:
         if output_path is None:
             model_name = self.model.config._name_or_path.split('/')[-1]
             if format == "gguf":
-                quant = quantization or self.config.quant_type
-                output_path = f"{model_name}.{quant}.gguf"
+                quant = quantization or self.config.quant_type or "q4_k_m"
+                output_path = f"{model_name}.{quant.upper()}.gguf"
             elif format == "safetensors":
                 output_path = f"./{model_name}-quantllm/"
             elif format == "onnx":
-                output_path = f"./{model_name}.onnx"
+                output_path = f"./{model_name}-onnx/"
+            elif format == "mlx":
+                output_path = f"./{model_name}-mlx/"
+            else:
+                output_path = f"./{model_name}-{format}/"
         
         exporters = {
             "gguf": self._export_gguf,
             "safetensors": self._export_safetensors,
             "onnx": self._export_onnx,
+            "mlx": self._export_mlx,
         }
         if format not in exporters:
             raise ValueError(f"Unknown format: {format}. Supported: {list(exporters.keys())}")
@@ -1001,39 +1012,76 @@ class TurboModel:
         Args:
             repo_id: Repository ID (e.g. "username/model")
             token: HF Token
-            format: "safetensors" or "gguf"
-            quantization: Quantization type
+            format: "safetensors", "gguf", "onnx", or "mlx"
+            quantization: Quantization type (for gguf/onnx)
             commit_message: Commit message
-            **kwargs: Arguments for export (quantization, etc.)
+            **kwargs: Arguments for export
+            
+        Supported formats:
+            - safetensors: Standard HuggingFace format
+            - gguf: For llama.cpp, Ollama, LM Studio
+            - onnx: For ONNX Runtime, TensorRT
+            - mlx: For Apple Silicon (requires macOS)
         """
         from ..hub import QuantLLMHubManager
         
+        format_lower = format.lower()
+        model_name = self.model.config._name_or_path.split('/')[-1]
+        
         print_header(f"Pushing to {repo_id}")
+        print_info(f"Format: {format_lower.upper()}")
+        
         manager = QuantLLMHubManager(repo_id=repo_id, hf_token=token)
         
-        if format.lower() == "gguf":
+        if format_lower == "gguf":
             # Export GGUF directly to staging
-            # Handle output name
-            model_name = self.model.config._name_or_path.split('/')[-1]
-            # Resolve quantization label for filename
-            quant_label = quantization or (self.config.quant_type if self.config.quant_type != "GGUF" else "q4_0") or "q4_0"
-            filename = f"{model_name}.{quant_label}.gguf"
+            quant_label = quantization or (self.config.quant_type if self.config.quant_type != "GGUF" else "q4_k_m") or "q4_k_m"
+            filename = f"{model_name}.{quant_label.upper()}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             
-            # Export using existing logic
             self.export(format="gguf", output_path=save_path, quantization=quant_label, **kwargs)
             
-            # Generate basic card
             manager.track_hyperparameters({
                 "format": "gguf",
+                "quantization": quant_label.upper(),
                 "base_model": model_name
             })
             manager._generate_model_card()
+            
+        elif format_lower == "onnx":
+            # Export to ONNX format
+            print_info("Exporting to ONNX format...")
+            save_path = manager.staging_dir
+            
+            self._export_onnx(save_path, quantization=quantization, **kwargs)
+            
+            manager.track_hyperparameters({
+                "format": "onnx",
+                "quantization": quantization or "none",
+                "base_model": model_name
+            })
+            manager._generate_model_card()
+            
+        elif format_lower == "mlx":
+            # Export to MLX format
+            print_info("Exporting to MLX format...")
+            save_path = manager.staging_dir
+            
+            self._export_mlx(save_path, quantization=quantization, **kwargs)
+            
+            manager.track_hyperparameters({
+                "format": "mlx",
+                "quantization": quantization or "none",
+                "base_model": model_name
+            })
+            manager._generate_model_card()
+            
         else:
+            # SafeTensors or PyTorch format
             manager.save_final_model(self, format=format)
             
         manager.push(commit_message=commit_message)
-        
+    
     # Alias for convenience
     push = push_to_hub
     
@@ -1041,6 +1089,7 @@ class TurboModel:
         self, 
         output_path: str, 
         quantization: Optional[str] = None,
+        fast_mode: bool = False,
         **kwargs
     ) -> str:
         """
@@ -1053,9 +1102,17 @@ class TurboModel:
             1. Save model to temp directory (dequantize if needed)
             2. Convert to F16 GGUF using convert_hf_to_gguf.py
             3. Quantize to target format (Q4_K_M, Q5_K_M, etc.) using llama-quantize
+            
+        Args:
+            output_path: Output file path for GGUF
+            quantization: Quantization type (Q4_K_M, Q5_K_M, Q8_0, etc.)
+            fast_mode: Skip intermediate F16 step for faster export (slightly less optimal)
         """
         from ..quant import convert_to_gguf, quantize_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
-        from ..utils import QuantLLMProgress
+        from ..utils import QuantLLMProgress, format_time, format_size
+        import time
+        
+        start_time = time.time()
         
         quant_type = quantization or self.config.quant_type or "q4_k_m"
         quant_type_upper = quant_type.upper()
@@ -1064,6 +1121,11 @@ class TurboModel:
         # Check if this is a passthrough format (f16, bf16, f32 - no quantization needed)
         passthrough_types = {'f16', 'f32', 'bf16', 'float16', 'float32', 'bfloat16'}
         needs_quantization = quant_type_lower not in passthrough_types
+        
+        if self.verbose:
+            print_info(f"Target quantization: {quant_type_upper}")
+            if fast_mode:
+                print_info("Fast mode enabled")
         
         # Ensure llama.cpp
         if self.verbose:
@@ -1183,12 +1245,14 @@ class TurboModel:
                 torch.cuda.empty_cache()
         
         # Print final summary
+        elapsed = time.time() - start_time
         if self.verbose:
-            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            file_size_bytes = os.path.getsize(output_path)
             print_header("Export Complete! 🎉", icon="✅")
             print_info(f"Output: {output_path}")
             print_info(f"Format: GGUF {quant_type_upper}")
-            print_info(f"Size: {file_size_mb:.2f} MB")
+            print_info(f"Size: {format_size(file_size_bytes)}")
+            print_info(f"Time: {format_time(elapsed)}")
                 
         return output_path
     
@@ -1327,19 +1391,247 @@ class TurboModel:
     def _export_onnx(
         self,
         output_path: str,
+        quantization: Optional[str] = None,
+        opset_version: int = 14,
         **kwargs
     ) -> str:
-        """Export to ONNX format."""
+        """
+        Export to ONNX format with proper structure.
+        
+        Args:
+            output_path: Output directory for ONNX files
+            quantization: ONNX quantization type (dynamic, static, int8)
+            opset_version: ONNX opset version (default: 14)
+        """
+        from ..utils import QuantLLMProgress
+        
         try:
-            from transformers.onnx import export
-            export(
-                self.model,
-                self.tokenizer,
-                output_path,
-            )
-            return output_path
+            from optimum.onnxruntime import ORTModelForCausalLM
+            HAS_OPTIMUM = True
         except ImportError:
-            raise ImportError("ONNX export requires: pip install onnx onnxruntime")
+            HAS_OPTIMUM = False
+        
+        os.makedirs(output_path, exist_ok=True)
+        model_name = self.model.config._name_or_path
+        
+        if HAS_OPTIMUM:
+            # Use Optimum for best ONNX export
+            if self.verbose:
+                print_info("Using Optimum for ONNX export (recommended)...")
+            
+            with QuantLLMProgress() as progress:
+                task = progress.add_task("Exporting to ONNX...", total=None)
+                
+                # Check if model is quantized - need to dequantize first
+                if self._is_bnb_quantized():
+                    if self.verbose:
+                        print_warning("BNB quantized model detected. Exporting from original model...")
+                    
+                    # Export directly from HuggingFace
+                    ort_model = ORTModelForCausalLM.from_pretrained(
+                        model_name,
+                        export=True,
+                        trust_remote_code=True,
+                    )
+                else:
+                    # Save model first, then convert
+                    temp_path = os.path.join(output_path, "_temp_hf")
+                    os.makedirs(temp_path, exist_ok=True)
+                    self.model.save_pretrained(temp_path)
+                    self.tokenizer.save_pretrained(temp_path)
+                    
+                    ort_model = ORTModelForCausalLM.from_pretrained(
+                        temp_path,
+                        export=True,
+                    )
+                    
+                    # Clean temp
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                
+                # Save ONNX model
+                ort_model.save_pretrained(output_path)
+                self.tokenizer.save_pretrained(output_path)
+                
+                progress.update(task, completed=100)
+            
+            # Apply quantization if requested
+            if quantization:
+                if self.verbose:
+                    print_info(f"Applying {quantization} quantization...")
+                self._quantize_onnx_model(output_path, quantization)
+                
+        else:
+            # Fallback to basic torch.onnx export
+            if self.verbose:
+                print_warning("Optimum not found. Using basic ONNX export.")
+                print_info("For better results: pip install optimum[onnxruntime]")
+            
+            try:
+                import onnx
+            except ImportError:
+                raise ImportError("ONNX export requires: pip install onnx onnxruntime optimum[onnxruntime]")
+            
+            # Basic export using torch.onnx
+            onnx_path = os.path.join(output_path, "model.onnx")
+            
+            # Create dummy input
+            dummy_input = self.tokenizer(
+                "Hello world",
+                return_tensors="pt",
+                padding=True,
+            )
+            dummy_input = {k: v.to(self.model.device) for k, v in dummy_input.items()}
+            
+            self.model.eval()
+            
+            with QuantLLMProgress() as progress:
+                task = progress.add_task("Exporting to ONNX...", total=None)
+                
+                torch.onnx.export(
+                    self.model,
+                    tuple(dummy_input.values()),
+                    onnx_path,
+                    input_names=list(dummy_input.keys()),
+                    output_names=["logits"],
+                    dynamic_axes={
+                        "input_ids": {0: "batch", 1: "sequence"},
+                        "attention_mask": {0: "batch", 1: "sequence"},
+                        "logits": {0: "batch", 1: "sequence"},
+                    },
+                    opset_version=opset_version,
+                    do_constant_folding=True,
+                )
+                
+                progress.update(task, completed=100)
+            
+            # Save tokenizer
+            self.tokenizer.save_pretrained(output_path)
+        
+        if self.verbose:
+            print_success(f"ONNX model exported to {output_path}")
+        
+        return output_path
+    
+    def _quantize_onnx_model(self, model_path: str, quant_type: str) -> None:
+        """Apply ONNX quantization."""
+        try:
+            from optimum.onnxruntime import ORTQuantizer
+            from optimum.onnxruntime.configuration import AutoQuantizationConfig
+            
+            quantizer = ORTQuantizer.from_pretrained(model_path)
+            
+            if quant_type.lower() in ["dynamic", "int8"]:
+                qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=True)
+            else:
+                qconfig = AutoQuantizationConfig.avx2(is_static=False)
+            
+            quantizer.quantize(save_dir=model_path, quantization_config=qconfig)
+            
+        except ImportError:
+            print_warning("Optimum quantization not available. Skipping ONNX quantization.")
+    
+    def _export_mlx(
+        self,
+        output_path: str,
+        quantization: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Export to MLX format for Apple Silicon.
+        
+        Args:
+            output_path: Output directory
+            quantization: MLX quantization (4bit, 8bit)
+        """
+        from ..utils import QuantLLMProgress
+        import subprocess
+        import sys
+        
+        # Check platform
+        import platform
+        if platform.system() != "Darwin" or platform.machine() != "arm64":
+            print_warning("MLX export is optimized for Apple Silicon Macs.")
+            print_info("The model will be saved but may not run efficiently on this system.")
+        
+        try:
+            import mlx
+            HAS_MLX = True
+        except ImportError:
+            HAS_MLX = False
+        
+        os.makedirs(output_path, exist_ok=True)
+        model_name = self.model.config._name_or_path
+        
+        if HAS_MLX:
+            try:
+                from mlx_lm import convert
+                
+                if self.verbose:
+                    print_info("Using mlx-lm for conversion...")
+                
+                with QuantLLMProgress() as progress:
+                    task = progress.add_task("Converting to MLX...", total=None)
+                    
+                    # Save HF model first if quantized
+                    if self._is_bnb_quantized():
+                        # Use original model name
+                        source_path = model_name
+                    else:
+                        source_path = os.path.join(output_path, "_temp_hf")
+                        os.makedirs(source_path, exist_ok=True)
+                        self.model.save_pretrained(source_path)
+                        self.tokenizer.save_pretrained(source_path)
+                    
+                    # Build convert command
+                    convert_args = {
+                        "hf_path": source_path,
+                        "mlx_path": output_path,
+                    }
+                    
+                    if quantization:
+                        if "4" in quantization:
+                            convert_args["quantize"] = True
+                            convert_args["q_bits"] = 4
+                        elif "8" in quantization:
+                            convert_args["quantize"] = True
+                            convert_args["q_bits"] = 8
+                    
+                    # Run conversion
+                    convert(**convert_args)
+                    
+                    # Clean temp
+                    if not self._is_bnb_quantized():
+                        shutil.rmtree(source_path, ignore_errors=True)
+                    
+                    progress.update(task, completed=100)
+                    
+            except Exception as e:
+                print_error(f"MLX conversion failed: {e}")
+                raise
+        else:
+            # Fallback: save as HF format with instructions
+            if self.verbose:
+                print_warning("mlx-lm not installed. Saving as HuggingFace format.")
+                print_info("To convert to MLX: pip install mlx-lm && python -m mlx_lm.convert ...")
+            
+            self.model.save_pretrained(output_path)
+            self.tokenizer.save_pretrained(output_path)
+            
+            # Create README with conversion instructions
+            readme_path = os.path.join(output_path, "CONVERT_TO_MLX.md")
+            with open(readme_path, "w") as f:
+                f.write("# Convert to MLX\n\n")
+                f.write("This model was saved in HuggingFace format.\n")
+                f.write("To convert to MLX format on Apple Silicon:\n\n")
+                f.write("```bash\n")
+                f.write("pip install mlx-lm\n")
+                f.write(f"python -m mlx_lm.convert --hf-path {output_path} --mlx-path ./mlx_model\n")
+                f.write("```\n")
+        
+        if self.verbose:
+            print_success(f"MLX model exported to {output_path}")
+        
+        return output_path
     
     def __repr__(self) -> str:
         params = self.model.num_parameters() / 1e9

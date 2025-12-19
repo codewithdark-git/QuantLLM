@@ -61,11 +61,21 @@ setup(
         "einops>=0.7.0",
         "psutil>=5.9.0",
         "huggingface-hub>=0.19.0",
+        "rich>=13.0.0",  # For beautiful progress bars
+        "gguf>=0.10.0",  # For GGUF loading/export
     ],
     extras_require={
         "gguf": [
-            "ctransformers>=0.2.27",
-            "llama-cpp-python>=0.2.20",
+            "gguf>=0.10.0",
+        ],
+        "onnx": [
+            "onnx>=1.14.0",
+            "onnxruntime>=1.16.0",
+            "optimum[onnxruntime]>=1.14.0",
+        ],
+        "mlx": [
+            "mlx>=0.1.0",
+            "mlx-lm>=0.1.0",
         ],
         "triton": [
             "triton>=2.1.0",
@@ -77,8 +87,10 @@ setup(
             "hf-lifecycle @ git+https://github.com/codewithdark-git/huggingface-lifecycle.git",
         ],
         "full": [
-            "ctransformers>=0.2.27",
-            "llama-cpp-python>=0.2.20",
+            "gguf>=0.10.0",
+            "onnx>=1.14.0",
+            "onnxruntime>=1.16.0",
+            "optimum[onnxruntime]>=1.14.0",
             "triton>=2.1.0",
             "wandb>=0.15.0",
             "tensorboard>=2.14.0",

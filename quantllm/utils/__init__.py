@@ -2,9 +2,15 @@
 QuantLLM Utilities
 
 Provides logging, progress tracking, and memory management utilities.
+Consistent orange theme across the entire project.
 """
 
 from .progress import (
+    # Theme colors
+    QUANTLLM_ORANGE,
+    QUANTLLM_ORANGE_LIGHT,
+    QUANTLLM_ACCENT,
+    
     # Logging
     configure_logging,
     get_logger,
@@ -27,6 +33,11 @@ from .progress import (
     print_step,
     print_table,
     print_model_card,
+    print_banner,
+    
+    # Formatters
+    format_size,
+    format_time,
 )
 
 from .memory_tracker import MemoryTracker
@@ -36,6 +47,11 @@ def enable_logging(level="INFO"):
     configure_logging(level)
 
 __all__ = [
+    # Theme
+    "QUANTLLM_ORANGE",
+    "QUANTLLM_ORANGE_LIGHT", 
+    "QUANTLLM_ACCENT",
+    
     # Logging
     "configure_logging",
     "enable_logging",
@@ -59,6 +75,11 @@ __all__ = [
     "print_step",
     "print_table",
     "print_model_card",
+    "print_banner",
+    
+    # Formatters
+    "format_size",
+    "format_time",
     
     # Memory
     "MemoryTracker",

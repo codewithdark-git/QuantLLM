@@ -1,6 +1,12 @@
 """
 llama.cpp Integration for QuantLLM
 Handles installation, detection, and usage of llama.cpp tools
+
+Optimizations:
+- Uses shallow clone (--depth 1) for faster download
+- Parallel compilation with max CPU usage
+- Caches compiled binaries
+- Only compiles necessary targets
 """
 
 import os
@@ -13,9 +19,13 @@ from typing import Optional, Tuple, List
 import tempfile
 from ..utils import logger, print_success, print_error, print_warning, print_info
 
-# llama.cpp specific targets
+# llama.cpp specific targets - only what we need
 LLAMA_CPP_TARGETS = [
-    "llama-quantize",
+    "llama-quantize",  # Main quantization tool
+]
+
+# Optional targets (not compiled by default for speed)
+LLAMA_CPP_OPTIONAL_TARGETS = [
     "llama-export-lora", 
     "llama-cli",
 ]
@@ -213,49 +223,67 @@ def _compile_with_cmake(
     gpu_support: bool,
     print_output: bool
 ) -> bool:
-    """Compile llama.cpp using CMAKE."""
-    # Clean previous builds
-    build_dir = os.path.join(llama_dir, "build")
-    if os.path.exists(build_dir):
-        shutil.rmtree(build_dir, ignore_errors=True)
+    """
+    Compile llama.cpp using CMAKE.
     
-    # Configure CMAKE
+    Optimizations:
+    - Only builds llama-quantize target (faster)
+    - Uses Release mode for speed
+    - Parallelizes with maximum CPU cores
+    """
+    # Check if already compiled
+    quantizer_path = os.path.join(llama_dir, "llama-quantize")
+    if os.path.exists(quantizer_path) and os.access(quantizer_path, os.X_OK):
+        return True  # Already compiled
+    
+    build_dir = os.path.join(llama_dir, "build")
+    
+    # Only clean if build exists but is broken
+    if os.path.exists(build_dir):
+        # Check if build is valid
+        bin_path = os.path.join(build_dir, "bin", "llama-quantize")
+        if not os.path.exists(bin_path):
+            shutil.rmtree(build_dir, ignore_errors=True)
+    
+    # Configure CMAKE with speed optimizations
     cuda_flag = "-DGGML_CUDA=ON" if gpu_support else "-DGGML_CUDA=OFF"
     
     configure_cmd = [
         "cmake",
         llama_dir,
         "-B", build_dir,
+        "-DCMAKE_BUILD_TYPE=Release",  # Release for speed
         "-DBUILD_SHARED_LIBS=OFF",
         cuda_flag,
-        "-DLLAMA_CURL=ON",
+        "-DLLAMA_CURL=OFF",  # Skip curl to speed up compilation
+        "-DLLAMA_BUILD_TESTS=OFF",  # Skip tests
+        "-DLLAMA_BUILD_EXAMPLES=OFF",  # Skip examples (we only need quantize)
     ]
     
     subprocess.run(
         configure_cmd,
         check=True,
         stdout=subprocess.DEVNULL if not print_output else None,
-        stderr=subprocess.STDOUT if not print_output else None,
+        stderr=subprocess.DEVNULL if not print_output else None,
     )
     
-    # Build
+    # Build only the quantize target (faster than building everything)
     build_cmd = [
         "cmake",
         "--build", build_dir,
         "--config", "Release",
         f"-j{n_jobs}",
-        "--clean-first",
-        "--target",
-    ] + LLAMA_CPP_TARGETS
+        "--target", "llama-quantize",  # Only build what we need
+    ]
     
     subprocess.run(
         build_cmd,
         check=True,
         stdout=subprocess.DEVNULL if not print_output else None,
-        stderr=subprocess.STDOUT if not print_output else None,
+        stderr=subprocess.DEVNULL if not print_output else None,
     )
     
-    # Copy executables to main directory
+    # Copy executable to main directory
     bin_dir = os.path.join(build_dir, "bin")
     if os.path.exists(bin_dir):
         for target in LLAMA_CPP_TARGETS:

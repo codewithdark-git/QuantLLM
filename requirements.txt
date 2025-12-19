@@ -20,15 +20,19 @@ psutil>=5.9.0
 huggingface-hub>=0.19.0
 rich>=13.0.0
 
-# Optional
+# Optional - Training
 wandb>=0.15.0
 tensorboard>=2.14.0
 evaluate>=0.4.0
 
 # GGUF export & loading
 gguf>=0.10.0
-ctransformers>=0.2.27
-llama-cpp-python>=0.2.20
 
-# Hub lifecycle
-git+https://github.com/codewithdark-git/huggingface-lifecycle.git
+# ONNX export (optional - for onnx format)
+# pip install optimum[onnxruntime]
+onnx>=1.14.0
+onnxruntime>=1.16.0
+optimum>=1.14.0
+
+# MLX export (optional - Apple Silicon only)
+# pip install mlx mlx-lm  (macOS ARM64 only)
