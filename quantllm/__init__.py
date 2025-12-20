@@ -26,6 +26,7 @@ Example:
 """
 
 import os
+import sys
 
 # ====== MAIN API (Recommended) ======
 from .core import (
@@ -63,6 +64,8 @@ from .utils import (
     print_info,
     print_warning,
     print_banner,
+    is_banner_shown,
+    reset_banner,
     console,
     QUANTLLM_ORANGE,
 )
@@ -75,14 +78,36 @@ __title__ = "QuantLLM"
 __description__ = "Ultra-fast LLM Quantization & Export (GGUF, ONNX, MLX)"
 __author__ = "Dark Coder"
 
-# Show banner on import if QUANTLLM_BANNER=1
-if os.environ.get("QUANTLLM_BANNER", "0") == "1":
+
+def _should_show_banner() -> bool:
+    """Determine if banner should be shown on import."""
+    # Check environment variable (can disable with QUANTLLM_BANNER=0)
+    env_banner = os.environ.get("QUANTLLM_BANNER", "").lower()
+    if env_banner == "0" or env_banner == "false":
+        return False
+    
+    # Don't show in non-interactive environments
+    if not sys.stdout.isatty():
+        # Unless explicitly enabled
+        if env_banner not in ("1", "true"):
+            return False
+    
+    return True
+
+
+# Show banner on import (only once, automatically)
+if _should_show_banner():
     print_banner(__version__)
 
 
-def show_banner():
-    """Display the QuantLLM banner."""
-    print_banner(__version__)
+def show_banner(force: bool = False):
+    """
+    Display the QuantLLM banner.
+    
+    Args:
+        force: If True, show banner even if already displayed
+    """
+    print_banner(__version__, force=force)
 
 
 __all__ = [
@@ -120,6 +145,8 @@ __all__ = [
     "print_warning",
     "print_banner",
     "show_banner",
+    "is_banner_shown",
+    "reset_banner",
     "console",
     "QUANTLLM_ORANGE",
 ]

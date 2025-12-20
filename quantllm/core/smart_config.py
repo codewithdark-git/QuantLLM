@@ -51,6 +51,24 @@ class SmartConfig:
     # Statistics
     stats: Dict[str, Any] = field(default_factory=dict)
     
+    @property
+    def effective_loading_bits(self) -> int:
+        """
+        Get the actual bit-width used for BitsAndBytes loading.
+        
+        BitsAndBytes only supports 4-bit and 8-bit:
+        - bits 1-4 → loads as 4-bit
+        - bits 5-16 → loads as 8-bit (or full precision if 16)
+        
+        The original `bits` value is preserved for GGUF export.
+        """
+        if self.bits <= 4:
+            return 4
+        elif self.bits < 16:
+            return 8
+        else:
+            return 16
+    
     @classmethod
     def detect(
         cls,
@@ -101,14 +119,19 @@ class SmartConfig:
         else:
             config.dtype = torch.float32
         
-        # Bits
+        # Bits - user requested or auto-detected
         if bits is not None:
             config.bits = bits
         else:
             config.bits = cls._choose_bits(hw, model_info, training)
         
-        # Quant type
+        # Quant type - maps to GGUF quantization types
         config.quant_type = cls._choose_quant_type(config.bits, hw)
+        
+        # Note: BitsAndBytes only supports 4-bit and 8-bit loading
+        # The requested bits value is preserved for GGUF export
+        # but loading will use the closest BNB-supported value
+        # This is handled in _get_quantization_kwargs()
         
         # Group size (smaller = more accurate, larger = faster)
         config.group_size = cls._choose_group_size(hw, model_info)
@@ -159,22 +182,38 @@ class SmartConfig:
     
     @staticmethod
     def _choose_bits(hw: HardwareProfile, model_info: ModelInfo, training: bool) -> int:
-        """Intelligently choose bit-width based on constraints."""
+        """
+        Intelligently choose bit-width based on constraints.
+        
+        Note: BitsAndBytes only supports 4-bit and 8-bit for model loading.
+        Other bit widths (2, 3, 5, 6) are for GGUF export only.
+        
+        This function returns the optimal LOADING bits (4 or 8), but also
+        sets the quant_type for GGUF export which can be any bit width.
+        """
         if not hw.gpus:
-            return 4  # Default for CPU
+            return 4  # Default for CPU (4-bit NF4)
         
         available_memory = hw.best_gpu.memory_free_gb if hw.best_gpu else 8.0
         
         # Reserve memory for activations
         reserve_factor = 3.0 if training else 1.5
         
-        # Try from highest quality to lowest
-        for bits in [8, 6, 5, 4, 3, 2]:
-            estimated_size = model_info.estimated_size_at_bits(bits)
-            if estimated_size * reserve_factor <= available_memory * 0.9:
-                return bits
+        # Calculate memory needs
+        model_4bit = model_info.estimated_size_at_bits(4)
+        model_8bit = model_info.estimated_size_at_bits(8)
         
-        return 2  # Minimum viable
+        # Choose based on what fits in memory
+        # BitsAndBytes only supports 4 and 8-bit, so we pick one of these
+        if model_4bit * reserve_factor <= available_memory * 0.9:
+            # 4-bit fits comfortably
+            if model_8bit * reserve_factor <= available_memory * 0.9:
+                # 8-bit also fits - use 8-bit for better quality
+                return 8
+            return 4
+        
+        # Even 4-bit is tight, but we'll try
+        return 4
     
     @staticmethod
     def _choose_quant_type(bits: int, hw: HardwareProfile) -> str:
@@ -270,9 +309,12 @@ class SmartConfig:
         table.add_column("Details", style="white")
         
         # Quantization
+        bits_info = f"[bold]Bits:[/bold] {self.bits}"
+        if self.bits != self.effective_loading_bits and self.bits < 16:
+            bits_info += f" (loads as {self.effective_loading_bits}-bit)"
         table.add_row(
             "📦 Quantization", 
-            f"[bold]Bits:[/bold] {self.bits}  [bold]Type:[/bold] {self.quant_type}  [bold]Group:[/bold] {self.group_size}"
+            f"{bits_info}  [bold]Type:[/bold] {self.quant_type}  [bold]Group:[/bold] {self.group_size}"
         )
         
         # Memory

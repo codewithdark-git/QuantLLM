@@ -29,10 +29,11 @@ evaluate>=0.4.0
 gguf>=0.10.0
 
 # ONNX export (optional - for onnx format)
-# pip install optimum[onnxruntime]
+# pip install optimum[onnxruntime] onnxscript
 onnx>=1.14.0
 onnxruntime>=1.16.0
 optimum>=1.14.0
+onnxscript>=0.1.0
 
 # MLX export (optional - Apple Silicon only)
 # pip install mlx mlx-lm  (macOS ARM64 only)

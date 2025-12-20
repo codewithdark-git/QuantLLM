@@ -360,8 +360,26 @@ def print_model_card(
     console.print(table)
 
 
-def print_banner(version: str = "2.0.0") -> None:
-    """Print QuantLLM banner with version info."""
+# Track if banner has been shown (to prevent duplicate displays)
+_banner_shown = False
+
+
+def print_banner(version: str = "2.0.0", force: bool = False) -> None:
+    """
+    Print QuantLLM banner with version info.
+    
+    Args:
+        version: Version string to display
+        force: If True, show banner even if already shown
+    """
+    global _banner_shown
+    
+    # Only show once unless forced
+    if _banner_shown and not force:
+        return
+    
+    _banner_shown = True
+    
     console.print()
     console.print(f"[bold {QUANTLLM_ORANGE}]╔════════════════════════════════════════════════════════════╗[/]")
     console.print(f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]")
@@ -372,6 +390,17 @@ def print_banner(version: str = "2.0.0") -> None:
     console.print(f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]")
     console.print(f"[bold {QUANTLLM_ORANGE}]╚════════════════════════════════════════════════════════════╝[/]")
     console.print()
+
+
+def is_banner_shown() -> bool:
+    """Check if banner has already been displayed."""
+    return _banner_shown
+
+
+def reset_banner() -> None:
+    """Reset banner state (for testing)."""
+    global _banner_shown
+    _banner_shown = False
 
 
 def format_size(size_bytes: int) -> str:

@@ -34,6 +34,8 @@ from .progress import (
     print_table,
     print_model_card,
     print_banner,
+    is_banner_shown,
+    reset_banner,
     
     # Formatters
     format_size,
@@ -76,6 +78,8 @@ __all__ = [
     "print_table",
     "print_model_card",
     "print_banner",
+    "is_banner_shown",
+    "reset_banner",
     
     # Formatters
     "format_size",

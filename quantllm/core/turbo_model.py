@@ -177,9 +177,11 @@ class TurboModel:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         
         # Load model with optimizations
-        # Load model with optimizations
         if verbose:
-            logger.info(f"📦 Loading model ({smart_config.bits}-bit)...")
+            if smart_config.bits != smart_config.effective_loading_bits and smart_config.bits < 16:
+                logger.info(f"📦 Loading model ({smart_config.effective_loading_bits}-bit, for {smart_config.bits}-bit GGUF export)...")
+            else:
+                logger.info(f"📦 Loading model ({smart_config.bits}-bit)...")
         
         model_kwargs = {
             "trust_remote_code": trust_remote_code,
@@ -446,33 +448,48 @@ class TurboModel:
 
     @staticmethod
     def _get_quantization_kwargs(config: SmartConfig) -> Dict[str, Any]:
-        """Get kwargs for quantized model loading."""
+        """
+        Get kwargs for quantized model loading.
+        
+        Note: BitsAndBytes only supports 4-bit and 8-bit quantization for loading.
+        Other bit widths (2, 3, 5, 6) are only available during GGUF export.
+        
+        For loading:
+        - bits <= 4: Uses 4-bit NF4 quantization
+        - bits 5-7: Uses 8-bit quantization  
+        - bits >= 8: Uses 8-bit quantization
+        """
         try:
             from transformers import BitsAndBytesConfig
             
-            if config.bits == 4:
+            # BitsAndBytes only supports 4-bit and 8-bit
+            # Map requested bits to available options
+            if config.bits <= 4:
+                # 2, 3, 4-bit requests -> 4-bit NF4 (smallest available)
+                effective_bits = 4
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=config.dtype,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                 )
-            elif config.bits == 8:
+                if config.bits < 4:
+                    logger.info(f"  ℹ️ BitsAndBytes supports 4/8-bit only. Using 4-bit for requested {config.bits}-bit.")
+                    logger.info(f"     Tip: Export to GGUF for Q{config.bits}_K quantization!")
+            else:
+                # 5, 6, 7, 8-bit requests -> 8-bit
+                effective_bits = 8
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                 )
-            else:
-                # For other bit widths, use 4-bit as base
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=config.dtype,
-                    bnb_4bit_quant_type="nf4",
-                )
+                if config.bits != 8:
+                    logger.info(f"  ℹ️ BitsAndBytes supports 4/8-bit only. Using 8-bit for requested {config.bits}-bit.")
+                    logger.info(f"     Tip: Export to GGUF for Q{config.bits}_K quantization!")
             
             return {"quantization_config": quantization_config}
             
         except ImportError:
-            print("⚠ bitsandbytes not installed, loading without quantization")
+            logger.warning("⚠ bitsandbytes not installed, loading without quantization")
             return {}
     
     @staticmethod
@@ -1418,36 +1435,58 @@ class TurboModel:
         """
         Export to ONNX format with proper structure.
         
+        Uses Optimum's ONNX exporter which properly handles LLMs like Llama.
+        torch.onnx.export does NOT work for modern LLMs due to dynamic attention.
+        
         Args:
             output_path: Output directory for ONNX files
-            quantization: ONNX quantization type (dynamic, static, int8)
+            quantization: ONNX quantization type (dynamic, static, int8, avx2, avx512)
             opset_version: ONNX opset version (default: 14)
         """
         from ..utils import QuantLLMProgress
         
+        # Check for required dependencies
         try:
             from optimum.onnxruntime import ORTModelForCausalLM
             HAS_OPTIMUM = True
         except ImportError:
             HAS_OPTIMUM = False
         
+        if not HAS_OPTIMUM:
+            # Cannot export LLMs without Optimum - torch.onnx.export doesn't work
+            error_msg = """
+ONNX export requires the Optimum library for LLM models.
+
+torch.onnx.export does NOT support modern LLMs (Llama, Mistral, etc.) 
+due to dynamic attention patterns and complex operations.
+
+Please install the required packages:
+
+    pip install onnx onnxruntime optimum[onnxruntime] onnxscript
+
+Or install with extras:
+
+    pip install quantllm[onnx]
+"""
+            print_error(error_msg)
+            raise ImportError("ONNX export requires: pip install onnx onnxruntime optimum[onnxruntime] onnxscript")
+        
         os.makedirs(output_path, exist_ok=True)
         model_name = self.model.config._name_or_path
         
-        if HAS_OPTIMUM:
-            # Use Optimum for best ONNX export
-            if self.verbose:
-                print_info("Using Optimum for ONNX export (recommended)...")
+        if self.verbose:
+            print_info("Using Optimum for ONNX export...")
+        
+        with QuantLLMProgress() as progress:
+            task = progress.add_task("Exporting to ONNX...", total=None)
             
-            with QuantLLMProgress() as progress:
-                task = progress.add_task("Exporting to ONNX...", total=None)
-                
-                # Check if model is quantized - need to dequantize first
+            try:
+                # Check if model is quantized - need to export from original
                 if self._is_bnb_quantized():
                     if self.verbose:
-                        print_warning("BNB quantized model detected. Exporting from original model...")
+                        print_info("BNB quantized model detected. Exporting from original HuggingFace model...")
                     
-                    # Export directly from HuggingFace
+                    # Export directly from HuggingFace (not our quantized version)
                     ort_model = ORTModelForCausalLM.from_pretrained(
                         model_name,
                         export=True,
@@ -1457,75 +1496,45 @@ class TurboModel:
                     # Save model first, then convert
                     temp_path = os.path.join(output_path, "_temp_hf")
                     os.makedirs(temp_path, exist_ok=True)
-                    self.model.save_pretrained(temp_path)
-                    self.tokenizer.save_pretrained(temp_path)
                     
-                    ort_model = ORTModelForCausalLM.from_pretrained(
-                        temp_path,
-                        export=True,
-                    )
-                    
-                    # Clean temp
-                    shutil.rmtree(temp_path, ignore_errors=True)
+                    try:
+                        self.model.save_pretrained(temp_path, safe_serialization=True)
+                        self.tokenizer.save_pretrained(temp_path)
+                        
+                        ort_model = ORTModelForCausalLM.from_pretrained(
+                            temp_path,
+                            export=True,
+                            trust_remote_code=True,
+                        )
+                    finally:
+                        # Clean temp
+                        shutil.rmtree(temp_path, ignore_errors=True)
                 
                 # Save ONNX model
                 ort_model.save_pretrained(output_path)
                 self.tokenizer.save_pretrained(output_path)
                 
+            except Exception as e:
                 progress.update(task, completed=100)
-            
-            # Apply quantization if requested
-            if quantization:
-                if self.verbose:
-                    print_info(f"Applying {quantization} quantization...")
-                self._quantize_onnx_model(output_path, quantization)
+                error_str = str(e)
                 
-        else:
-            # Fallback to basic torch.onnx export
+                # Check for common issues and provide helpful messages
+                if "onnxscript" in error_str.lower():
+                    print_error("Missing onnxscript package. Install with: pip install onnxscript")
+                    raise ImportError("ONNX export requires onnxscript: pip install onnxscript") from e
+                elif "cannot export" in error_str.lower() or "unsupported" in error_str.lower():
+                    print_error(f"Model architecture may not support ONNX export: {error_str}")
+                    raise
+                else:
+                    raise
+            
+            progress.update(task, completed=100)
+        
+        # Apply quantization if requested
+        if quantization:
             if self.verbose:
-                print_warning("Optimum not found. Using basic ONNX export.")
-                print_info("For better results: pip install optimum[onnxruntime]")
-            
-            try:
-                import onnx
-            except ImportError:
-                raise ImportError("ONNX export requires: pip install onnx onnxruntime optimum[onnxruntime]")
-            
-            # Basic export using torch.onnx
-            onnx_path = os.path.join(output_path, "model.onnx")
-            
-            # Create dummy input
-            dummy_input = self.tokenizer(
-                "Hello world",
-                return_tensors="pt",
-                padding=True,
-            )
-            dummy_input = {k: v.to(self.model.device) for k, v in dummy_input.items()}
-            
-            self.model.eval()
-            
-            with QuantLLMProgress() as progress:
-                task = progress.add_task("Exporting to ONNX...", total=None)
-                
-                torch.onnx.export(
-                    self.model,
-                    tuple(dummy_input.values()),
-                    onnx_path,
-                    input_names=list(dummy_input.keys()),
-                    output_names=["logits"],
-                    dynamic_axes={
-                        "input_ids": {0: "batch", 1: "sequence"},
-                        "attention_mask": {0: "batch", 1: "sequence"},
-                        "logits": {0: "batch", 1: "sequence"},
-                    },
-                    opset_version=opset_version,
-                    do_constant_folding=True,
-                )
-                
-                progress.update(task, completed=100)
-            
-            # Save tokenizer
-            self.tokenizer.save_pretrained(output_path)
+                print_info(f"Applying {quantization} ONNX quantization...")
+            self._quantize_onnx_model(output_path, quantization)
         
         if self.verbose:
             print_success(f"ONNX model exported to {output_path}")
@@ -1533,22 +1542,74 @@ class TurboModel:
         return output_path
     
     def _quantize_onnx_model(self, model_path: str, quant_type: str) -> None:
-        """Apply ONNX quantization."""
+        """
+        Apply ONNX quantization.
+        
+        ONNX supports INT8 (8-bit integer) quantization only.
+        Unlike GGUF, ONNX doesn't support 2/3/4/5/6-bit quantization.
+        
+        Args:
+            model_path: Path to ONNX model directory
+            quant_type: Quantization type:
+                - Bit-based: "8", "8bit", "int8" → INT8 quantization
+                - Platform: "avx2", "avx512", "arm64" → Platform-optimized INT8
+                - Type: "dynamic", "static" → Quantization method
+                
+        Note: Requests for 4-bit or other bit widths will use INT8 with a warning.
+        """
         try:
             from optimum.onnxruntime import ORTQuantizer
             from optimum.onnxruntime.configuration import AutoQuantizationConfig
             
             quantizer = ORTQuantizer.from_pretrained(model_path)
             
-            if quant_type.lower() in ["dynamic", "int8"]:
-                qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=True)
-            else:
-                qconfig = AutoQuantizationConfig.avx2(is_static=False)
+            # Normalize quantization type
+            quant_lower = quant_type.lower().replace("_", "").replace("-", "")
             
+            # Check for bit-based requests (ONNX only supports 8-bit)
+            bit_request = None
+            for bit_pattern in ["2bit", "3bit", "4bit", "5bit", "6bit", "q2", "q3", "q4", "q5", "q6"]:
+                if bit_pattern in quant_lower:
+                    bit_request = bit_pattern
+                    break
+            
+            if bit_request:
+                print_warning(f"ONNX only supports INT8 (8-bit) quantization, not {quant_type}.")
+                print_info("For lower bit quantization, use GGUF format instead.")
+                print_info("Proceeding with INT8 quantization...")
+            
+            # Determine optimal config based on platform or explicit request
+            if "avx512" in quant_lower or "vnni" in quant_lower:
+                qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=True)
+                if self.verbose:
+                    print_info("Using AVX512 VNNI INT8 quantization (Intel Xeon/Ice Lake+)")
+            elif "arm64" in quant_lower or "arm" in quant_lower:
+                qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=True)
+                if self.verbose:
+                    print_info("Using ARM64 INT8 quantization (Apple Silicon/ARM)")
+            elif "static" in quant_lower:
+                # Static quantization (requires calibration data)
+                qconfig = AutoQuantizationConfig.avx2(is_static=True, per_channel=True)
+                if self.verbose:
+                    print_info("Using static INT8 quantization (AVX2)")
+            else:
+                # Default: Dynamic INT8 with AVX2 (widely compatible)
+                qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=True)
+                if self.verbose:
+                    print_info("Using dynamic INT8 quantization (AVX2)")
+            
+            # Apply quantization
             quantizer.quantize(save_dir=model_path, quantization_config=qconfig)
+            
+            if self.verbose:
+                print_success("ONNX INT8 quantization applied successfully")
             
         except ImportError:
             print_warning("Optimum quantization not available. Skipping ONNX quantization.")
+            print_info("Install with: pip install optimum[onnxruntime]")
+        except Exception as e:
+            print_warning(f"ONNX quantization failed: {e}")
+            print_info("The unquantized ONNX model is still available.")
     
     def _export_mlx(
         self,
@@ -1559,9 +1620,16 @@ class TurboModel:
         """
         Export to MLX format for Apple Silicon.
         
+        MLX supports 4-bit and 8-bit quantization only.
+        
         Args:
             output_path: Output directory
-            quantization: MLX quantization (4bit, 8bit)
+            quantization: MLX quantization options:
+                - "4bit", "4", "Q4", "Q4_K_M" → 4-bit quantization
+                - "8bit", "8", "Q8" → 8-bit quantization
+                - None → No quantization (FP16)
+                
+        Note: 2-bit, 3-bit, 5-bit, 6-bit requests will map to closest (4 or 8-bit).
         """
         from ..utils import QuantLLMProgress
         import subprocess
@@ -1602,19 +1670,43 @@ class TurboModel:
                         self.model.save_pretrained(source_path)
                         self.tokenizer.save_pretrained(source_path)
                     
-                    # Build convert command
+                    # Build convert arguments
                     convert_args = {
                         "hf_path": source_path,
                         "mlx_path": output_path,
                     }
                     
+                    # Parse quantization request
                     if quantization:
-                        if "4" in quantization:
+                        quant_lower = quantization.lower().replace("_", "").replace("-", "")
+                        
+                        # MLX only supports 4-bit and 8-bit
+                        if any(x in quant_lower for x in ["2", "3"]):
+                            print_warning(f"MLX only supports 4-bit and 8-bit, not {quantization}.")
+                            print_info("Using 4-bit quantization (smallest available).")
                             convert_args["quantize"] = True
                             convert_args["q_bits"] = 4
-                        elif "8" in quantization:
+                        elif any(x in quant_lower for x in ["5", "6", "7"]):
+                            print_warning(f"MLX only supports 4-bit and 8-bit, not {quantization}.")
+                            print_info("Using 8-bit quantization (closest available).")
                             convert_args["quantize"] = True
                             convert_args["q_bits"] = 8
+                        elif "4" in quant_lower:
+                            convert_args["quantize"] = True
+                            convert_args["q_bits"] = 4
+                            if self.verbose:
+                                print_info("Using 4-bit MLX quantization")
+                        elif "8" in quant_lower:
+                            convert_args["quantize"] = True
+                            convert_args["q_bits"] = 8
+                            if self.verbose:
+                                print_info("Using 8-bit MLX quantization")
+                        else:
+                            # Default to 4-bit for any other quantization request
+                            convert_args["quantize"] = True
+                            convert_args["q_bits"] = 4
+                            if self.verbose:
+                                print_info("Using 4-bit MLX quantization (default)")
                     
                     # Run conversion
                     convert(**convert_args)

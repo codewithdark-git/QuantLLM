@@ -72,6 +72,7 @@ setup(
             "onnx>=1.14.0",
             "onnxruntime>=1.16.0",
             "optimum[onnxruntime]>=1.14.0",
+            "onnxscript>=0.1.0",
         ],
         "mlx": [
             "mlx>=0.1.0",
@@ -91,6 +92,7 @@ setup(
             "onnx>=1.14.0",
             "onnxruntime>=1.16.0",
             "optimum[onnxruntime]>=1.14.0",
+            "onnxscript>=0.1.0",
             "triton>=2.1.0",
             "wandb>=0.15.0",
             "tensorboard>=2.14.0",
