@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/images/logo.png" alt="QuantLLM Logo" width="150"/>
+  <img src="docs/images/logo.png" alt="QuantLLM Logo" />
   
   # 🚀 QuantLLM v2.0
   
