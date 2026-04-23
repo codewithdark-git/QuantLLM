@@ -12,8 +12,9 @@ Features:
 """
 
 import gc
-from typing import Optional, Dict, Any, List, Union, Callable
+from typing import Optional, Dict, Any, List, Union, Callable, Iterable
 from contextlib import contextmanager
+from collections import OrderedDict
 import torch
 import torch.nn as nn
 
@@ -184,6 +185,26 @@ class MemoryManager:
             "activations_estimate_gb": activation_gb,
             "total_estimate_gb": total_gb,
         }
+
+
+def memory_optimized_tensor_order(
+    state_dict: Dict[str, torch.Tensor],
+    *,
+    prioritize_large_tensors: bool = True,
+) -> "OrderedDict[str, torch.Tensor]":
+    """
+    Return an ordered state dict to reduce peak memory pressure during serialization.
+    
+    By default, larger tensors are emitted first to reduce long-lived allocator pressure
+    in shard-based writes on very large checkpoints.
+    """
+    items: Iterable = state_dict.items()
+    sorted_items = sorted(
+        items,
+        key=lambda kv: kv[1].numel() * kv[1].element_size(),
+        reverse=prioritize_large_tensors,
+    )
+    return OrderedDict(sorted_items)
 
 
 class DynamicOffloader:

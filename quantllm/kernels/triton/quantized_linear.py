@@ -8,7 +8,7 @@ avoiding the memory overhead of materializing full-precision weights.
 Performance: ~2-3x faster than separate dequant + matmul
 """
 
-from typing import Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
@@ -25,6 +25,67 @@ except ImportError:
 def is_triton_available() -> bool:
     """Check if Triton is available for use."""
     return _TRITON_AVAILABLE
+
+
+def triton_q8_0_quantize(weight: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Quantize a weight matrix to Q8_0 format (per-column symmetric int8).
+    
+    Returns:
+        qweight: int8 tensor [in_features, out_features]
+        scales: fp tensor [1, out_features]
+    """
+    if weight.dim() != 2:
+        raise ValueError(f"Q8_0 quantization expects a 2D tensor, got shape={tuple(weight.shape)}")
+    
+    max_abs = weight.abs().amax(dim=0, keepdim=True).clamp(min=eps)
+    scale = max_abs / 127.0
+    qweight = torch.clamp(torch.round(weight / scale), -128, 127).to(torch.int8)
+    return qweight, scale.to(weight.dtype)
+
+
+def triton_q4_0_quantize(weight: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Quantize a weight matrix to Q4_0 format (per-column symmetric 4-bit stored in int8).
+    
+    Returns:
+        qweight: int8 tensor [in_features, out_features] with values in [-8, 7]
+        scales: fp tensor [1, out_features]
+    """
+    if weight.dim() != 2:
+        raise ValueError(f"Q4_0 quantization expects a 2D tensor, got shape={tuple(weight.shape)}")
+    
+    max_abs = weight.abs().amax(dim=0, keepdim=True).clamp(min=eps)
+    scale = max_abs / 7.0
+    qweight = torch.clamp(torch.round(weight / scale), -8, 7).to(torch.int8)
+    return qweight, scale.to(weight.dtype)
+
+
+def int4_matmul(
+    x: torch.Tensor,
+    qweight: torch.Tensor,
+    scales: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    INT4 matmul path backed by fused dequant+matmul on CUDA/Triton when available.
+    
+    Args:
+        x: Input [..., in_features]
+        qweight: Quantized int4 values stored in int8, shape [in_features, out_features]
+        scales: Per-column scales, shape [1, out_features] or [in_features/group, out_features]
+        bias: Optional bias [out_features]
+    """
+    zeros = torch.zeros_like(scales)
+    group_size = qweight.shape[0] if scales.shape[0] == 1 else max(qweight.shape[0] // scales.shape[0], 1)
+    return fused_dequant_matmul(
+        x=x,
+        qweight=qweight,
+        scales=scales,
+        zeros=zeros,
+        bias=bias,
+        group_size=group_size,
+    )
 
 
 if _TRITON_AVAILABLE:
@@ -462,3 +523,9 @@ class TritonQuantizedLinear(nn.Module):
             f'group_size={self.group_size}, '
             f'triton={self._use_triton}'
         )
+
+
+TRITON_QUANT_KERNELS: Dict[str, Callable[[torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]] = {
+    "q4_0": triton_q4_0_quantize,
+    "q8_0": triton_q8_0_quantize,
+}

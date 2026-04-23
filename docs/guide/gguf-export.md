@@ -212,8 +212,24 @@ For very large models:
 # Use lower quantization
 model.export("gguf", "model.Q3_K_M.gguf", quantization="Q3_K_M")
 
-# Or export with streaming (reduces memory)
-model.export("gguf", "model.gguf", quantization="Q4_K_M", streaming=True)
+# Enable chunked conversion + smart ordering
+model.export(
+    "gguf",
+    "model.gguf",
+    quantization="Q4_K_M",
+    chunked_conversion=True,
+    max_shard_size="2GB",
+    smart_tensor_ordering=True,
+)
+
+# Force intermediate files to a dedicated disk offload directory
+model.export(
+    "gguf",
+    "model.gguf",
+    quantization="Q4_K_M",
+    disk_offloading=True,
+    disk_offload_dir="./quantllm_offload",
+)
 ```
 
 ### Windows Issues
