@@ -23,6 +23,9 @@ from .hardware import HardwareProfiler
 from ..utils import logger, print_header, print_success, print_error, print_info, print_warning, QuantLLMProgress
 from transformers.utils.logging import disable_progress_bar as disable_hf_progress_bar
 from datasets.utils.logging import disable_progress_bar as disable_ds_progress_bar
+from .memory import memory_optimized_tensor_order
+
+DEFAULT_CHUNKED_SHARD_SIZE = "2GB"
 
 
 class TurboModel:
@@ -1127,6 +1130,11 @@ class TurboModel:
         output_path: str, 
         quantization: Optional[str] = None,
         fast_mode: bool = False,
+        chunked_conversion: bool = False,
+        max_shard_size: Optional[str] = None,
+        smart_tensor_ordering: bool = False,
+        disk_offloading: bool = False,
+        disk_offload_dir: Optional[str] = None,
         **kwargs
     ) -> str:
         """
@@ -1144,12 +1152,21 @@ class TurboModel:
             output_path: Output file path for GGUF
             quantization: Quantization type (Q4_K_M, Q5_K_M, Q8_0, etc.)
             fast_mode: Skip intermediate F16 step for faster export (slightly less optimal)
+            chunked_conversion: Save model shards during conversion for large checkpoints
+            max_shard_size: Max shard size used when chunked conversion is active
+            smart_tensor_ordering: Save tensors in memory-optimized order
+            disk_offloading: Use a dedicated temp/offload directory for intermediate artifacts
+            disk_offload_dir: Directory used when disk_offloading=True
         """
         from ..quant import convert_to_gguf, quantize_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
         from ..utils import QuantLLMProgress, format_time, format_size
         import time
         
         start_time = time.time()
+        
+        effective_shard_size = max_shard_size or (
+            DEFAULT_CHUNKED_SHARD_SIZE if chunked_conversion else None
+        )
         
         quant_type = quantization or self.config.quant_type or "q4_k_m"
         quant_type_upper = quant_type.upper()
@@ -1163,6 +1180,13 @@ class TurboModel:
             print_info(f"Target quantization: {quant_type_upper}")
             if fast_mode:
                 print_info("Fast mode enabled")
+            if chunked_conversion:
+                print_info(f"Chunked conversion enabled (max_shard_size={effective_shard_size})")
+            if smart_tensor_ordering:
+                print_info("Smart tensor ordering enabled")
+                print_warning("Smart tensor ordering may temporarily materialize a full state dict in memory.")
+            if disk_offloading:
+                print_info(f"Disk offloading enabled ({disk_offload_dir or 'system temp'})")
         
         # Ensure llama.cpp
         if self.verbose:
@@ -1188,8 +1212,12 @@ class TurboModel:
         # Get model name for file naming
         model_name = self.model.config._name_or_path.split('/')[-1]
         
+        temp_parent = disk_offload_dir if disk_offloading else None
+        if temp_parent:
+            os.makedirs(temp_parent, exist_ok=True)
+        
         # Create temp dir for conversion
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=temp_parent) as temp_dir:
             # Step 1: Save model to temp directory
             if self.verbose:
                 print_header("Step 1/3: Saving Model", icon="💾")
@@ -1197,12 +1225,22 @@ class TurboModel:
             
             with QuantLLMProgress() as progress:
                 task = progress.add_task("Saving model weights...", total=None)
+                save_kwargs = {
+                    "safe_serialization": True,
+                }
+                if effective_shard_size:
+                    save_kwargs["max_shard_size"] = effective_shard_size
+                
+                if smart_tensor_ordering:
+                    save_kwargs["state_dict"] = memory_optimized_tensor_order(model_to_save.state_dict())
+                
                 try:
-                    model_to_save.save_pretrained(temp_dir, safe_serialization=True)
+                    model_to_save.save_pretrained(temp_dir, **save_kwargs)
                 except Exception as e:
                     if self.verbose:
                         print_warning(f"SafeTensors save failed ({e}), using PyTorch format...")
-                    model_to_save.save_pretrained(temp_dir, safe_serialization=False)
+                    save_kwargs["safe_serialization"] = False
+                    model_to_save.save_pretrained(temp_dir, **save_kwargs)
                 
                 self.tokenizer.save_pretrained(temp_dir)
                 progress.update(task, completed=100)
