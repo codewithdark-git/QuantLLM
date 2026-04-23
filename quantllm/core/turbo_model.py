@@ -23,6 +23,9 @@ from .hardware import HardwareProfiler
 from ..utils import logger, print_header, print_success, print_error, print_info, print_warning, QuantLLMProgress
 from transformers.utils.logging import disable_progress_bar as disable_hf_progress_bar
 from datasets.utils.logging import disable_progress_bar as disable_ds_progress_bar
+from .memory import memory_optimized_tensor_order
+
+DEFAULT_CHUNKED_SHARD_SIZE = "2GB"
 
 
 class TurboModel:
@@ -1127,6 +1130,11 @@ class TurboModel:
         output_path: str, 
         quantization: Optional[str] = None,
         fast_mode: bool = False,
+        chunked_conversion: bool = False,
+        max_shard_size: Optional[str] = None,
+        smart_tensor_ordering: bool = False,
+        disk_offloading: bool = False,
+        disk_offload_dir: Optional[str] = None,
         **kwargs
     ) -> str:
         """
@@ -1156,11 +1164,9 @@ class TurboModel:
         
         start_time = time.time()
         
-        chunked_conversion = bool(kwargs.pop("chunked_conversion", False))
-        max_shard_size = kwargs.pop("max_shard_size", "2GB" if chunked_conversion else "50GB")
-        smart_tensor_ordering = bool(kwargs.pop("smart_tensor_ordering", False))
-        disk_offloading = bool(kwargs.pop("disk_offloading", False))
-        disk_offload_dir = kwargs.pop("disk_offload_dir", None)
+        effective_shard_size = max_shard_size or (
+            DEFAULT_CHUNKED_SHARD_SIZE if chunked_conversion else None
+        )
         
         quant_type = quantization or self.config.quant_type or "q4_k_m"
         quant_type_upper = quant_type.upper()
@@ -1175,9 +1181,10 @@ class TurboModel:
             if fast_mode:
                 print_info("Fast mode enabled")
             if chunked_conversion:
-                print_info(f"Chunked conversion enabled (max_shard_size={max_shard_size})")
+                print_info(f"Chunked conversion enabled (max_shard_size={effective_shard_size})")
             if smart_tensor_ordering:
                 print_info("Smart tensor ordering enabled")
+                print_warning("Smart tensor ordering may temporarily materialize a full state dict in memory.")
             if disk_offloading:
                 print_info(f"Disk offloading enabled ({disk_offload_dir or 'system temp'})")
         
@@ -1220,11 +1227,11 @@ class TurboModel:
                 task = progress.add_task("Saving model weights...", total=None)
                 save_kwargs = {
                     "safe_serialization": True,
-                    "max_shard_size": max_shard_size,
                 }
+                if effective_shard_size:
+                    save_kwargs["max_shard_size"] = effective_shard_size
                 
                 if smart_tensor_ordering:
-                    from .memory import memory_optimized_tensor_order
                     save_kwargs["state_dict"] = memory_optimized_tensor_order(model_to_save.state_dict())
                 
                 try:

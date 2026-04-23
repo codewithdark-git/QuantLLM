@@ -209,6 +209,9 @@ model.export("gguf", "model.gguf", quantization="Q4_K_M")
 For very large models:
 
 ```python
+# Note: previous `streaming=True` guidance is superseded by `chunked_conversion=True`.
+# If you previously used `streaming=True`, replace it with `chunked_conversion=True` (streaming has no effect here).
+
 # Use lower quantization
 model.export("gguf", "model.Q3_K_M.gguf", quantization="Q3_K_M")
 

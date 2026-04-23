@@ -76,8 +76,10 @@ def int4_matmul(
         scales: Per-column scales, shape [1, out_features] or [in_features/group, out_features]
         bias: Optional bias [out_features]
     """
-    zeros = torch.zeros_like(scales)
-    group_size = qweight.shape[0] if scales.shape[0] == 1 else max(qweight.shape[0] // scales.shape[0], 1)
+    # Per-column case uses [1, N] zeros; grouped quantization uses zeros shaped like scales.
+    is_per_column = scales.shape[0] == 1
+    zeros = scales.new_zeros((1, scales.shape[1])) if is_per_column else scales.new_zeros(scales.shape)
+    group_size = qweight.shape[0] if is_per_column else max(qweight.shape[0] // scales.shape[0], 1)
     return fused_dequant_matmul(
         x=x,
         qweight=qweight,
@@ -525,7 +527,7 @@ class TritonQuantizedLinear(nn.Module):
         )
 
 
-TRITON_QUANT_KERNELS: Dict[str, Callable[[torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]] = {
+triton_quantizers: Dict[str, Callable[[torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]] = {
     "q4_0": triton_q4_0_quantize,
     "q8_0": triton_q8_0_quantize,
 }

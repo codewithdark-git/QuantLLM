@@ -12,7 +12,7 @@ Features:
 """
 
 import gc
-from typing import Optional, Dict, Any, List, Union, Callable, Iterable
+from typing import Optional, Dict, Any, List, Union, Callable
 from contextlib import contextmanager
 from collections import OrderedDict
 import torch
@@ -191,16 +191,16 @@ def memory_optimized_tensor_order(
     state_dict: Dict[str, torch.Tensor],
     *,
     prioritize_large_tensors: bool = True,
-) -> "OrderedDict[str, torch.Tensor]":
+) -> OrderedDict[str, torch.Tensor]:
     """
     Return an ordered state dict to reduce peak memory pressure during serialization.
     
-    By default, larger tensors are emitted first to reduce long-lived allocator pressure
+    By default, tensors are sorted by total byte size (numel * element_size),
+    with larger tensors emitted first to reduce long-lived allocator pressure
     in shard-based writes on very large checkpoints.
     """
-    items: Iterable = state_dict.items()
     sorted_items = sorted(
-        items,
+        state_dict.items(),
         key=lambda kv: kv[1].numel() * kv[1].element_size(),
         reverse=prioritize_large_tensors,
     )
