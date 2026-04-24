@@ -122,8 +122,6 @@ class TurboModel:
             quantize: Whether to quantize the model
             config_override: Dict to override any auto-detected settings
             config: Shared export/push config (format, quantization, push_format, etc.)
-            quantize: Whether to quantize the model
-            config_override: Dict to override any auto-detected settings
             verbose: Print loading progress
             
         Returns:
@@ -1009,10 +1007,16 @@ class TurboModel:
             >>> model.export("onnx", "./my_model_onnx/")
             >>> model.export("mlx", "./my_model_mlx/", quantization="4bit")
         """
-        format = (format or self.export_push_config["format"]).lower()
+        format = (
+            format
+            if format is not None
+            else self.export_push_config.get("format", DEFAULT_EXPORT_PUSH_CONFIG["format"])
+        ).lower()
         effective_quantization = quantization
         if effective_quantization is None and format == "gguf":
-            effective_quantization = self.export_push_config["quantization"]
+            effective_quantization = self.export_push_config.get(
+                "quantization", DEFAULT_EXPORT_PUSH_CONFIG["quantization"]
+            )
         
         # Merge LoRA if applied
         if self._lora_applied:
@@ -1025,7 +1029,7 @@ class TurboModel:
         if output_path is None:
             model_name = self.model.config._name_or_path.split('/')[-1]
             if format == "gguf":
-                quant = effective_quantization or "Q4_K_M"
+                quant = effective_quantization
                 output_path = f"{model_name}.{quant.upper()}.gguf"
             elif format == "safetensors":
                 output_path = f"./{model_name}-quantllm/"
@@ -1086,8 +1090,14 @@ class TurboModel:
         """
         from ..hub import QuantLLMHubManager
         
-        format_lower = (format or self.export_push_config["push_format"]).lower()
-        push_quantization = quantization or self.export_push_config["push_quantization"]
+        format_lower = (
+            format
+            if format is not None
+            else self.export_push_config.get("push_format", DEFAULT_EXPORT_PUSH_CONFIG["push_format"])
+        ).lower()
+        push_quantization = quantization or self.export_push_config.get(
+            "push_quantization", DEFAULT_EXPORT_PUSH_CONFIG["push_quantization"]
+        )
         
         # Get the original base model name (full path for HuggingFace link)
         base_model_full = self.model.config._name_or_path
@@ -1101,7 +1111,7 @@ class TurboModel:
         
         if format_lower == "gguf":
             # Export GGUF directly to staging
-            quant_label = push_quantization or "Q4_K_M"
+            quant_label = push_quantization
             filename = f"{model_name}.{quant_label.upper()}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             

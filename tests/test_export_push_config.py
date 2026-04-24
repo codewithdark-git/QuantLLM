@@ -11,7 +11,8 @@ def _stub_turbo(export_push_config):
     model = TurboModel.__new__(TurboModel)
     model.model = _stub_model()
     model.tokenizer = None
-    model.config = SimpleNamespace(quant_type="Q8_0")
+    smart_config = SimpleNamespace(quant_type="Q8_0")
+    model.config = smart_config
     model._lora_applied = False
     model.verbose = False
     model.export_push_config = export_push_config
@@ -36,7 +37,7 @@ def test_build_export_push_config_aligns_push_values_with_export_values():
     assert resolved["push_quantization"] == "Q5_K_M"
 
 
-def test_export_uses_shared_config_when_format_and_quantization_are_omitted():
+def test_export_prefers_shared_quantization_over_smart_config_quant_type():
     model = _stub_turbo(
         {
             "format": "gguf",
@@ -60,11 +61,12 @@ def test_export_uses_shared_config_when_format_and_quantization_are_omitted():
 
     output = model.export()
 
+    assert model.config.quant_type == "Q8_0"
     assert output.endswith(".Q4_K_M.gguf")
     assert captured["quantization"] == "Q4_K_M"
 
 
-def test_push_uses_shared_config_when_omitted(monkeypatch):
+def test_gguf_push_uses_shared_config_when_omitted(monkeypatch):
     model = _stub_turbo({
         "format": "gguf",
         "push_format": "gguf",
