@@ -14,6 +14,7 @@ def turbo(
     max_length: Optional[int] = None,
     device: Optional[str] = None,
     dtype: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
     quantize: bool = True,
     trust_remote_code: bool = False,
     verbose: bool = True,
@@ -32,6 +33,7 @@ def turbo(
 | `max_length` | int | auto | Maximum context length |
 | `device` | str | auto | Device ("cuda", "cpu", "cuda:0", "auto") |
 | `dtype` | str | auto | Data type ("float16", "bfloat16") |
+| `config` | dict | None | Shared export/push defaults (`format`, `quantization`, `push_format`, `push_quantization`) |
 | `quantize` | bool | True | Whether to apply quantization |
 | `trust_remote_code` | bool | False | Trust remote code in model |
 | `verbose` | bool | True | Show loading progress and stats |

@@ -102,11 +102,14 @@ model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
 One unified interface for everything:
 
 ```python
-model = turbo("mistralai/Mistral-7B")
+model = turbo(
+    "mistralai/Mistral-7B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 model.generate("Hello!")
 model.finetune(data, epochs=3)
-model.export("gguf", quantization="Q4_K_M")
-model.push("user/repo", format="gguf")
+model.export()
+model.push("user/repo")
 ```
 
 ### ⚡ Performance Optimizations

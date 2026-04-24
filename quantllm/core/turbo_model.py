@@ -26,6 +26,12 @@ from datasets.utils.logging import disable_progress_bar as disable_ds_progress_b
 from .memory import memory_optimized_tensor_order
 
 DEFAULT_CHUNKED_SHARD_SIZE = "2GB"
+DEFAULT_EXPORT_PUSH_CONFIG = {
+    "format": "safetensors",
+    "push_format": "safetensors",
+    "quantization": "Q4_K_M",
+    "push_quantization": "Q4_K_M",
+}
 
 
 class TurboModel:
@@ -57,6 +63,7 @@ class TurboModel:
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
         config: SmartConfig,
+        export_push_config: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
     ):
         """
@@ -76,6 +83,7 @@ class TurboModel:
         self._is_quantized = False
         self._is_finetuned = False
         self._lora_applied = False
+        self.export_push_config = self._build_export_push_config(export_push_config)
         self.verbose = verbose
     
     @classmethod
@@ -92,6 +100,7 @@ class TurboModel:
         trust_remote_code: bool = True,
         quantize: bool = True,
         config_override: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
     ) -> "TurboModel":
         """
@@ -112,6 +121,7 @@ class TurboModel:
             trust_remote_code: Trust remote code in model
             quantize: Whether to quantize the model
             config_override: Dict to override any auto-detected settings
+            config: Shared export/push config (format, quantization, push_format, etc.)
             quantize: Whether to quantize the model
             config_override: Dict to override any auto-detected settings
             verbose: Print loading progress
@@ -268,7 +278,7 @@ class TurboModel:
             print_success("Model loaded successfully!")
             logger.info("")
         
-        instance = cls(model, tokenizer, smart_config)
+        instance = cls(model, tokenizer, smart_config, export_push_config=config)
         instance._is_quantized = quantize and smart_config.bits < 16
         
         return instance
@@ -494,6 +504,27 @@ class TurboModel:
         except ImportError:
             logger.warning("⚠ bitsandbytes not installed, loading without quantization")
             return {}
+
+    @staticmethod
+    def _build_export_push_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build shared export/push config with deterministic defaults."""
+        resolved = dict(DEFAULT_EXPORT_PUSH_CONFIG)
+        if config:
+            aliases = {
+                "export_format": "format",
+                "export_quantization": "quantization",
+            }
+            for key, value in config.items():
+                mapped_key = aliases.get(key, key)
+                if mapped_key in resolved and value is not None:
+                    resolved[mapped_key] = value
+
+            if "format" in config and "push_format" not in config:
+                resolved["push_format"] = resolved["format"]
+            if "quantization" in config and "push_quantization" not in config:
+                resolved["push_quantization"] = resolved["quantization"]
+
+        return resolved
     
     @staticmethod
     def _enable_flash_attention(model: PreTrainedModel, verbose: bool = True) -> None:
@@ -945,7 +976,7 @@ class TurboModel:
     
     def export(
         self,
-        format: str,
+        format: Optional[str] = None,
         output_path: Optional[str] = None,
         *,
         quantization: Optional[str] = None,
@@ -961,7 +992,7 @@ class TurboModel:
             - "mlx": For Apple Silicon Macs
         
         Args:
-            format: Target format (gguf, safetensors, onnx, mlx)
+            format: Target format (gguf, safetensors, onnx, mlx). Uses shared config when omitted.
             output_path: Output file/directory path
             quantization: Format-specific quantization:
                 - GGUF: Q4_K_M, Q5_K_M, Q8_0, etc.
@@ -978,7 +1009,10 @@ class TurboModel:
             >>> model.export("onnx", "./my_model_onnx/")
             >>> model.export("mlx", "./my_model_mlx/", quantization="4bit")
         """
-        format = format.lower()
+        format = (format or self.export_push_config["format"]).lower()
+        effective_quantization = quantization
+        if effective_quantization is None and format == "gguf":
+            effective_quantization = self.export_push_config["quantization"]
         
         # Merge LoRA if applied
         if self._lora_applied:
@@ -991,7 +1025,7 @@ class TurboModel:
         if output_path is None:
             model_name = self.model.config._name_or_path.split('/')[-1]
             if format == "gguf":
-                quant = quantization or self.config.quant_type or "q4_k_m"
+                quant = effective_quantization or "Q4_K_M"
                 output_path = f"{model_name}.{quant.upper()}.gguf"
             elif format == "safetensors":
                 output_path = f"./{model_name}-quantllm/"
@@ -1012,7 +1046,7 @@ class TurboModel:
             raise ValueError(f"Unknown format: {format}. Supported: {list(exporters.keys())}")
         
         print_header(f"Exporting to {format.upper()}")
-        result = exporters[format](output_path, quantization=quantization, **kwargs)
+        result = exporters[format](output_path, quantization=effective_quantization, **kwargs)
         print_success(f"Exported to: {result}")
         
         return result
@@ -1021,7 +1055,7 @@ class TurboModel:
         self,
         repo_id: str,
         token: Optional[str] = None,
-        format: str = "safetensors",
+        format: Optional[str] = None,
         quantization: Optional[str] = None,
         commit_message: str = "Upload model via QuantLLM",
         license: str = "apache-2.0",
@@ -1052,7 +1086,8 @@ class TurboModel:
         """
         from ..hub import QuantLLMHubManager
         
-        format_lower = format.lower()
+        format_lower = (format or self.export_push_config["push_format"]).lower()
+        push_quantization = quantization or self.export_push_config["push_quantization"]
         
         # Get the original base model name (full path for HuggingFace link)
         base_model_full = self.model.config._name_or_path
@@ -1066,7 +1101,7 @@ class TurboModel:
         
         if format_lower == "gguf":
             # Export GGUF directly to staging
-            quant_label = quantization or (self.config.quant_type if self.config.quant_type != "GGUF" else "q4_k_m") or "q4_k_m"
+            quant_label = push_quantization or "Q4_K_M"
             filename = f"{model_name}.{quant_label.upper()}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             
@@ -1085,11 +1120,11 @@ class TurboModel:
             print_info("Exporting to ONNX format...")
             save_path = manager.staging_dir
             
-            self._export_onnx(save_path, quantization=quantization, **kwargs)
+            self._export_onnx(save_path, quantization=push_quantization, **kwargs)
             
             manager.track_hyperparameters({
                 "format": "onnx",
-                "quantization": quantization,
+                "quantization": push_quantization,
                 "base_model": base_model_full,
                 "license": license,
             })
@@ -1100,11 +1135,11 @@ class TurboModel:
             print_info("Exporting to MLX format...")
             save_path = manager.staging_dir
             
-            self._export_mlx(save_path, quantization=quantization, **kwargs)
+            self._export_mlx(save_path, quantization=push_quantization, **kwargs)
             
             manager.track_hyperparameters({
                 "format": "mlx",
-                "quantization": quantization,
+                "quantization": push_quantization,
                 "base_model": base_model_full,
                 "license": license,
             })
@@ -1117,7 +1152,7 @@ class TurboModel:
                 "base_model": base_model_full,
                 "license": license,
             })
-            manager.save_final_model(self, format=format)
+            manager.save_final_model(self, format=format_lower)
             manager._generate_model_card(format=format_lower)
             
         manager.push(commit_message=commit_message)
@@ -1852,6 +1887,7 @@ def turbo(
     max_length: Optional[int] = None,
     device: Optional[str] = None,
     dtype: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> TurboModel:
     """
@@ -1866,6 +1902,7 @@ def turbo(
         max_length: Override max sequence length (default: auto)
         device: Override device (default: best GPU)
         dtype: Override dtype (default: bf16/fp16)
+        config: Shared export/push config (format, quantization, push_format, etc.)
         **kwargs: Additional options passed to from_pretrained
         
     Returns:
@@ -1896,5 +1933,6 @@ def turbo(
         max_length=max_length,
         device=device,
         dtype=dtype,
+        config=config,
         **kwargs,
     )

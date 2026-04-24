@@ -49,34 +49,18 @@ model.push("user/repo", token="hf_...")
 ```python
 from quantllm import turbo
 
-model = turbo("meta-llama/Llama-3.2-3B")
-
-# Push as GGUF (for Ollama, llama.cpp, LM Studio)
-model.push(
-    "your-username/my-model-gguf",
-    format="gguf",
-    quantization="Q4_K_M",
-    license="apache-2.0"
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={
+        "format": "gguf",
+        "quantization": "Q4_K_M",
+        "push_format": "gguf",
+    },
 )
 
-# Push as ONNX
-model.push(
-    "your-username/my-model-onnx",
-    format="onnx"
-)
-
-# Push as MLX (Apple Silicon)
-model.push(
-    "your-username/my-model-mlx",
-    format="mlx",
-    quantization="4bit"
-)
-
-# Push as SafeTensors (default)
-model.push(
-    "your-username/my-model",
-    format="safetensors"
-)
+# Uses shared config defaults
+model.export()
+model.push("your-username/my-model-gguf", license="apache-2.0")
 ```
 
 ### Method 2: QuantLLMHubManager (Advanced)
