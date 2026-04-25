@@ -24,7 +24,7 @@ def test_build_export_push_config_uses_deterministic_defaults():
     assert resolved["format"] == "safetensors"
     assert resolved["push_format"] == "safetensors"
     assert resolved["quantization"] == "Q4_K_M"
-    assert resolved["push_quantization"] == "Q4_K_M"
+    assert resolved["push_quantization"] is None
 
 
 def test_build_export_push_config_aligns_push_values_with_export_values():
@@ -66,7 +66,7 @@ def test_export_prefers_shared_quantization_over_smart_config_quant_type():
     assert captured["quantization"] == "Q4_K_M"
 
 
-def test_gguf_push_uses_shared_config_when_omitted(monkeypatch):
+def test_gguf_push_uses_shared_config_when_omitted(monkeypatch, tmp_path):
     model = _stub_turbo({
         "format": "gguf",
         "push_format": "gguf",
@@ -88,7 +88,7 @@ def test_gguf_push_uses_shared_config_when_omitted(monkeypatch):
 
     class FakeManager:
         def __init__(self, repo_id, hf_token=None):
-            self.staging_dir = "/tmp/quantllm-test-staging"
+            self.staging_dir = str(tmp_path / "quantllm-test-staging")
 
         def track_hyperparameters(self, params):
             calls["tracked"] = params
@@ -113,3 +113,44 @@ def test_gguf_push_uses_shared_config_when_omitted(monkeypatch):
     assert calls["export"]["format"] == "gguf"
     assert calls["export"]["quantization"] == "Q4_K_M"
     assert calls["tracked"]["quantization"] == "Q4_K_M"
+
+
+def test_onnx_push_does_not_force_quantization(monkeypatch, tmp_path):
+    model = _stub_turbo(
+        TurboModel._build_export_push_config({"push_format": "onnx"})
+    )
+
+    calls = {}
+
+    class FakeManager:
+        def __init__(self, repo_id, hf_token=None):
+            self.staging_dir = str(tmp_path / "quantllm-test-staging")
+
+        def track_hyperparameters(self, params):
+            calls["tracked"] = params
+
+        def _generate_model_card(self, format):
+            calls["card_format"] = format
+
+        def push(self, commit_message):
+            calls["pushed"] = commit_message
+
+        def save_final_model(self, *args, **kwargs):
+            raise AssertionError(
+                "save_final_model should not be called for ONNX push"
+            )
+
+    def fake_export_onnx(output_path, quantization=None, **kwargs):
+        calls["onnx_quantization"] = quantization
+        return output_path
+
+    model._export_onnx = fake_export_onnx
+
+    import quantllm.hub as hub_module
+
+    monkeypatch.setattr(hub_module, "QuantLLMHubManager", FakeManager)
+
+    model.push("user/repo")
+
+    assert calls["onnx_quantization"] is None
+    assert calls["tracked"]["quantization"] is None

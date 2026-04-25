@@ -1,5 +1,5 @@
 """
-QuantLLM v2.0 - GGUF Export Example
+QuantLLM v2.1 - GGUF Export Example
 
 Export models to GGUF format for use with llama.cpp, Ollama, LM Studio.
 No external dependencies required!

@@ -427,7 +427,7 @@ pip install transformers torch
 | **Quantization** | {self.quantization or "Full Precision"} |
 | **License** | `{self.license}` |
 | **Export Date** | {datetime.now().strftime("%Y-%m-%d")} |
-| **Exported By** | [QuantLLM v2.0](https://github.com/codewithdark-git/QuantLLM) |
+| **Exported By** | [QuantLLM v2.1](https://github.com/codewithdark-git/QuantLLM) |
 '''
     
     def _generate_quantization_section(self) -> str:

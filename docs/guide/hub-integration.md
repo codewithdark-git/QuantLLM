@@ -11,14 +11,15 @@ The easiest way to share your model:
 ```python
 from quantllm import turbo
 
-model = turbo("meta-llama/Llama-3.2-3B")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 
 # Push with auto-generated model card
 model.push(
     "your-username/my-model",
-    token="hf_...",
-    format="gguf",
-    quantization="Q4_K_M"
+    token="hf_..."
 )
 ```
 

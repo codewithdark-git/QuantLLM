@@ -30,7 +30,7 @@ DEFAULT_EXPORT_PUSH_CONFIG = {
     "format": "safetensors",
     "push_format": "safetensors",
     "quantization": "Q4_K_M",
-    "push_quantization": "Q4_K_M",
+    "push_quantization": None,
 }
 
 
@@ -509,9 +509,12 @@ class TurboModel:
                 "export_format": "format",
                 "export_quantization": "quantization",
             }
+            nullable_overrides = {"push_quantization"}
             for key, value in config.items():
                 mapped_key = aliases.get(key, key)
-                if mapped_key in resolved and value is not None:
+                if mapped_key in resolved and (
+                    value is not None or mapped_key in nullable_overrides
+                ):
                     resolved[mapped_key] = value
 
             if "format" in config and "push_format" not in config:
@@ -1108,7 +1111,9 @@ class TurboModel:
         
         if format_lower == "gguf":
             # Export GGUF directly to staging
-            quant_label = push_quantization
+            quant_label = push_quantization or self.export_push_config.get(
+                "quantization", DEFAULT_EXPORT_PUSH_CONFIG["quantization"]
+            )
             filename = f"{model_name}.{quant_label.upper()}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             

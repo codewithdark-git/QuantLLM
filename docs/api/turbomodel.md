@@ -232,8 +232,8 @@ Export the model to various formats.
 ```python
 def export(
     self,
-    format: str,
-    output_path: str,
+    format: Optional[str] = None,
+    output_path: Optional[str] = None,
     quantization: Optional[str] = None,
     **kwargs
 ) -> str
@@ -241,14 +241,18 @@ def export(
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `format` | str | "gguf", "onnx", "mlx", "safetensors" |
-| `output_path` | str | Output file or directory |
+| `format` | str | "gguf", "onnx", "mlx", "safetensors" (optional, uses shared config) |
+| `output_path` | str | Output file or directory (optional) |
 | `quantization` | str | Quantization type (format-specific) |
 
 **Examples:**
 ```python
 # GGUF
-model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
+model.export()
 
 # ONNX
 model.export("onnx", "./model-onnx/")
@@ -269,7 +273,7 @@ def push(
     self,
     repo_id: str,
     token: Optional[str] = None,
-    format: str = "safetensors",
+    format: Optional[str] = None,
     quantization: Optional[str] = None,
     license: str = "apache-2.0",
     commit_message: str = "Upload model via QuantLLM",
@@ -281,9 +285,7 @@ def push(
 ```python
 # Push as GGUF
 model.push(
-    "your-username/my-model",
-    format="gguf",
-    quantization="Q4_K_M"
+    "your-username/my-model"
 )
 
 # Push as MLX

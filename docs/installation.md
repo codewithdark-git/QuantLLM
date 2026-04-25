@@ -90,7 +90,7 @@ Expected output:
 ```
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║   🚀 QuantLLM v2.0.0                                       ║
+║   🚀 QuantLLM v2.1.0rc1                                       ║
 ║   Ultra-fast LLM Quantization & Export                     ║
 ║                                                            ║
 ║   ✓ GGUF  ✓ ONNX  ✓ MLX  ✓ SafeTensors                     ║

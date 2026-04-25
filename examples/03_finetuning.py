@@ -1,5 +1,5 @@
 """
-QuantLLM v2.0 - Fine-tuning Example
+QuantLLM v2.1 - Fine-tuning Example
 
 Fine-tune a quantized model using LoRA.
 """

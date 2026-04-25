@@ -1,5 +1,5 @@
 """
-QuantLLM v2.0 - Push to HuggingFace Hub
+QuantLLM v2.1 - Push to HuggingFace Hub
 
 Push your models to HuggingFace Hub.
 """

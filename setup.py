@@ -11,7 +11,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="quantllm",
-    version="2.0.0",
+    version="2.1.0rc1",
     author="Dark Coder",
     author_email="codewithdark90@gmail.com",
     description="Ultra-fast LLM quantization, fine-tuning, and deployment with one line of code",

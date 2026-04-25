@@ -128,10 +128,12 @@ Share your model with the world:
 
 ```python
 # Push with auto-generated model card
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 model.push(
     "your-username/my-awesome-model",
-    format="gguf",
-    quantization="Q4_K_M",
     license="apache-2.0"
 )
 ```
@@ -196,7 +198,7 @@ quantllm.show_banner()
 ```
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║   🚀 QuantLLM v2.0.0                                       ║
+║   🚀 QuantLLM v2.1.0rc1                                       ║
 ║   Ultra-fast LLM Quantization & Export                     ║
 ║                                                            ║
 ║   ✓ GGUF  ✓ ONNX  ✓ MLX  ✓ SafeTensors                     ║

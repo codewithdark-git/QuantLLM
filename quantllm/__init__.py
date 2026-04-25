@@ -1,5 +1,5 @@
 """
-QuantLLM v2.0 - Ultra-fast LLM Quantization & GGUF Export
+QuantLLM v2.1 - Ultra-fast LLM Quantization & GGUF Export
 
 The simplest way to load, quantize, fine-tune, and export LLMs.
 
@@ -13,16 +13,19 @@ Example:
     >>> from quantllm import turbo
     >>> 
     >>> # Load any model (auto-quantizes to 4-bit)
-    >>> model = turbo("meta-llama/Llama-3.2-3B")
+    >>> model = turbo(
+    ...     "meta-llama/Llama-3.2-3B",
+    ...     config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+    ... )
     >>> 
     >>> # Generate text
     >>> model.generate("Hello, world!")
     >>> 
     >>> # Export to GGUF with Q4_K_M quantization
-    >>> model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
+    >>> model.export()
     >>> 
     >>> # Push to HuggingFace Hub
-    >>> model.push("username/my-model", format="gguf", quantization="Q4_K_M")
+    >>> model.push("username/my-model")
 """
 
 import os
@@ -73,7 +76,7 @@ from .utils import (
 # Configure logging (minimal by default)
 configure_logging("WARNING")
 
-__version__ = "2.0.0"
+__version__ = "2.1.0rc1"
 __title__ = "QuantLLM"
 __description__ = "Ultra-fast LLM Quantization & Export (GGUF, ONNX, MLX)"
 __author__ = "Dark Coder"

@@ -130,10 +130,12 @@ print(output["choices"][0]["text"])
 Export and push in one step:
 
 ```python
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 model.push(
     "your-username/my-model-gguf",
-    format="gguf",
-    quantization="Q4_K_M",
     license="apache-2.0"
 )
 ```
