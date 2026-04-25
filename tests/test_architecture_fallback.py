@@ -3,8 +3,8 @@ from unittest.mock import Mock
 
 import transformers
 
-from quantllm.core.turbo_model import TurboModel
 import quantllm.core.turbo_model as turbo_model_module
+from quantllm.core.turbo_model import TurboModel
 
 
 class _DummySmartConfig(SimpleNamespace):
@@ -155,3 +155,112 @@ def test_from_pretrained_supports_from_config_only(monkeypatch):
     assert _FakeAutoModel.called_from_pretrained is False
     assert _FakeAutoModel.called_from_config is True
     assert loaded.model.config.model_type == "llama"
+
+
+def test_trust_remote_code_warns_for_unregistered_architecture(monkeypatch, caplog):
+    monkeypatch.setattr(TurboModel, "_architecture_registry", {})
+    monkeypatch.setattr(TurboModel, "_model_class_registry", {})
+    monkeypatch.setattr(
+        turbo_model_module.SmartConfig,
+        "detect",
+        lambda *args, **kwargs: _make_smart_config(),
+    )
+    monkeypatch.setattr(
+        turbo_model_module.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: _make_tokenizer(),
+    )
+    monkeypatch.setattr(
+        transformers.AutoConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(
+            model_type="newmodel",
+            quantization_config=None,
+        ),
+    )
+
+    class _FakeAutoModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            if "config" in kwargs:
+                return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
+            raise ValueError("Unrecognized configuration class")
+
+    monkeypatch.setattr(
+        turbo_model_module,
+        "AutoModelForCausalLM",
+        _FakeAutoModel,
+    )
+
+    with caplog.at_level("WARNING"):
+        loaded = TurboModel.from_pretrained(
+            "org/newmodel-7b",
+            quantize=False,
+            verbose=False,
+            base_model_fallback=True,
+            trust_remote_code=True,
+        )
+
+    assert loaded.model.config.model_type == "llama"
+    assert (
+        "trust_remote_code=True is enabled for unregistered architecture 'newmodel'"
+        in caplog.text
+    )
+
+
+def test_quantization_kwargs_are_preserved_during_fallback(monkeypatch):
+    monkeypatch.setattr(TurboModel, "_architecture_registry", {})
+    monkeypatch.setattr(TurboModel, "_model_class_registry", {})
+    smart_config = _make_smart_config()
+    smart_config.bits = 4
+    monkeypatch.setattr(
+        turbo_model_module.SmartConfig,
+        "detect",
+        lambda *args, **kwargs: smart_config,
+    )
+    monkeypatch.setattr(
+        turbo_model_module.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: _make_tokenizer(),
+    )
+    monkeypatch.setattr(
+        transformers.AutoConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(
+            model_type="newmodel",
+            quantization_config=None,
+        ),
+    )
+    monkeypatch.setattr(
+        TurboModel,
+        "_get_quantization_kwargs",
+        classmethod(lambda cls, cfg: {"quantization_config": "nf4-sentinel"}),
+    )
+
+    calls = []
+
+    class _FakeAutoModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise ValueError("Unrecognized configuration class")
+            return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
+
+    monkeypatch.setattr(
+        turbo_model_module,
+        "AutoModelForCausalLM",
+        _FakeAutoModel,
+    )
+
+    loaded = TurboModel.from_pretrained(
+        "org/newmodel-7b",
+        quantize=True,
+        verbose=False,
+        base_model_fallback=True,
+    )
+
+    assert loaded.model.config.model_type == "llama"
+    assert len(calls) == 2
+    assert calls[0]["quantization_config"] == "nf4-sentinel"
+    assert calls[1]["quantization_config"] == "nf4-sentinel"

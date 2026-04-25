@@ -87,10 +87,13 @@ register_architecture("newmodel", base_model_type="llama")
 model = turbo(
     "new-model-org/NewModel-7B",
     model_type_override="llama",     # optional explicit override
-    base_model_fallback=True,        # retry with resolved fallback config
+    base_model_fallback=True,        # enabled by default; can be disabled
     trust_remote_code=True,
 )
 ```
+
+> ⚠️ **Security note:** `trust_remote_code=True` executes model-provided code.
+> Only enable it for trusted publishers, especially when loading unregistered or very new architectures.
 
 You can also load from config only (no checkpoint weights) while waiting for upstream support:
 
@@ -109,6 +112,20 @@ model = turbo(
 2. Validate loading with:
    - `turbo("org/model", base_model_fallback=True, trust_remote_code=True)`
 3. Add/extend a focused test in `tests/test_architecture_fallback.py`.
+
+#### Real-world style "released yesterday" example
+
+```python
+from quantllm import turbo, register_architecture
+
+# Example: transformers doesn't recognize Qwen3 yet
+register_architecture("qwen3", base_model_type="qwen2")
+
+model = turbo(
+    "Qwen/Qwen3-8B",
+    trust_remote_code=True,
+)
+```
 
 ### Memory Options
 
