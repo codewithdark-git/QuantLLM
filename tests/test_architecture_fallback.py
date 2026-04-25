@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import transformers
 
@@ -30,7 +31,9 @@ def _make_tokenizer():
 
 def test_resolve_model_type_detects_common_patterns():
     assert TurboModel.resolve_model_type("meta-llama/Llama-3.2-3B") == "llama"
+    # Newer Qwen names still fall back to the qwen2 base family.
     assert TurboModel.resolve_model_type("Qwen/Qwen3-8B") == "qwen2"
+    assert TurboModel.resolve_model_type("org/custom-arch-1b") is None
 
 
 def test_register_architecture_maps_new_model_to_base_family(monkeypatch):
@@ -72,13 +75,14 @@ def test_registered_class_fallback_is_used(monkeypatch):
         def from_config(*args, **kwargs):
             return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
 
-    class _RegisteredModel:
-        called = False
+    registered_call = Mock()
 
-        @classmethod
-        def from_pretrained(cls, *args, **kwargs):
-            cls.called = True
-            return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
+    def _registered_from_pretrained(cls, *args, **kwargs):
+        registered_call()
+        return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
+
+    class _RegisteredModel:
+        from_pretrained = classmethod(_registered_from_pretrained)
 
     monkeypatch.setattr(
         turbo_model_module,
@@ -95,7 +99,7 @@ def test_registered_class_fallback_is_used(monkeypatch):
         verbose=False,
     )
 
-    assert _RegisteredModel.called is True
+    assert registered_call.called is True
     assert loaded.model.config.model_type == "llama"
 
 

@@ -5,8 +5,11 @@ Load, quantize, fine-tune, and export LLMs with one line each.
 """
 
 import os
+import re
 import shutil
 import tempfile
+import copy
+from functools import lru_cache
 from typing import Optional, Dict, Any, Union, List, Type
 import torch
 import torch.nn as nn
@@ -128,7 +131,12 @@ class TurboModel:
         config_model_type: Optional[str] = None,
         model_type_override: Optional[str] = None,
     ) -> Optional[str]:
-        """Resolve model type using override, registry, and default family patterns."""
+        """
+        Resolve model type using override, registry, and default family patterns.
+        
+        If config_model_type is provided but unregistered, the original config value
+        is returned unchanged.
+        """
         if model_type_override:
             return model_type_override.lower().strip()
         
@@ -138,14 +146,36 @@ class TurboModel:
         
         name = model_name.lower()
         for pattern, fallback in cls._architecture_registry.items():
-            if pattern in name:
+            if cls._matches_model_name_pattern(name, pattern):
                 return fallback
         
         for pattern, fallback in DEFAULT_ARCHITECTURE_FALLBACKS.items():
-            if pattern in name:
+            if cls._matches_model_name_pattern(name, pattern):
                 return fallback
         
         return None
+
+    @classmethod
+    def _matches_model_name_pattern(cls, model_name: str, pattern: str) -> bool:
+        """Return True when pattern appears as a token in model_name."""
+        return cls._compiled_model_name_pattern(pattern).search(model_name) is not None
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _compiled_model_name_pattern(pattern: str):
+        """Compile and cache token-boundary regex patterns for model-name matching."""
+        escaped = re.escape(pattern)
+        # Match architecture tokens as standalone chunks split by separators.
+        return re.compile(rf"(^|[^a-z0-9]){escaped}([^a-z0-9]|$)")
+
+    @staticmethod
+    def _should_apply_quantization(
+        quantize: bool,
+        bits: int,
+        from_config_only: bool,
+    ) -> bool:
+        """Check whether quantization arguments should be added for loading."""
+        return quantize and bits < 16 and not from_config_only
 
     @classmethod
     def _load_model_with_fallback(
@@ -165,18 +195,22 @@ class TurboModel:
             config_model_type=getattr(hf_config, "model_type", None),
             model_type_override=model_type_override,
         )
+        resolved_config = hf_config
         
         if hf_config is not None and resolved_model_type:
-            setattr(hf_config, "model_type", resolved_model_type)
+            current_model_type = getattr(hf_config, "model_type", None)
+            if current_model_type != resolved_model_type:
+                resolved_config = copy.deepcopy(hf_config)
+                setattr(resolved_config, "model_type", resolved_model_type)
         
         if from_config_only:
-            if hf_config is None:
+            if resolved_config is None:
                 raise ValueError(
                     "from_config_only=True requires a loadable config. "
                     "Try trust_remote_code=True or set model_type_override."
                 )
             return AutoModelForCausalLM.from_config(
-                hf_config,
+                resolved_config,
                 trust_remote_code=trust_remote_code,
                 torch_dtype=model_kwargs.get("torch_dtype"),
             )
@@ -186,27 +220,38 @@ class TurboModel:
         except Exception as primary_error:
             if not base_model_fallback:
                 raise
+            fallback_error = None
             
-            if hf_config is not None:
+            if resolved_config is not None:
                 fallback_kwargs = dict(model_kwargs)
-                fallback_kwargs["config"] = hf_config
+                fallback_kwargs["config"] = resolved_config
                 try:
                     return AutoModelForCausalLM.from_pretrained(model_name, **fallback_kwargs)
-                except Exception:
-                    pass
+                except Exception as fallback_config_error:
+                    fallback_error = fallback_config_error
             
             if resolved_model_type:
                 registered_cls = cls._model_class_registry.get(resolved_model_type)
                 if registered_cls is not None:
                     class_kwargs = dict(model_kwargs)
-                    if hf_config is not None:
-                        class_kwargs["config"] = hf_config
-                    return registered_cls.from_pretrained(model_name, **class_kwargs)
+                    if resolved_config is not None:
+                        class_kwargs["config"] = resolved_config
+                    try:
+                        return registered_cls.from_pretrained(model_name, **class_kwargs)
+                    except Exception as fallback_registered_error:
+                        fallback_error = fallback_registered_error
+            
+            error_details = f" Last fallback error: {fallback_error}" if fallback_error else ""
             
             raise RuntimeError(
-                "Failed to load model with AutoModelForCausalLM and fallback resolution. "
-                "Try register_architecture(...), model_type_override='llama', or from_config_only=True."
-            ) from primary_error
+                "Failed to load model with AutoModelForCausalLM and fallback resolution.\n"
+                "Try one of:\n"
+                "1) Register with register_architecture(...) before loading.\n"
+                "2) Use model_type_override='<base_family>'.\n"
+                "3) Use from_config_only=True with a loadable config "
+                "(usually trust_remote_code=True)."
+                + error_details
+            ) from (fallback_error or primary_error)
     
     @classmethod
     def from_pretrained(
@@ -333,13 +378,6 @@ class TurboModel:
         try:
             from transformers import AutoConfig
             hf_config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-            resolved_model_type = cls.resolve_model_type(
-                model_name,
-                config_model_type=getattr(hf_config, "model_type", None),
-                model_type_override=model_type_override,
-            )
-            if resolved_model_type:
-                setattr(hf_config, "model_type", resolved_model_type)
             
             existing_quant = getattr(hf_config, "quantization_config", None)
             if existing_quant:
@@ -365,7 +403,7 @@ class TurboModel:
             pass # Ignore config loading errors, proceed with defaults
 
         # Apply quantization if requested
-        if quantize and smart_config.bits < 16 and not from_config_only:
+        if cls._should_apply_quantization(quantize, smart_config.bits, from_config_only):
             model_kwargs.update(cls._get_quantization_kwargs(smart_config))
         
         # Device map for memory management
