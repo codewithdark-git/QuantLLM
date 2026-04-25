@@ -80,9 +80,6 @@ class TurboModel:
         self._is_quantized = False
         self._is_finetuned = False
         self._lora_applied = False
-        self._is_quantized = False
-        self._is_finetuned = False
-        self._lora_applied = False
         self.export_push_config = self._build_export_push_config(export_push_config)
         self.verbose = verbose
     
