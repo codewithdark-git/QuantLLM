@@ -3,8 +3,8 @@ from unittest.mock import Mock
 
 import transformers
 
-import quantllm.core.turbo_model as turbo_model_module
 from quantllm.core.turbo_model import TurboModel
+import quantllm.core.turbo_model as turbo_model_module
 
 
 class _DummySmartConfig(SimpleNamespace):
