@@ -37,6 +37,14 @@ def test_build_export_push_config_aligns_push_values_with_export_values():
     assert resolved["push_quantization"] == "Q5_K_M"
 
 
+def test_build_export_push_config_allows_nullable_push_quantization_override():
+    resolved = TurboModel._build_export_push_config(
+        {"format": "gguf", "quantization": "Q5_K_M", "push_quantization": None}
+    )
+    assert resolved["quantization"] == "Q5_K_M"
+    assert resolved["push_quantization"] is None
+
+
 def test_export_prefers_shared_quantization_over_smart_config_quant_type():
     model = _stub_turbo(
         {
