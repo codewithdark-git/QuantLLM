@@ -35,6 +35,7 @@ import sys
 from .core import (
     turbo,
     TurboModel,
+    register_architecture,
     SmartConfig,
     HardwareProfiler,
     ModelAnalyzer,
@@ -117,6 +118,7 @@ __all__ = [
     # Main API
     "turbo",
     "TurboModel",
+    "register_architecture",
     "SmartConfig",
     "HardwareProfiler",
     "ModelAnalyzer",
