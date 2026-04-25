@@ -348,6 +348,14 @@ pytest
 - 📚 Documentation
 - 🐛 Bug fixes
 
+**Quick template for new architecture support:**
+```python
+from quantllm import register_architecture, turbo
+
+register_architecture("new-arch", base_model_type="llama")
+model = turbo("org/new-arch-7b", base_model_fallback=True, trust_remote_code=True)
+```
+
 ---
 
 ## 📜 License

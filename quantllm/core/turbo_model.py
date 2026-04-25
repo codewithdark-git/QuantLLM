@@ -7,7 +7,7 @@ Load, quantize, fine-tune, and export LLMs with one line each.
 import os
 import shutil
 import tempfile
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Type
 import torch
 import torch.nn as nn
 from transformers import (
@@ -31,6 +31,14 @@ DEFAULT_EXPORT_PUSH_CONFIG = {
     "push_format": "safetensors",
     "quantization": "Q4_K_M",
     "push_quantization": None,
+}
+DEFAULT_ARCHITECTURE_FALLBACKS = {
+    "llama": "llama",
+    "mistral": "mistral",
+    "mixtral": "mistral",
+    "qwen": "qwen2",
+    "phi": "phi",
+    "gemma": "gemma",
 }
 
 
@@ -58,6 +66,9 @@ class TurboModel:
         >>> model.export("gguf", "my_model.gguf")
     """
     
+    _architecture_registry: Dict[str, str] = {}
+    _model_class_registry: Dict[str, Type[PreTrainedModel]] = {}
+    
     def __init__(
         self,
         model: PreTrainedModel,
@@ -82,6 +93,120 @@ class TurboModel:
         self._lora_applied = False
         self.export_push_config = self._build_export_push_config(export_push_config)
         self.verbose = verbose
+
+    @classmethod
+    def register_architecture(
+        cls,
+        architecture: str,
+        *,
+        base_model_type: Optional[str] = None,
+        model_class: Optional[Type[PreTrainedModel]] = None,
+    ) -> None:
+        """
+        Register a new architecture alias and optional explicit model class.
+        
+        Args:
+            architecture: Architecture or model type name to register
+            base_model_type: Base model family to fall back to (e.g., "llama")
+            model_class: Explicit model class with from_pretrained()
+        """
+        normalized = architecture.lower().strip()
+        if not normalized:
+            raise ValueError("architecture must be a non-empty string")
+        
+        if base_model_type:
+            cls._architecture_registry[normalized] = base_model_type.lower().strip()
+        
+        if model_class is not None:
+            cls._model_class_registry[normalized] = model_class
+    
+    @classmethod
+    def resolve_model_type(
+        cls,
+        model_name: str,
+        *,
+        config_model_type: Optional[str] = None,
+        model_type_override: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve model type using override, registry, and default family patterns."""
+        if model_type_override:
+            return model_type_override.lower().strip()
+        
+        model_type = (config_model_type or "").lower().strip()
+        if model_type:
+            return cls._architecture_registry.get(model_type, model_type)
+        
+        name = model_name.lower()
+        for pattern, fallback in cls._architecture_registry.items():
+            if pattern in name:
+                return fallback
+        
+        for pattern, fallback in DEFAULT_ARCHITECTURE_FALLBACKS.items():
+            if pattern in name:
+                return fallback
+        
+        return None
+
+    @classmethod
+    def _load_model_with_fallback(
+        cls,
+        model_name: str,
+        model_kwargs: Dict[str, Any],
+        *,
+        trust_remote_code: bool,
+        hf_config: Optional[Any],
+        model_type_override: Optional[str],
+        base_model_fallback: bool,
+        from_config_only: bool,
+    ) -> PreTrainedModel:
+        """Load model with architecture fallback and optional config-only mode."""
+        resolved_model_type = cls.resolve_model_type(
+            model_name,
+            config_model_type=getattr(hf_config, "model_type", None),
+            model_type_override=model_type_override,
+        )
+        
+        if hf_config is not None and resolved_model_type:
+            setattr(hf_config, "model_type", resolved_model_type)
+        
+        if from_config_only:
+            if hf_config is None:
+                raise ValueError(
+                    "from_config_only=True requires a loadable config. "
+                    "Try trust_remote_code=True or set model_type_override."
+                )
+            return AutoModelForCausalLM.from_config(
+                hf_config,
+                trust_remote_code=trust_remote_code,
+                torch_dtype=model_kwargs.get("torch_dtype"),
+            )
+        
+        try:
+            return AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+        except Exception as primary_error:
+            if not base_model_fallback:
+                raise
+            
+            if hf_config is not None:
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs["config"] = hf_config
+                try:
+                    return AutoModelForCausalLM.from_pretrained(model_name, **fallback_kwargs)
+                except Exception:
+                    pass
+            
+            if resolved_model_type:
+                registered_cls = cls._model_class_registry.get(resolved_model_type)
+                if registered_cls is not None:
+                    class_kwargs = dict(model_kwargs)
+                    if hf_config is not None:
+                        class_kwargs["config"] = hf_config
+                    return registered_cls.from_pretrained(model_name, **class_kwargs)
+            
+            raise RuntimeError(
+                "Failed to load model with AutoModelForCausalLM and fallback resolution. "
+                "Try register_architecture(...), model_type_override='llama', or from_config_only=True."
+            ) from primary_error
     
     @classmethod
     def from_pretrained(
@@ -96,6 +221,9 @@ class TurboModel:
         # Advanced options
         trust_remote_code: bool = True,
         quantize: bool = True,
+        model_type_override: Optional[str] = None,
+        base_model_fallback: bool = True,
+        from_config_only: bool = False,
         config_override: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
@@ -117,6 +245,9 @@ class TurboModel:
             dtype: Override dtype (default: bf16 if available, else fp16)
             trust_remote_code: Trust remote code in model
             quantize: Whether to quantize the model
+            model_type_override: Override detected model_type for very new architectures
+            base_model_fallback: Retry loading with resolved base model config on failure
+            from_config_only: Build model from config only (without loading weights)
             config_override: Dict to override any auto-detected settings
             config: Shared export/push config (format, quantization, push_format, etc.)
             verbose: Print loading progress
@@ -196,10 +327,19 @@ class TurboModel:
             "torch_dtype": smart_config.dtype,
         }
         
+        hf_config = None
+        
         # Check if model is already quantized to prevent conflicts
         try:
             from transformers import AutoConfig
             hf_config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+            resolved_model_type = cls.resolve_model_type(
+                model_name,
+                config_model_type=getattr(hf_config, "model_type", None),
+                model_type_override=model_type_override,
+            )
+            if resolved_model_type:
+                setattr(hf_config, "model_type", resolved_model_type)
             
             existing_quant = getattr(hf_config, "quantization_config", None)
             if existing_quant:
@@ -225,7 +365,7 @@ class TurboModel:
             pass # Ignore config loading errors, proceed with defaults
 
         # Apply quantization if requested
-        if quantize and smart_config.bits < 16:
+        if quantize and smart_config.bits < 16 and not from_config_only:
             model_kwargs.update(cls._get_quantization_kwargs(smart_config))
         
         # Device map for memory management
@@ -240,9 +380,14 @@ class TurboModel:
             if verbose:
                 task = p.add_task("Downloading & Loading model...", total=None)
             
-            model = AutoModelForCausalLM.from_pretrained(
+            model = cls._load_model_with_fallback(
                 model_name,
-                **model_kwargs,
+                model_kwargs,
+                trust_remote_code=trust_remote_code,
+                hf_config=hf_config,
+                model_type_override=model_type_override,
+                base_model_fallback=base_model_fallback,
+                from_config_only=from_config_only,
             )
             
             if verbose:
@@ -1890,6 +2035,25 @@ Or install with extras:
             else:
                 count += self._replace_with_triton(child, bits)
         return count
+
+
+def register_architecture(
+    architecture: str,
+    *,
+    base_model_type: Optional[str] = None,
+    model_class: Optional[Type[PreTrainedModel]] = None,
+) -> None:
+    """
+    Register a new architecture alias and optional explicit model class.
+    
+    Example:
+        >>> register_architecture("my-new-model", base_model_type="llama")
+    """
+    TurboModel.register_architecture(
+        architecture,
+        base_model_type=base_model_type,
+        model_class=model_class,
+    )
 
 
 def turbo(

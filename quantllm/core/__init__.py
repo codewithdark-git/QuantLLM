@@ -8,7 +8,7 @@ quantization, fine-tuning, and export.
 from .hardware import HardwareProfiler
 from .smart_config import SmartConfig
 from .model_analyzer import ModelAnalyzer
-from .turbo_model import TurboModel, turbo
+from .turbo_model import TurboModel, turbo, register_architecture
 from .compilation import (
     compile_model,
     compile_for_inference,
@@ -51,6 +51,7 @@ __all__ = [
     "ModelAnalyzer",
     "TurboModel",
     "turbo",
+    "register_architecture",
     # Compilation
     "compile_model",
     "compile_for_inference",
