@@ -1,4 +1,4 @@
-# QuantLLM v2.0 Requirements
+# QuantLLM v2.1 (pre-release) Requirements
 
 # Core dependencies
 torch>=2.0.0

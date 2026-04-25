@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/images/1.png" alt="QuantLLM Logo" />
   
-  # 🚀 QuantLLM v2.0
+  # 🚀 QuantLLM v2.1 (pre-release)
   
   **The Ultra-Fast LLM Quantization & Export Library**
 
@@ -52,9 +52,12 @@ model = AutoModelForCausalLM.from_pretrained(
 ```python
 from quantllm import turbo
 
-model = turbo("meta-llama/Llama-3-8B")     # Auto-quantizes
+model = turbo(
+    "meta-llama/Llama-3-8B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)  # Auto-quantizes
 model.generate("Hello!")                    # Generate text
-model.export("gguf", quantization="Q4_K_M") # Export to GGUF
+model.export()                              # Export to GGUF with shared config
 ```
 
 ---
@@ -77,14 +80,17 @@ pip install "quantllm[full] @ git+https://github.com/codewithdark-git/QuantLLM.g
 from quantllm import turbo
 
 # Load with automatic optimization
-model = turbo("meta-llama/Llama-3.2-3B")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 
 # Generate text
 response = model.generate("Explain quantum computing simply")
 print(response)
 
 # Export to GGUF
-model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
+model.export("gguf", "model.Q4_K_M.gguf")
 ```
 
 **QuantLLM automatically:**
@@ -102,11 +108,14 @@ model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
 One unified interface for everything:
 
 ```python
-model = turbo("mistralai/Mistral-7B")
+model = turbo(
+    "mistralai/Mistral-7B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 model.generate("Hello!")
 model.finetune(data, epochs=3)
-model.export("gguf", quantization="Q4_K_M")
-model.push("user/repo", format="gguf")
+model.export()
+model.push("user/repo")
 ```
 
 ### ⚡ Performance Optimizations
@@ -133,7 +142,7 @@ Llama 2/3, Mistral, Mixtral, Qwen 1/2, Phi 1/2/3, Gemma, Falcon, DeepSeek, Yi, S
 
 ```
 ╔════════════════════════════════════════════════════════════╗
-║   🚀 QuantLLM v2.0.0                                       ║
+║   🚀 QuantLLM v2.1.0rc1                                    ║
 ║   Ultra-fast LLM Quantization & Export                     ║
 ║   ✓ GGUF  ✓ ONNX  ✓ MLX  ✓ SafeTensors                     ║
 ╚════════════════════════════════════════════════════════════╝
@@ -148,7 +157,7 @@ Llama 2/3, Mistral, Mixtral, Qwen 1/2, Phi 1/2/3, Gemma, Falcon, DeepSeek, Yi, S
 Auto-generates model cards with YAML frontmatter, usage examples, and "Use this model" button:
 
 ```python
-model.push("user/my-model", format="gguf", quantization="Q4_K_M")
+model.push("user/my-model")
 ```
 
 ---
@@ -195,7 +204,10 @@ model.export("safetensors", "./model-hf/")
 ```python
 from quantllm import turbo
 
-model = turbo("meta-llama/Llama-3.2-3B")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 
 # Simple generation
 response = model.generate(
@@ -267,8 +279,6 @@ model = turbo("meta-llama/Llama-3.2-3B")
 # Push with auto-generated model card
 model.push(
     "your-username/my-model",
-    format="gguf",
-    quantization="Q4_K_M",
     license="apache-2.0"
 )
 ```

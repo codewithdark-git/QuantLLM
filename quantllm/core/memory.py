@@ -1,5 +1,5 @@
 """
-Memory Optimization Utilities for QuantLLM v2.0
+Memory Optimization Utilities for QuantLLM v2.1
 
 Advanced memory management for training and inference of large models
 on limited GPU memory.

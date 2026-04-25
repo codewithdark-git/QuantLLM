@@ -1,5 +1,5 @@
 """
-Universal Export Module for QuantLLM v2.0
+Universal Export Module for QuantLLM v2.1
 
 Provides unified export functionality to multiple formats:
 - GGUF (llama.cpp, Ollama, LM Studio)

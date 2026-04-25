@@ -10,8 +10,11 @@ Export models to GGUF format for llama.cpp, Ollama, and LM Studio.
 from quantllm import turbo, convert_to_gguf, quantize_gguf
 
 # Method 1: Via TurboModel
-model = turbo("meta-llama/Llama-3.2-3B")
-model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
+model.export("gguf", "model.Q4_K_M.gguf")
 
 # Method 2: Direct conversion
 convert_to_gguf("meta-llama/Llama-3.2-3B", "model.Q4_K_M.gguf", quant_type="Q4_K_M")

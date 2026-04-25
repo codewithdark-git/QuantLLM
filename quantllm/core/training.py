@@ -1,5 +1,5 @@
 """
-Advanced Training Utilities for QuantLLM v2.0
+Advanced Training Utilities for QuantLLM v2.1
 
 Provides auto-configuration and optimization for fine-tuning
 with minimal user input.
