@@ -76,13 +76,35 @@ model = turbo(
 
 ### New Architecture Fallbacks (for very recent model releases)
 
-If `transformers` does not recognize a just-released architecture yet, register a fallback family:
+QuantLLM ships a built-in fallback table covering common model-type
+suffixes — `qwen3` → `qwen2`, `llama4` → `llama`, `phi4` → `phi3`,
+`gemma3` → `gemma2`, and many others — so brand-new releases load with
+the same one-line API as established models:
+
+```python
+from quantllm import turbo
+
+# Works without manual registration: qwen3 falls back to qwen2 automatically
+model = turbo("Qwen/Qwen3-8B", trust_remote_code=True)
+```
+
+When the built-in mapping does not cover your model, register an
+explicit fallback before loading:
 
 ```python
 from quantllm import turbo, register_architecture
 
-# Map new architecture/model_type to a compatible base family
+# Map a brand-new architecture/model_type to a compatible base family
 register_architecture("newmodel", base_model_type="llama")
+
+# Optionally provide an explicit ``model_class`` (most useful for
+# fine-tuned variants that ship their own modelling code):
+from transformers import LlamaForCausalLM
+register_architecture(
+    "newmodel",
+    base_model_type="llama",
+    model_class=LlamaForCausalLM,
+)
 
 model = turbo(
     "new-model-org/NewModel-7B",
@@ -95,14 +117,36 @@ model = turbo(
 > ⚠️ **Security note:** `trust_remote_code=True` executes model-provided code.
 > Only enable it for trusted publishers, especially when loading unregistered or very new architectures.
 
-You can also load from config only (no checkpoint weights) while waiting for upstream support:
+#### Pre-quantized HuggingFace repos
+
+QuantLLM detects pre-quantized repository names (Unsloth `*-bnb-4bit` /
+`*-bnb-8bit`, AWQ, GPTQ, AQLM, HQQ, FP8, EETQ, etc.) and lets the model's
+own `quantization_config` win — so you don't accidentally re-quantize a
+model that ships at-rest in 4-bit:
 
 ```python
+# Loaded as 4-bit BitsAndBytes from the repo's embedded config -- no
+# additional dynamic quantization is applied on top.
+model = turbo("unsloth/Llama-3.2-3B-Instruct-bnb-4bit")
+
+# Verify what actually got loaded:
+print(model.report())
+# {'quant_method': 'bitsandbytes', 'is_quantized': True, ...}
+```
+
+#### `from_config_only` is for skeleton inspection only
+
+```python
+# Loads a randomly-initialised model from the config -- useful for
+# inspecting layer shapes or wiring up tests, NOT for inference.
 model = turbo(
     "new-model-org/NewModel-7B",
     from_config_only=True,
     trust_remote_code=True,
 )
+
+# ``model.is_quantized`` will correctly report False here even when you
+# also passed ``bits=4`` -- there are no real weights to quantize.
 ```
 
 #### Fast contribution template for new architectures
@@ -111,21 +155,33 @@ model = turbo(
    - `register_architecture("new-arch", base_model_type="llama")`
 2. Validate loading with:
    - `turbo("org/model", base_model_fallback=True, trust_remote_code=True)`
-3. Add/extend a focused test in `tests/test_architecture_fallback.py`.
+3. Add/extend a focused test in `tests/test_architecture_fallback.py`
+   or `tests/test_resolve_model_type.py`.
 
-#### Real-world style "released yesterday" example
+#### Inspecting the loaded state
 
 ```python
-from quantllm import turbo, register_architecture
+model = turbo("Qwen/Qwen3-8B", bits=4)
 
-# Example: transformers doesn't recognize Qwen3 yet
-register_architecture("qwen3", base_model_type="qwen2")
-
-model = turbo(
-    "Qwen/Qwen3-8B",
-    trust_remote_code=True,
-)
+report = model.report()
+# {
+#   'model_id': 'Qwen/Qwen3-8B',
+#   'params_billion': 8.0,
+#   'requested_bits': 4,
+#   'effective_loading_bits': 4,
+#   'is_quantized': True,
+#   'quant_method': 'bitsandbytes',
+#   'device': 'cuda:0',
+#   'dtype': 'torch.bfloat16',
+#   'finetuned': False,
+#   'lora_applied': False,
+# }
 ```
+
+`model.is_quantized` is derived from the actual loaded model state
+(`config.quantization_config` and BitsAndBytes layer types). It is not
+a cached snapshot of your load-time intent, so `from_config_only=True`
+or a missing `bitsandbytes` install will correctly report `False`.
 
 ### Memory Options
 
