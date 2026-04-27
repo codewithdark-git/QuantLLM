@@ -47,8 +47,8 @@ jobs:
           cache: pip
       - name: Install minimal runtime deps
         # We deliberately install CPU-only ``torch`` to keep CI fast and avoid
-        # pulling CUDA / cuDNN wheels. Tests stub out the heavy I/O and never
-        # touch a real GPU.
+        # pulling CUDA / cuDNN wheels. ``bitsandbytes`` is also skipped (it is
+        # GPU-only). Tests stub out the heavy I/O and never touch a real GPU.
         run: |
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.0.0"
@@ -66,6 +66,12 @@ jobs:
             "gguf" \
             "py-cpuinfo" \
             "pytest>=7.4.0"
+      - name: Install QuantLLM (no deps; we already installed them above)
+        # ``--no-deps`` skips re-resolving the heavy dependency set (notably
+        # ``bitsandbytes``, which is GPU-only and not needed by the test
+        # suite). The import-only install is what makes ``import quantllm``
+        # work in the test workers.
+        run: pip install --no-deps -e .
       - name: Run pytest
         env:
           QUANTLLM_BANNER: "0"
