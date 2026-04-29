@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# NOTE: Project metadata, dependencies and extras are still declared in
+# ``setup.py`` for now to keep a single source of truth and avoid duplicating
+# the install-requires list. ``setup.py`` defines:
+#
+# * ``install_requires`` (mandatory deps)
+# * ``extras_require`` (``gguf``, ``onnx``, ``mlx``, ``triton``, ``flash``,
+#   ``hub``, ``full``, ``dev``)
+# * ``entry_points`` (the ``quantllm`` CLI)
+#
+# Adding a ``[project]`` table here would silently override those values in
+# editable installs, which has tripped up several contributors. Once the
+# ``setup.py`` migration to PEP 621 is complete, this file will own the full
+# project metadata.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "build",
+    "dist",
+    ".venv",
+    "examples/output",
+    "docs/_build",
+]
+
+[tool.ruff.lint]
+# Minimal "blocker" ruleset enforced on every push. The codebase predates
+# ruff, so we deliberately start small -- this catches genuine bugs (syntax
+# errors, undefined names, broken comparisons) without producing a giant
+# reformatting diff. Stricter rules can be opted-in incrementally.
+select = [
+    "E9",     # pycodestyle runtime errors (syntax, indentation)
+    "F63",    # invalid `is` comparisons / `not in` issues
+    "F7",     # syntax errors in expressions
+    "F82",    # undefined names actually used
+    "F811",   # redefinition of unused name
+    "F821",   # undefined-name reference
+    "F823",   # local variable referenced before assignment
+    # NOTE: F841 (unused local) is intentionally NOT enabled yet. The existing
+    # codebase has several intentional unused-binding patterns (progress
+    # tasks, documenting intent, etc.) and fixing them is out of scope.
+    "B006",   # mutable default arguments (genuine bug class)
+    "B017",   # ``assertRaises(Exception)`` -- masks real failures
+]
+ignore = [
+    "E501",   # line length: not enforced strictly
+    "E402",   # module-level import not at top of file
+    "E741",   # ambiguous variable names
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811", "F841"]
+"quantllm/__init__.py" = ["F401", "E402"]
+"quantllm/core/__init__.py" = ["F401"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]

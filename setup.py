@@ -11,7 +11,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="quantllm",
-    version="2.0.0",
+    version="2.1.0rc1",
     author="Dark Coder",
     author_email="codewithdark90@gmail.com",
     description="Ultra-fast LLM quantization, fine-tuning, and deployment with one line of code",
@@ -24,7 +24,7 @@ setup(
         "Bug Tracker": "https://github.com/codewithdark-git/QuantLLM/issues",
         "Sponsor": "https://github.com/sponsors/codewithdark-git",
     },
-    packages=find_packages(exclude=["test", "test.*", "docs", "examples"]),
+    packages=find_packages(exclude=["tests", "tests.*", "docs", "examples"]),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Science/Research",
@@ -97,6 +97,7 @@ setup(
             "wandb>=0.15.0",
             "tensorboard>=2.14.0",
             "evaluate>=0.4.0",
+            "flash-attn>=2.3.0",
         ],
         "dev": [
             "pytest>=7.4.0",
