@@ -130,10 +130,12 @@ print(output["choices"][0]["text"])
 Export and push in one step:
 
 ```python
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 model.push(
     "your-username/my-model-gguf",
-    format="gguf",
-    quantization="Q4_K_M",
     license="apache-2.0"
 )
 ```
@@ -209,11 +211,30 @@ model.export("gguf", "model.gguf", quantization="Q4_K_M")
 For very large models:
 
 ```python
+# Note: previous `streaming=True` guidance is superseded by `chunked_conversion=True`.
+# If you previously used `streaming=True`, replace it with `chunked_conversion=True` (streaming has no effect here).
+
 # Use lower quantization
 model.export("gguf", "model.Q3_K_M.gguf", quantization="Q3_K_M")
 
-# Or export with streaming (reduces memory)
-model.export("gguf", "model.gguf", quantization="Q4_K_M", streaming=True)
+# Enable chunked conversion + smart ordering
+model.export(
+    "gguf",
+    "model.gguf",
+    quantization="Q4_K_M",
+    chunked_conversion=True,
+    max_shard_size="2GB",
+    smart_tensor_ordering=True,
+)
+
+# Force intermediate files to a dedicated disk offload directory
+model.export(
+    "gguf",
+    "model.gguf",
+    quantization="Q4_K_M",
+    disk_offloading=True,
+    disk_offload_dir="./quantllm_offload",
+)
 ```
 
 ### Windows Issues

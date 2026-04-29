@@ -8,24 +8,27 @@
 
 ---
 
-## Welcome to QuantLLM v2.0
+## Welcome to QuantLLM v2.1 (pre-release)
 
 QuantLLM makes working with large language models simple. Load any model, quantize it automatically, fine-tune with your data, and export to any format — all with just a few lines of code.
 
 ```python
 from quantllm import turbo
 
-# Load with automatic 4-bit quantization
-model = turbo("meta-llama/Llama-3.2-3B")
+# Load with shared export/push defaults
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 
 # Generate text
 print(model.generate("Explain quantum computing"))
 
 # Export to GGUF for Ollama/llama.cpp
-model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
+model.export()
 
 # Push to HuggingFace with auto-generated model card
-model.push("username/my-model", format="gguf", quantization="Q4_K_M")
+model.push("username/my-model")
 ```
 
 ---
@@ -89,7 +92,11 @@ model = turbo("microsoft/phi-3-mini")
 
 ### Export to Any Format
 ```python
-model.export("gguf", "model.gguf", quantization="Q4_K_M")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
+model.export()
 model.export("onnx", "./model-onnx/")
 model.export("mlx", "./model-mlx/", quantization="4bit")
 ```
@@ -101,7 +108,7 @@ model.finetune("training_data.json", epochs=3)
 
 ### Push to HuggingFace
 ```python
-model.push("username/my-model", format="gguf")
+model.push("username/my-model")
 ```
 
 ---

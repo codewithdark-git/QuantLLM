@@ -10,8 +10,11 @@ Push models to HuggingFace Hub with auto-generated model cards.
 from quantllm import turbo, QuantLLMHubManager
 
 # Method 1: TurboModel.push() (Recommended)
-model = turbo("meta-llama/Llama-3.2-3B")
-model.push("user/my-model", format="gguf", quantization="Q4_K_M")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
+model.push("user/my-model")
 
 # Method 2: QuantLLMHubManager (Advanced)
 manager = QuantLLMHubManager("user/my-model", hf_token="hf_...")
@@ -30,7 +33,7 @@ def push(
     self,
     repo_id: str,
     token: Optional[str] = None,
-    format: str = "safetensors",
+    format: Optional[str] = None,
     quantization: Optional[str] = None,
     license: str = "apache-2.0",
     commit_message: str = "Upload model via QuantLLM",
@@ -44,7 +47,7 @@ def push(
 |-----------|------|---------|-------------|
 | `repo_id` | str | required | HuggingFace repo ID (user/model) |
 | `token` | str | None | HF token (or use HF_TOKEN env) |
-| `format` | str | "safetensors" | Export format |
+| `format` | str | None | Export format (uses `config["push_format"]` when omitted) |
 | `quantization` | str | None | Quantization type |
 | `license` | str | "apache-2.0" | License type |
 
@@ -62,13 +65,14 @@ def push(
 ```python
 from quantllm import turbo
 
-model = turbo("meta-llama/Llama-3.2-3B")
+model = turbo(
+    "meta-llama/Llama-3.2-3B",
+    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+)
 
 # Push as GGUF
 model.push(
-    "your-username/llama-3.2-3b-gguf",
-    format="gguf",
-    quantization="Q4_K_M"
+    "your-username/llama-3.2-3b-gguf"
 )
 
 # Push as ONNX

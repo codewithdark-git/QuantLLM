@@ -193,13 +193,13 @@ print("Fine-tuned:", model.generate("prompt"))
 
 ```python
 # Export to GGUF
-model.export("gguf", "finetuned.Q4_K_M.gguf", quantization="Q4_K_M")
+model.export("gguf", "finetuned.Q4_K_M.gguf")
 
 # Export to SafeTensors
 model.export("safetensors", "./finetuned-model/")
 
 # Push to HuggingFace
-model.push("your-username/finetuned-model", format="gguf")
+model.push("your-username/finetuned-model")
 ```
 
 ### Save and Load
