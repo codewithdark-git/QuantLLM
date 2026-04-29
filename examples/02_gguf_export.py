@@ -1,18 +1,22 @@
 """
-QuantLLM v2.0 - GGUF Export Example
+QuantLLM v2.1 - GGUF Export Example
 
 Export models to GGUF format for use with llama.cpp, Ollama, LM Studio.
 No external dependencies required!
 """
 
-from quantllm import turbo, list_quant_types
+from quantllm import turbo, GGUF_QUANT_TYPES, QUANT_RECOMMENDATIONS
 
 # ============================================
 # Show Available Quantization Types
 # ============================================
 print("📦 Available quantization types:\n")
-for name, desc in list_quant_types().items():
-    print(f"  {name:12} - {desc}")
+for qt in GGUF_QUANT_TYPES:
+    print(f"  {qt}")
+
+print("\n📦 Recommended quantization types:\n")
+for use_case, qt in QUANT_RECOMMENDATIONS.items():
+    print(f"  {use_case:12} → {qt}")
 
 # ============================================
 # Load Model
@@ -24,44 +28,20 @@ model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 # Export to GGUF
 # ============================================
 
-# Option 1: Quick export (default q4_0)
-print("\n🚀 Exporting to GGUF (q4_0)...")
-model.export("gguf", "tinyllama-q4.gguf")
+# Option 1: Quick export (default Q4_K_M)
+print("\n🚀 Exporting to GGUF (Q4_K_M)...")
+model.export("gguf", "tinyllama-q4.gguf", quantization="Q4_K_M")
 
-# Option 2: High quality (q8_0)
-print("\n🚀 Exporting to GGUF (q8_0)...")
-model.export("gguf", "tinyllama-q8.gguf", quantization="q8_0")
+# Option 2: High quality (Q8_0)
+print("\n🚀 Exporting to GGUF (Q8_0)...")
+model.export("gguf", "tinyllama-q8.gguf", quantization="Q8_0")
 
-# Option 3: Half precision (f16)
-print("\n🚀 Exporting to GGUF (f16)...")
-model.export("gguf", "tinyllama-f16.gguf", quantization="f16")
-
-# ============================================
-# Using convert_to_gguf Directly
-# ============================================
-from quantllm import convert_to_gguf
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-print("\n🔧 Using convert_to_gguf directly...")
-
-# Load with transformers
-hf_model = AutoModelForCausalLM.from_pretrained(
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    torch_dtype="auto"
-)
-tokenizer = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-
-# Convert
-convert_to_gguf(
-    model=hf_model,
-    tokenizer=tokenizer,
-    output_path="tinyllama-direct.gguf",
-    quant_type="q4_0",
-    verbose=True
-)
+# Option 3: Half precision (F16)
+print("\n🚀 Exporting to GGUF (F16)...")
+model.export("gguf", "tinyllama-f16.gguf", quantization="F16")
 
 print("\n✅ All exports complete!")
 print("\nUse these files with:")
-print("  - llama.cpp: ./main -m tinyllama-q4.gguf")
+print("  - llama.cpp: ./llama-cli -m tinyllama-q4.gguf -p 'Hello!'")
 print("  - Ollama: ollama create mymodel -f Modelfile")
 print("  - LM Studio: Import the .gguf file")

@@ -1,5 +1,5 @@
 """
-QuantLLM v2.0 - Quick Start Example
+QuantLLM v2.1 - Quick Start Example
 
 The simplest way to use QuantLLM.
 """
