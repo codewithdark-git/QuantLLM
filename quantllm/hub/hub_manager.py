@@ -185,8 +185,8 @@ class QuantLLMHubManager:
             print_error(f"Error pushing to Hub: {str(e)}")
             raise
 
-    # Legacy compatibility (optional)
+    # Legacy compatibility
     def push_model(self, *args, **kwargs):
-        """Legacy method alias."""
-        print_info("Using legacy push_model compatibility")
-        pass # Not implementing full legacy logic unless needed
+        """Legacy method alias — delegates to push()."""
+        print_warning("push_model() is deprecated. Use push() instead.")
+        return self.push(*args, **kwargs)

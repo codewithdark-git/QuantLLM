@@ -62,13 +62,16 @@ console = Console(theme=custom_theme)
 # ============================================
 
 def configure_logging(level: str = "INFO") -> None:
-    """Configure rich-based logging."""
-    logging.basicConfig(
-        level=level,
-        format="%(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandler(console=console, rich_tracebacks=True, markup=True, show_path=False)]
-    )
+    """Configure rich-based logging. Safe to call multiple times."""
+    root_logger = logging.getLogger()
+    # Remove existing RichHandlers to avoid duplicates
+    root_logger.handlers = [
+        h for h in root_logger.handlers if not isinstance(h, RichHandler)
+    ]
+    root_logger.setLevel(level)
+    handler = RichHandler(console=console, rich_tracebacks=True, markup=True, show_path=False)
+    handler.setLevel(level)
+    root_logger.addHandler(handler)
 
 def get_logger(name: str = "quantllm") -> logging.Logger:
     """Get the project logger."""
