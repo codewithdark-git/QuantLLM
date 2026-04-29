@@ -1,5 +1,5 @@
 """
-Universal Export Module for QuantLLM v2.0
+Universal Export Module for QuantLLM v2.1
 
 Provides unified export functionality to multiple formats:
 - GGUF (llama.cpp, Ollama, LM Studio)
@@ -90,17 +90,48 @@ class UniversalExporter:
         quantization: Optional[str] = None,
         **kwargs,
     ) -> str:
-        """Export to GGUF format."""
-        from ..quant import convert_to_gguf
+        """Export to GGUF format.
+        
+        Saves the model to a temp directory, then uses convert_to_gguf
+        and quantize_gguf to produce the final GGUF file.
+        """
+        from ..quant import convert_to_gguf, quantize_gguf, ensure_llama_cpp_installed
+        import tempfile
         
         quant_type = quantization or "Q4_K_M"
         
-        return convert_to_gguf(
-            self.model,
-            output_path,
-            quant_type=quant_type,
-            **kwargs,
-        )
+        ensure_llama_cpp_installed()
+        
+        model_name = getattr(self.model.config, '_name_or_path', 'model').split('/')[-1]
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Save model to temp
+            self.model.save_pretrained(temp_dir, safe_serialization=True)
+            if self.tokenizer:
+                self.tokenizer.save_pretrained(temp_dir)
+            
+            # Convert to F16 GGUF
+            f16_file = os.path.join(temp_dir, f"{model_name}.F16.gguf")
+            output_files, _ = convert_to_gguf(
+                model_name=model_name,
+                input_folder=temp_dir,
+                model_dtype="f16",
+                quantization_type="f16",
+                print_output=False,
+            )
+            
+            if output_files:
+                f16_file = output_files[0]
+            
+            # Quantize to target
+            quantize_gguf(
+                input_gguf=f16_file,
+                output_gguf=output_path,
+                quant_type=quant_type,
+                print_output=False,
+            )
+        
+        return output_path
     
     def _export_safetensors(
         self,
@@ -220,7 +251,6 @@ class UniversalExporter:
             quantization: MLX quantization (4bit, 8bit)
         """
         try:
-            import mlx.core as mx
             from mlx_lm import convert
         except ImportError:
             raise ImportError(
@@ -238,13 +268,20 @@ class UniversalExporter:
         # Convert to MLX
         mlx_path = os.path.join(output_path, "mlx_model")
         
-        # Use mlx-lm convert
-        convert_args = [temp_hf_path, "--mlx-path", mlx_path]
+        # Build convert kwargs
+        convert_kwargs = {
+            "hf_path": temp_hf_path,
+            "mlx_path": mlx_path,
+        }
         if quantization:
-            if quantization == "4bit":
-                convert_args.extend(["-q", "--q-bits", "4"])
-            elif quantization == "8bit":
-                convert_args.extend(["-q", "--q-bits", "8"])
+            if quantization in ("4bit", "4"):
+                convert_kwargs["quantize"] = True
+                convert_kwargs["q_bits"] = 4
+            elif quantization in ("8bit", "8"):
+                convert_kwargs["quantize"] = True
+                convert_kwargs["q_bits"] = 8
+        
+        convert(**convert_kwargs)
         
         # Clean up temp
         shutil.rmtree(temp_hf_path, ignore_errors=True)

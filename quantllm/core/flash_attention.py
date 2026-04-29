@@ -16,12 +16,11 @@ _FLASH_ATTN_VERSION = None
 
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
-    from flash_attn.flash_attn_interface import flash_attn_cuda
     _FLASH_ATTN_AVAILABLE = True
     try:
         import flash_attn
         _FLASH_ATTN_VERSION = getattr(flash_attn, '__version__', '2.0.0')
-    except:
+    except Exception:
         _FLASH_ATTN_VERSION = '2.0.0'
 except ImportError:
     pass

@@ -5,9 +5,12 @@ Load, quantize, fine-tune, and export LLMs with one line each.
 """
 
 import os
+import re
 import shutil
 import tempfile
-from typing import Optional, Dict, Any, Union, List
+import copy
+from functools import lru_cache
+from typing import Optional, Dict, Any, Union, List, Type
 import torch
 import torch.nn as nn
 from transformers import (
@@ -23,6 +26,94 @@ from .hardware import HardwareProfiler
 from ..utils import logger, print_header, print_success, print_error, print_info, print_warning, QuantLLMProgress
 from transformers.utils.logging import disable_progress_bar as disable_hf_progress_bar
 from datasets.utils.logging import disable_progress_bar as disable_ds_progress_bar
+from .memory import memory_optimized_tensor_order
+
+DEFAULT_CHUNKED_SHARD_SIZE = "2GB"
+DEFAULT_EXPORT_PUSH_CONFIG = {
+    "format": "safetensors",
+    "push_format": "safetensors",
+    "quantization": "Q4_K_M",
+    "push_quantization": None,
+}
+# Default mapping of HuggingFace ``config.model_type`` values (or model-name
+# tokens) to a known-loadable base family. Used as a best-effort fallback for
+# brand-new architectures that ``transformers`` does not yet recognize. The
+# mapping is consulted only when the user has not registered an explicit
+# fallback via :func:`register_architecture`.
+#
+# Order matters: more specific patterns must come before more generic ones
+# (e.g. ``qwen2_moe`` before ``qwen``).
+DEFAULT_ARCHITECTURE_FALLBACKS: Dict[str, str] = {
+    # Llama family and direct derivatives
+    "llama": "llama",
+    "llama2": "llama",
+    "llama3": "llama",
+    "llama4": "llama",
+    "code_llama": "llama",
+    "codellama": "llama",
+    "tinyllama": "llama",
+    "smollm": "llama",
+    "smollm2": "llama",
+    "smollm3": "llama",
+    "yi": "llama",
+    "deepseek": "llama",
+    "deepseek_v2": "llama",
+    "deepseek_v3": "llama",
+    "command_r": "llama",
+    "cohere": "llama",
+    "olmo": "llama",
+    "olmo2": "llama",
+    "stablelm": "llama",
+    "starcoder": "llama",
+    "starcoder2": "llama",
+    "internlm": "llama",
+    "internlm2": "llama",
+    "baichuan": "llama",
+    "chatglm": "llama",
+    # Mistral / Mixtral
+    "mistral": "mistral",
+    "mixtral": "mistral",
+    # Qwen family (note: qwen2_moe must come before qwen)
+    "qwen2_moe": "qwen2",
+    "qwen2": "qwen2",
+    "qwen3": "qwen2",
+    "qwen": "qwen2",
+    # Phi family
+    "phi3": "phi3",
+    "phi4": "phi3",
+    "phi": "phi",
+    "phi2": "phi",
+    # Gemma family
+    "gemma3": "gemma2",
+    "gemma2": "gemma2",
+    "gemma": "gemma",
+    # Falcon
+    "falcon": "falcon",
+}
+
+# Substring markers in HF repo names that indicate the model is already
+# pre-quantized at rest. When detected, QuantLLM should let ``transformers``
+# load the existing quantized weights instead of dynamically applying its own
+# BitsAndBytes quantization on top.
+PREQUANTIZED_NAME_MARKERS: tuple = (
+    "-bnb-4bit",
+    "-bnb-8bit",
+    "-4bit",
+    "-8bit",
+    "-awq",
+    "-gptq",
+    "-int4",
+    "-int8",
+    "-fp8",
+    "-eetq",
+    "-hqq",
+    "-aqlm",
+)
+
+# Markers in HF repo names indicating GGUF-only repositories. Loading these
+# via :meth:`TurboModel.from_pretrained` (instead of ``from_gguf``) is almost
+# always a user mistake; we surface a helpful hint.
+GGUF_NAME_MARKERS: tuple = ("-gguf", ".gguf")
 
 
 class TurboModel:
@@ -49,11 +140,15 @@ class TurboModel:
         >>> model.export("gguf", "my_model.gguf")
     """
     
+    _architecture_registry: Dict[str, str] = {}
+    _model_class_registry: Dict[str, Type[PreTrainedModel]] = {}
+    
     def __init__(
         self,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
         config: SmartConfig,
+        export_push_config: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
     ):
         """
@@ -67,13 +162,301 @@ class TurboModel:
         self.model = model
         self.tokenizer = tokenizer
         self.config = config
-        self._is_quantized = False
+        # ``_is_quantized_override`` is consulted by :pyattr:`is_quantized`
+        # *only* when the caller explicitly asserts a quantization state
+        # (e.g. :meth:`from_gguf` knows GGUF is always quantized). When
+        # ``None`` the property derives the answer from the loaded model.
+        self._is_quantized_override: Optional[bool] = None
         self._is_finetuned = False
         self._lora_applied = False
-        self._is_quantized = False
-        self._is_finetuned = False
-        self._lora_applied = False
+        self.export_push_config = self._build_export_push_config(export_push_config)
         self.verbose = verbose
+
+    def save(self, output_dir: str, safe_serialization: bool = True) -> str:
+        """
+        Save the model and tokenizer to a local directory.
+        
+        Args:
+            output_dir: Directory to save the model to
+            safe_serialization: Use safetensors format (default: True)
+            
+        Returns:
+            Path to saved model directory
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Merge LoRA if applied
+        model_to_save = self.model
+        if self._lora_applied:
+            if self.verbose:
+                print_info("Merging LoRA weights before saving...")
+            model_to_save = self.model.merge_and_unload()
+            self._lora_applied = False
+            self.model = model_to_save
+        
+        model_to_save.save_pretrained(output_dir, safe_serialization=safe_serialization)
+        if self.tokenizer:
+            self.tokenizer.save_pretrained(output_dir)
+        
+        if self.verbose:
+            print_success(f"Model saved to {output_dir}")
+        
+        return output_dir
+
+
+    @classmethod
+    def register_architecture(
+        cls,
+        architecture: str,
+        *,
+        base_model_type: Optional[str] = None,
+        model_class: Optional[Type[PreTrainedModel]] = None,
+    ) -> None:
+        """
+        Register a new architecture alias and optional explicit model class.
+        
+        Args:
+            architecture: Architecture or model type name to register
+            base_model_type: Base model family to fall back to (e.g., "llama")
+            model_class: Explicit model class with from_pretrained()
+        """
+        normalized = architecture.lower().strip()
+        if not normalized:
+            raise ValueError("architecture must be a non-empty string")
+        
+        if base_model_type:
+            cls._architecture_registry[normalized] = base_model_type.lower().strip()
+        
+        if model_class is not None:
+            cls._model_class_registry[normalized] = model_class
+    
+    @classmethod
+    def resolve_model_type(
+        cls,
+        model_name: str,
+        *,
+        config_model_type: Optional[str] = None,
+        model_type_override: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Resolve a HuggingFace ``model_type`` to a known-loadable base family.
+
+        Resolution order (first non-``None`` match wins):
+
+        1. Explicit ``model_type_override`` from the caller.
+        2. Exact match in :attr:`_architecture_registry` (user-registered alias).
+        3. Exact match in :data:`DEFAULT_ARCHITECTURE_FALLBACKS`.
+        4. Family-style match against the config's ``model_type`` (e.g.
+           ``qwen3`` -> ``qwen``).
+        5. Family-style match against the repository name (e.g.
+           ``Qwen/Qwen3-8B`` -> ``qwen``).
+        6. The original ``config_model_type`` unchanged, or ``None`` when no
+           config was loadable.
+
+        The function never raises; callers are expected to handle ``None``.
+        """
+        if model_type_override:
+            return model_type_override.lower().strip()
+
+        model_type = (config_model_type or "").lower().strip()
+        name = model_name.lower()
+
+        # 2. Exact registry hit.
+        if model_type and model_type in cls._architecture_registry:
+            return cls._architecture_registry[model_type]
+
+        # 3. Exact default-fallback hit.
+        if model_type and model_type in DEFAULT_ARCHITECTURE_FALLBACKS:
+            return DEFAULT_ARCHITECTURE_FALLBACKS[model_type]
+
+        # 4. Family-style match against model_type itself (qwen3 -> qwen).
+        if model_type:
+            for pattern, fallback in cls._architecture_registry.items():
+                if cls._matches_family(model_type, pattern):
+                    return fallback
+            for pattern, fallback in DEFAULT_ARCHITECTURE_FALLBACKS.items():
+                if cls._matches_family(model_type, pattern):
+                    return fallback
+
+        # 5. Token-boundary match against the repo name.
+        for pattern, fallback in cls._architecture_registry.items():
+            if cls._matches_model_name_pattern(name, pattern):
+                return fallback
+        for pattern, fallback in DEFAULT_ARCHITECTURE_FALLBACKS.items():
+            if cls._matches_model_name_pattern(name, pattern):
+                return fallback
+
+        # 6. Nothing matched.
+        return model_type or None
+
+    @classmethod
+    def _matches_model_name_pattern(cls, model_name: str, pattern: str) -> bool:
+        """Return True when ``pattern`` appears as a token in ``model_name``."""
+        return cls._compiled_model_name_pattern(pattern).search(model_name) is not None
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _compiled_model_name_pattern(pattern: str):
+        """Compile and cache token-boundary regex patterns for model-name matching."""
+        escaped = re.escape(pattern)
+        # Match architecture tokens as standalone chunks split by separators.
+        return re.compile(rf"(^|[^a-z0-9]){escaped}([^a-z0-9]|$)")
+
+    @classmethod
+    def _matches_family(cls, model_type: str, family: str) -> bool:
+        """
+        Decide whether ``model_type`` belongs to ``family``.
+
+        Recognises common version-suffix patterns used by HuggingFace, e.g.
+        ``qwen2``, ``qwen2_5``, ``qwen-2``, ``qwen3`` all match family ``qwen``.
+        Plain prefix matches (``llamafication``) are intentionally rejected;
+        only digit / underscore / dash separators count as family suffixes.
+        """
+        if not model_type or not family:
+            return False
+        if model_type == family:
+            return True
+        return bool(cls._compiled_family_pattern(family).match(model_type))
+
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _compiled_family_pattern(family: str):
+        """Cache regex used by :meth:`_matches_family`."""
+        return re.compile(rf"^{re.escape(family)}[\d_\-]")
+
+    @staticmethod
+    def _should_apply_quantization(
+        quantize: bool,
+        bits: int,
+        from_config_only: bool,
+    ) -> bool:
+        """Decide whether ``BitsAndBytes`` kwargs should be added at load time.
+
+        Returns False whenever the model is being constructed from config only
+        (no weights to quantize) or whenever the user explicitly disabled
+        quantization or asked for full precision.
+        """
+        return quantize and bits < 16 and not from_config_only
+
+    @staticmethod
+    def _looks_prequantized(model_name: str) -> Optional[str]:
+        """
+        Return a marker (e.g. ``"-bnb-4bit"``) when the repo name suggests it
+        is already pre-quantized at rest. ``None`` otherwise.
+        """
+        lowered = model_name.lower()
+        for marker in PREQUANTIZED_NAME_MARKERS:
+            if marker in lowered:
+                return marker
+        return None
+
+    @staticmethod
+    def _looks_like_gguf_repo(model_name: str) -> bool:
+        """Heuristic: repo name looks like a GGUF-only weights repository."""
+        lowered = model_name.lower()
+        return any(marker in lowered for marker in GGUF_NAME_MARKERS)
+
+    @classmethod
+    def _load_model_with_fallback(
+        cls,
+        model_name: str,
+        model_kwargs: Dict[str, Any],
+        *,
+        trust_remote_code: bool,
+        hf_config: Optional[Any],
+        model_type_override: Optional[str],
+        base_model_fallback: bool,
+        from_config_only: bool,
+    ) -> PreTrainedModel:
+        """Load model with architecture fallback and optional config-only mode."""
+        config_model_type = (getattr(hf_config, "model_type", None) or "").lower().strip()
+        is_registered_architecture = config_model_type in cls._architecture_registry if config_model_type else False
+        resolved_model_type = cls.resolve_model_type(
+            model_name,
+            config_model_type=getattr(hf_config, "model_type", None),
+            model_type_override=model_type_override,
+        )
+        resolved_config = hf_config
+        
+        if hf_config is not None and resolved_model_type:
+            current_model_type = getattr(hf_config, "model_type", None)
+            if current_model_type != resolved_model_type:
+                resolved_config = copy.deepcopy(hf_config)
+                setattr(resolved_config, "model_type", resolved_model_type)
+
+        if (
+            trust_remote_code
+            and config_model_type
+            and not is_registered_architecture
+            and config_model_type not in DEFAULT_ARCHITECTURE_FALLBACKS.values()
+        ):
+            logger.warning(
+                "trust_remote_code=True is enabled for unregistered architecture '%s' "
+                "(resolved fallback: '%s'). Only use this for models from trusted sources.",
+                config_model_type,
+                resolved_model_type,
+            )
+        
+        if from_config_only:
+            if resolved_config is None:
+                raise ValueError(
+                    "from_config_only=True requires a loadable config. "
+                    "Try trust_remote_code=True or set model_type_override."
+                )
+            return AutoModelForCausalLM.from_config(
+                resolved_config,
+                trust_remote_code=trust_remote_code,
+                torch_dtype=model_kwargs.get("torch_dtype"),
+            )
+        
+        try:
+            return AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+        except Exception as primary_error:
+            if not base_model_fallback:
+                raise
+            fallback_error = None
+            # Fallback priority: resolved config model_type -> explicitly registered model class.
+            if resolved_config is not None:
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs["config"] = resolved_config
+                try:
+                    return AutoModelForCausalLM.from_pretrained(model_name, **fallback_kwargs)
+                except Exception as fallback_config_error:
+                    fallback_error = fallback_config_error
+            
+            # Look up an explicit user-registered model class. Try the
+            # original ``config.model_type`` first (most natural API:
+            # ``register_architecture("newmodel", model_class=NewModel)``)
+            # and fall back to the resolved base family for users that prefer
+            # to register a class under the family name.
+            registered_cls: Optional[Type[PreTrainedModel]] = None
+            if config_model_type:
+                registered_cls = cls._model_class_registry.get(config_model_type)
+            if registered_cls is None and resolved_model_type:
+                registered_cls = cls._model_class_registry.get(resolved_model_type)
+            if registered_cls is not None:
+                class_kwargs = dict(model_kwargs)
+                if resolved_config is not None:
+                    class_kwargs["config"] = resolved_config
+                try:
+                    return registered_cls.from_pretrained(model_name, **class_kwargs)
+                except Exception as fallback_registered_error:
+                    fallback_error = fallback_registered_error
+            
+            error_details = f" Last fallback error: {fallback_error}" if fallback_error else ""
+            architecture_label = config_model_type or "<unknown>"
+            resolved_label = resolved_model_type or "<none>"
+            
+            raise RuntimeError(
+                "Failed to load model with AutoModelForCausalLM and fallback resolution.\n"
+                f"Architecture '{architecture_label}' resolved to base model type '{resolved_label}'.\n"
+                "Try one of:\n"
+                f"1) register_architecture('{architecture_label}', base_model_type='llama').\n"
+                "2) Use model_type_override='llama' (or your compatible base family).\n"
+                "3) Use from_config_only=True with a loadable config "
+                "(usually trust_remote_code=True)."
+                + error_details
+            ) from (fallback_error or primary_error)
     
     @classmethod
     def from_pretrained(
@@ -88,7 +471,11 @@ class TurboModel:
         # Advanced options
         trust_remote_code: bool = True,
         quantize: bool = True,
+        model_type_override: Optional[str] = None,
+        base_model_fallback: bool = True,
+        from_config_only: bool = False,
         config_override: Optional[Dict[str, Any]] = None,
+        config: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
     ) -> "TurboModel":
         """
@@ -108,9 +495,11 @@ class TurboModel:
             dtype: Override dtype (default: bf16 if available, else fp16)
             trust_remote_code: Trust remote code in model
             quantize: Whether to quantize the model
+            model_type_override: Override detected model_type for very new architectures
+            base_model_fallback: Retry loading with resolved base model config on failure
+            from_config_only: Build model from config only (without loading weights)
             config_override: Dict to override any auto-detected settings
-            quantize: Whether to quantize the model
-            config_override: Dict to override any auto-detected settings
+            config: Shared export/push config (format, quantization, push_format, etc.)
             verbose: Print loading progress
             
         Returns:
@@ -129,10 +518,36 @@ class TurboModel:
         # Disable default progress bars
         disable_hf_progress_bar()
         disable_ds_progress_bar()
-        
+
         if verbose:
             print_header(f"Loading {model_name}")
-        
+
+        # Friendly hint when a user accidentally points ``from_pretrained`` at
+        # a GGUF repository. ``transformers`` *can* load some GGUF repos via
+        # ``from_pretrained`` with a ``gguf_file`` arg, but the dedicated
+        # :meth:`from_gguf` path handles tokenizer fall-back and version
+        # validation more safely.
+        if cls._looks_like_gguf_repo(model_name):
+            logger.warning(
+                "Repository name '%s' looks like a GGUF-only repo. "
+                "Use TurboModel.from_gguf(...) for GGUF weights; "
+                "from_pretrained() is intended for standard transformers "
+                "checkpoints (safetensors / pytorch_model.bin).",
+                model_name,
+            )
+
+        # Friendly hint when the repo name advertises pre-quantization. We
+        # still attempt to load it: ``transformers`` honours the embedded
+        # ``quantization_config`` automatically.
+        prequant_marker = cls._looks_prequantized(model_name)
+        if prequant_marker and verbose:
+            logger.info(
+                "Detected pre-quantized repo (marker '%s'); honouring the "
+                "model's own quantization config and skipping dynamic "
+                "BitsAndBytes quantization.",
+                prequant_marker,
+            )
+
         # Auto-configure everything
         if verbose:
             logger.info("🚀 Detecting hardware and configuration...")
@@ -188,6 +603,8 @@ class TurboModel:
             "torch_dtype": smart_config.dtype,
         }
         
+        hf_config = None
+        
         # Check if model is already quantized to prevent conflicts
         try:
             from transformers import AutoConfig
@@ -203,8 +620,6 @@ class TurboModel:
                 
                 if is_bnb and is_8bit and smart_config.bits == 4:
                     allow_requantize = True
-                if is_bnb and is_8bit and smart_config.bits == 4:
-                    allow_requantize = True
                     if verbose:
                         logger.info("  ℹ️ Re-quantizing 8-bit model to 4-bit")
                 
@@ -217,7 +632,7 @@ class TurboModel:
             pass # Ignore config loading errors, proceed with defaults
 
         # Apply quantization if requested
-        if quantize and smart_config.bits < 16:
+        if cls._should_apply_quantization(quantize, smart_config.bits, from_config_only):
             model_kwargs.update(cls._get_quantization_kwargs(smart_config))
         
         # Device map for memory management
@@ -232,9 +647,14 @@ class TurboModel:
             if verbose:
                 task = p.add_task("Downloading & Loading model...", total=None)
             
-            model = AutoModelForCausalLM.from_pretrained(
+            model = cls._load_model_with_fallback(
                 model_name,
-                **model_kwargs,
+                model_kwargs,
+                trust_remote_code=trust_remote_code,
+                hf_config=hf_config,
+                model_type_override=model_type_override,
+                base_model_fallback=base_model_fallback,
+                from_config_only=from_config_only,
             )
             
             if verbose:
@@ -265,9 +685,49 @@ class TurboModel:
             print_success("Model loaded successfully!")
             logger.info("")
         
-        instance = cls(model, tokenizer, smart_config)
-        instance._is_quantized = quantize and smart_config.bits < 16
-        
+        instance = cls(model, tokenizer, smart_config, export_push_config=config)
+        instance.verbose = verbose
+
+        # Reflect the *actual* runtime state of the loaded model rather than
+        # the user's load-time intent. ``from_config_only=True`` returns a
+        # randomly-initialised model with no quantization regardless of the
+        # ``quantize`` flag, and a missing ``bitsandbytes`` install also
+        # silently falls back to full precision -- both of which used to leave
+        # ``_is_quantized=True`` set incorrectly.
+        actual_quantized = instance._has_runtime_quantization()
+        if from_config_only:
+            # ``AutoModelForCausalLM.from_config`` returns a model with random
+            # weights and never honours ``quantization_config`` -- so the
+            # actual quantization state is whatever the loader produced
+            # (almost always ``False``).
+            instance._is_quantized_override = bool(actual_quantized)
+            if verbose:
+                print_warning(
+                    "from_config_only=True returned a model with random "
+                    "weights and no quantization. Call model.load_weights(...) "
+                    "or reload with from_config_only=False before using it "
+                    "for inference."
+                )
+        else:
+            # Let the property derive truth from the model state. Override is
+            # only set when the caller explicitly asked for quantization but
+            # the runtime layer silently skipped it (e.g. bitsandbytes
+            # missing) -- in that case we set False so downstream code does
+            # not try to call BnB-only training paths on a full-precision
+            # model.
+            wanted_quantization = cls._should_apply_quantization(
+                quantize, smart_config.bits, from_config_only=False
+            )
+            if wanted_quantization and not actual_quantized:
+                instance._is_quantized_override = False
+                if verbose:
+                    print_warning(
+                        "Requested quantization was not applied at load time "
+                        "(typically because ``bitsandbytes`` is not installed "
+                        "or the model was already pre-quantized). Continuing "
+                        "in full precision."
+                    )
+
         return instance
     
     @classmethod
@@ -397,7 +857,10 @@ class TurboModel:
                     print_info(f"Parameters: {params:.2f}B")
              
         instance = cls(model, tokenizer, smart_config, verbose=verbose)
-        instance._is_quantized = True
+        # GGUF models are inherently quantized; set the override so the
+        # property does not need to introspect the (often opaque) loaded
+        # weights.
+        instance._is_quantized_override = True
         return instance
     
     @staticmethod
@@ -489,21 +952,63 @@ class TurboModel:
             return {"quantization_config": quantization_config}
             
         except ImportError:
-            logger.warning("⚠ bitsandbytes not installed, loading without quantization")
+            logger.warning(
+                "\u26a0 bitsandbytes is not installed; falling back to full "
+                "precision. Install with ``pip install bitsandbytes`` to "
+                "enable 4-bit / 8-bit quantization on CUDA."
+            )
             return {}
+
+    @staticmethod
+    def _build_export_push_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build shared export/push config with deterministic defaults."""
+        resolved = dict(DEFAULT_EXPORT_PUSH_CONFIG)
+        if config:
+            aliases = {
+                "export_format": "format",
+                "export_quantization": "quantization",
+            }
+            nullable_overrides = {"push_quantization"}
+            for key, value in config.items():
+                mapped_key = aliases.get(key, key)
+                if mapped_key in resolved and (
+                    value is not None or mapped_key in nullable_overrides
+                ):
+                    resolved[mapped_key] = value
+
+            if "format" in config and "push_format" not in config:
+                resolved["push_format"] = resolved["format"]
+            if "quantization" in config and "push_quantization" not in config:
+                resolved["push_quantization"] = resolved["quantization"]
+
+        return resolved
     
     @staticmethod
     def _enable_flash_attention(model: PreTrainedModel, verbose: bool = True) -> None:
-        """Enable Flash Attention if available."""
+        """Enable Flash Attention if available.
+        
+        Note: For full effect, flash_attention_2 should be specified at
+        load time via attn_implementation='flash_attention_2' in from_pretrained().
+        This method does a best-effort post-load enable via config and SDPA.
+        """
         try:
-            # Try to use native Flash Attention 2
+            # Try to enable SDPA (Scaled Dot Product Attention) which is
+            # the native PyTorch path and works without flash-attn package
             if hasattr(model, 'config'):
-                model.config._attn_implementation = "flash_attention_2"
-                if verbose:
-                    logger.info("  ✓ Flash Attention 2 enabled")
+                if hasattr(model.config, '_attn_implementation'):
+                    # Try flash_attention_2 first, fall back to sdpa
+                    try:
+                        import flash_attn
+                        model.config._attn_implementation = "flash_attention_2"
+                        if verbose:
+                            logger.info("  ✓ Flash Attention 2 configured")
+                    except ImportError:
+                        model.config._attn_implementation = "sdpa"
+                        if verbose:
+                            logger.info("  ✓ SDPA (Scaled Dot-Product Attention) configured")
         except Exception:
             if verbose:
-                logger.warning("  ⚠ Flash Attention not available")
+                logger.warning("  ⚠ Flash Attention / SDPA not available")
     
     def generate(
         self,
@@ -852,7 +1357,7 @@ class TurboModel:
                 model=self.model,
                 args=training_args,
                 train_dataset=train_dataset,
-                tokenizer=self.tokenizer, # Use new argument name
+                processing_class=self.tokenizer,
                 data_collator=DataCollatorForLanguageModeling(self.tokenizer, mlm=False),
             )
             
@@ -872,7 +1377,6 @@ class TurboModel:
             
         except Exception as e:
             print_error(f"Training failed: {e}")
-            raise
             # Hint about OOM
             if "out of memory" in str(e).lower():
                 print_info("Tip: Try reducing batch_size or enabling gradient_checkpointing in config.")
@@ -942,7 +1446,7 @@ class TurboModel:
     
     def export(
         self,
-        format: str,
+        format: Optional[str] = None,
         output_path: Optional[str] = None,
         *,
         quantization: Optional[str] = None,
@@ -958,7 +1462,7 @@ class TurboModel:
             - "mlx": For Apple Silicon Macs
         
         Args:
-            format: Target format (gguf, safetensors, onnx, mlx)
+            format: Target format (gguf, safetensors, onnx, mlx). Uses shared config when omitted.
             output_path: Output file/directory path
             quantization: Format-specific quantization:
                 - GGUF: Q4_K_M, Q5_K_M, Q8_0, etc.
@@ -975,7 +1479,16 @@ class TurboModel:
             >>> model.export("onnx", "./my_model_onnx/")
             >>> model.export("mlx", "./my_model_mlx/", quantization="4bit")
         """
-        format = format.lower()
+        format = (
+            format
+            if format is not None
+            else self.export_push_config.get("format", DEFAULT_EXPORT_PUSH_CONFIG["format"])
+        ).lower()
+        effective_quantization = quantization
+        if effective_quantization is None and format == "gguf":
+            effective_quantization = self.export_push_config.get(
+                "quantization", DEFAULT_EXPORT_PUSH_CONFIG["quantization"]
+            )
         
         # Merge LoRA if applied
         if self._lora_applied:
@@ -988,7 +1501,7 @@ class TurboModel:
         if output_path is None:
             model_name = self.model.config._name_or_path.split('/')[-1]
             if format == "gguf":
-                quant = quantization or self.config.quant_type or "q4_k_m"
+                quant = effective_quantization
                 output_path = f"{model_name}.{quant.upper()}.gguf"
             elif format == "safetensors":
                 output_path = f"./{model_name}-quantllm/"
@@ -1009,7 +1522,7 @@ class TurboModel:
             raise ValueError(f"Unknown format: {format}. Supported: {list(exporters.keys())}")
         
         print_header(f"Exporting to {format.upper()}")
-        result = exporters[format](output_path, quantization=quantization, **kwargs)
+        result = exporters[format](output_path, quantization=effective_quantization, **kwargs)
         print_success(f"Exported to: {result}")
         
         return result
@@ -1018,10 +1531,11 @@ class TurboModel:
         self,
         repo_id: str,
         token: Optional[str] = None,
-        format: str = "safetensors",
+        format: Optional[str] = None,
         quantization: Optional[str] = None,
         commit_message: str = "Upload model via QuantLLM",
         license: str = "apache-2.0",
+        private: bool = False,
         **kwargs
     ):
         """
@@ -1049,7 +1563,14 @@ class TurboModel:
         """
         from ..hub import QuantLLMHubManager
         
-        format_lower = format.lower()
+        format_lower = (
+            format
+            if format is not None
+            else self.export_push_config.get("push_format", DEFAULT_EXPORT_PUSH_CONFIG["push_format"])
+        ).lower()
+        push_quantization = quantization or self.export_push_config.get(
+            "push_quantization", DEFAULT_EXPORT_PUSH_CONFIG["push_quantization"]
+        )
         
         # Get the original base model name (full path for HuggingFace link)
         base_model_full = self.model.config._name_or_path
@@ -1063,7 +1584,9 @@ class TurboModel:
         
         if format_lower == "gguf":
             # Export GGUF directly to staging
-            quant_label = quantization or (self.config.quant_type if self.config.quant_type != "GGUF" else "q4_k_m") or "q4_k_m"
+            quant_label = push_quantization or self.export_push_config.get(
+                "quantization", DEFAULT_EXPORT_PUSH_CONFIG["quantization"]
+            )
             filename = f"{model_name}.{quant_label.upper()}.gguf"
             save_path = os.path.join(manager.staging_dir, filename)
             
@@ -1082,11 +1605,11 @@ class TurboModel:
             print_info("Exporting to ONNX format...")
             save_path = manager.staging_dir
             
-            self._export_onnx(save_path, quantization=quantization, **kwargs)
+            self._export_onnx(save_path, quantization=push_quantization, **kwargs)
             
             manager.track_hyperparameters({
                 "format": "onnx",
-                "quantization": quantization,
+                "quantization": push_quantization,
                 "base_model": base_model_full,
                 "license": license,
             })
@@ -1097,11 +1620,11 @@ class TurboModel:
             print_info("Exporting to MLX format...")
             save_path = manager.staging_dir
             
-            self._export_mlx(save_path, quantization=quantization, **kwargs)
+            self._export_mlx(save_path, quantization=push_quantization, **kwargs)
             
             manager.track_hyperparameters({
                 "format": "mlx",
-                "quantization": quantization,
+                "quantization": push_quantization,
                 "base_model": base_model_full,
                 "license": license,
             })
@@ -1114,7 +1637,7 @@ class TurboModel:
                 "base_model": base_model_full,
                 "license": license,
             })
-            manager.save_final_model(self, format=format)
+            manager.save_final_model(self, format=format_lower)
             manager._generate_model_card(format=format_lower)
             
         manager.push(commit_message=commit_message)
@@ -1127,6 +1650,11 @@ class TurboModel:
         output_path: str, 
         quantization: Optional[str] = None,
         fast_mode: bool = False,
+        chunked_conversion: bool = False,
+        max_shard_size: Optional[str] = None,
+        smart_tensor_ordering: bool = False,
+        disk_offloading: bool = False,
+        disk_offload_dir: Optional[str] = None,
         **kwargs
     ) -> str:
         """
@@ -1144,12 +1672,21 @@ class TurboModel:
             output_path: Output file path for GGUF
             quantization: Quantization type (Q4_K_M, Q5_K_M, Q8_0, etc.)
             fast_mode: Skip intermediate F16 step for faster export (slightly less optimal)
+            chunked_conversion: Save model shards during conversion for large checkpoints
+            max_shard_size: Max shard size used when chunked conversion is active
+            smart_tensor_ordering: Save tensors in memory-optimized order
+            disk_offloading: Use a dedicated temp/offload directory for intermediate artifacts
+            disk_offload_dir: Directory used when disk_offloading=True
         """
         from ..quant import convert_to_gguf, quantize_gguf, ensure_llama_cpp_installed, GGUF_QUANT_TYPES
         from ..utils import QuantLLMProgress, format_time, format_size
         import time
         
         start_time = time.time()
+        
+        effective_shard_size = max_shard_size or (
+            DEFAULT_CHUNKED_SHARD_SIZE if chunked_conversion else None
+        )
         
         quant_type = quantization or self.config.quant_type or "q4_k_m"
         quant_type_upper = quant_type.upper()
@@ -1163,6 +1700,13 @@ class TurboModel:
             print_info(f"Target quantization: {quant_type_upper}")
             if fast_mode:
                 print_info("Fast mode enabled")
+            if chunked_conversion:
+                print_info(f"Chunked conversion enabled (max_shard_size={effective_shard_size})")
+            if smart_tensor_ordering:
+                print_info("Smart tensor ordering enabled")
+                print_warning("Smart tensor ordering may temporarily materialize a full state dict in memory.")
+            if disk_offloading:
+                print_info(f"Disk offloading enabled ({disk_offload_dir or 'system temp'})")
         
         # Ensure llama.cpp
         if self.verbose:
@@ -1188,8 +1732,12 @@ class TurboModel:
         # Get model name for file naming
         model_name = self.model.config._name_or_path.split('/')[-1]
         
+        temp_parent = disk_offload_dir if disk_offloading else None
+        if temp_parent:
+            os.makedirs(temp_parent, exist_ok=True)
+        
         # Create temp dir for conversion
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=temp_parent) as temp_dir:
             # Step 1: Save model to temp directory
             if self.verbose:
                 print_header("Step 1/3: Saving Model", icon="💾")
@@ -1197,12 +1745,22 @@ class TurboModel:
             
             with QuantLLMProgress() as progress:
                 task = progress.add_task("Saving model weights...", total=None)
+                save_kwargs = {
+                    "safe_serialization": True,
+                }
+                if effective_shard_size:
+                    save_kwargs["max_shard_size"] = effective_shard_size
+                
+                if smart_tensor_ordering:
+                    save_kwargs["state_dict"] = memory_optimized_tensor_order(model_to_save.state_dict())
+                
                 try:
-                    model_to_save.save_pretrained(temp_dir, safe_serialization=True)
+                    model_to_save.save_pretrained(temp_dir, **save_kwargs)
                 except Exception as e:
                     if self.verbose:
                         print_warning(f"SafeTensors save failed ({e}), using PyTorch format...")
-                    model_to_save.save_pretrained(temp_dir, safe_serialization=False)
+                    save_kwargs["safe_serialization"] = False
+                    model_to_save.save_pretrained(temp_dir, **save_kwargs)
                 
                 self.tokenizer.save_pretrained(temp_dir)
                 progress.update(task, completed=100)
@@ -1292,23 +1850,26 @@ class TurboModel:
             print_info(f"Time: {format_time(elapsed)}")
                 
         return output_path
-    
+
     def _is_bnb_quantized(self) -> bool:
-        """Check if model is BitsAndBytes quantized."""
-        # Check config for quantization_config
+        """Return True iff the loaded model is BitsAndBytes-quantized.
+
+        Checks both the model's ``quantization_config`` metadata and the
+        actual layer types (``Linear4bit`` / ``Linear8bitLt``) so it works
+        whether the model came from a pre-quantized HF repo or from a
+        dynamic BitsAndBytes load.
+        """
         if hasattr(self.model, 'config'):
             quant_config = getattr(self.model.config, 'quantization_config', None)
             if quant_config:
-                # Check if it's BitsAndBytes
                 quant_method = getattr(quant_config, 'quant_method', None)
-                if quant_method in ['bitsandbytes', 'bnb']:
+                if quant_method in ('bitsandbytes', 'bnb'):
                     return True
                 if getattr(quant_config, 'load_in_4bit', False):
                     return True
                 if getattr(quant_config, 'load_in_8bit', False):
                     return True
-        
-        # Check for BNB linear layers in the model
+
         try:
             import bitsandbytes as bnb
             for module in self.model.modules():
@@ -1316,9 +1877,107 @@ class TurboModel:
                     return True
         except ImportError:
             pass
-        
+
         return False
-    
+
+    def _has_runtime_quantization(self) -> bool:
+        """Return True iff the loaded model carries *any* quantization.
+
+        Detects BitsAndBytes (4-bit / 8-bit), GPTQ, AWQ, AQLM, HQQ, FP8
+        and EETQ via the standard ``quantization_config.quant_method`` slot
+        on a ``transformers`` ``PretrainedConfig``. This is the canonical
+        source-of-truth used by :pyattr:`is_quantized`.
+        """
+        if self._is_bnb_quantized():
+            return True
+
+        if hasattr(self.model, 'config'):
+            quant_config = getattr(self.model.config, 'quantization_config', None)
+            if quant_config:
+                quant_method = getattr(quant_config, 'quant_method', None)
+                if quant_method:
+                    return True
+                if isinstance(quant_config, dict) and quant_config.get('quant_method'):
+                    return True
+        return False
+
+    @property
+    def is_quantized(self) -> bool:
+        """Whether the underlying model is currently quantized.
+
+        Derived from the loaded model state (``config.quantization_config``
+        and the actual layer types). When :meth:`from_gguf` or another
+        loader explicitly knows the quantization status it can set
+        :pyattr:`_is_quantized_override` to short-circuit the introspection.
+        """
+        if self._is_quantized_override is not None:
+            return self._is_quantized_override
+        return self._has_runtime_quantization()
+
+    # Backwards-compatible alias kept for existing internal callers and any
+    # downstream code that read the previous attribute name. New code should
+    # prefer the :pyattr:`is_quantized` public property.
+    @property
+    def _is_quantized(self) -> bool:  # type: ignore[override]
+        return self.is_quantized
+
+    @_is_quantized.setter
+    def _is_quantized(self, value: Optional[bool]) -> None:
+        self._is_quantized_override = None if value is None else bool(value)
+
+    def report(self) -> Dict[str, Any]:
+        """Return a structured snapshot of the actual loaded-model state.
+
+        Keys:
+            * ``model_id``: HF repo id or local path (when known).
+            * ``params_billion``: parameter count in billions.
+            * ``requested_bits``: bits the user (or :class:`SmartConfig`)
+              asked for.
+            * ``effective_loading_bits``: bits actually used for BnB loading
+              (4 / 8 / 16). Differs from ``requested_bits`` when GGUF export
+              targets sub-4-bit quantization but loading falls back to 4-bit.
+            * ``is_quantized``: real runtime quantization state.
+            * ``quant_method``: e.g. ``"bitsandbytes"`` / ``"gptq"`` / ``None``.
+            * ``device``: torch device the model lives on.
+            * ``dtype``: torch dtype of the model parameters.
+            * ``finetuned`` / ``lora_applied``: training-state flags.
+        """
+        params_billion: Optional[float]
+        try:
+            params_billion = self.model.num_parameters() / 1e9
+        except Exception:
+            params_billion = None
+
+        quant_method = None
+        if hasattr(self.model, 'config'):
+            quant_config = getattr(self.model.config, 'quantization_config', None)
+            if quant_config is not None:
+                quant_method = (
+                    getattr(quant_config, 'quant_method', None)
+                    or (quant_config.get('quant_method') if isinstance(quant_config, dict) else None)
+                )
+                if not quant_method and self._is_bnb_quantized():
+                    quant_method = 'bitsandbytes'
+
+        device = getattr(self.model, 'device', None)
+        try:
+            dtype = next(self.model.parameters()).dtype
+        except (StopIteration, AttributeError):
+            dtype = getattr(self.config, 'dtype', None)
+
+        return {
+            "model_id": getattr(getattr(self.model, 'config', None), '_name_or_path', None),
+            "params_billion": params_billion,
+            "requested_bits": getattr(self.config, 'bits', None),
+            "effective_loading_bits": getattr(self.config, 'effective_loading_bits', None),
+            "is_quantized": self.is_quantized,
+            "quant_method": quant_method,
+            "device": str(device) if device is not None else None,
+            "dtype": str(dtype) if dtype is not None else None,
+            "finetuned": self._is_finetuned,
+            "lora_applied": self._lora_applied,
+        }
+
     def _dequantize_model(self) -> nn.Module:
         """
         Dequantize a BitsAndBytes model to full precision for GGUF export.
@@ -1746,15 +2405,20 @@ Or install with extras:
         return output_path
     
     def __repr__(self) -> str:
-        params = self.model.num_parameters() / 1e9
+        try:
+            params = self.model.num_parameters() / 1e9
+            params_str = f"{params:.2f}B"
+        except Exception:
+            params_str = "?"
+        model_id = getattr(getattr(self.model, "config", None), "_name_or_path", "?")
         return (
-            f"TurboModel(\n"
-            f"  model={self.model.config._name_or_path},\n"
-            f"  params={params:.2f}B,\n"
+            "TurboModel(\n"
+            f"  model={model_id},\n"
+            f"  params={params_str},\n"
             f"  bits={self.config.bits},\n"
-            f"  quantized={self._is_quantized},\n"
+            f"  quantized={self.is_quantized},\n"
             f"  finetuned={self._is_finetuned}\n"
-            f")"
+            ")"
         )
 
 
@@ -1807,6 +2471,25 @@ Or install with extras:
         return count
 
 
+def register_architecture(
+    architecture: str,
+    *,
+    base_model_type: Optional[str] = None,
+    model_class: Optional[Type[PreTrainedModel]] = None,
+) -> None:
+    """
+    Register a new architecture alias and optional explicit model class.
+    
+    Example:
+        >>> register_architecture("my-new-model", base_model_type="llama")
+    """
+    TurboModel.register_architecture(
+        architecture,
+        base_model_type=base_model_type,
+        model_class=model_class,
+    )
+
+
 def turbo(
     model: str,
     *,
@@ -1814,6 +2497,8 @@ def turbo(
     max_length: Optional[int] = None,
     device: Optional[str] = None,
     dtype: Optional[str] = None,
+    base_model_fallback: bool = True,
+    config: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> TurboModel:
     """
@@ -1828,6 +2513,8 @@ def turbo(
         max_length: Override max sequence length (default: auto)
         device: Override device (default: best GPU)
         dtype: Override dtype (default: bf16/fp16)
+        base_model_fallback: Retry with resolved base model config on first-load failure
+        config: Shared export/push config (format, quantization, push_format, etc.)
         **kwargs: Additional options passed to from_pretrained
         
     Returns:
@@ -1858,5 +2545,7 @@ def turbo(
         max_length=max_length,
         device=device,
         dtype=dtype,
+        base_model_fallback=base_model_fallback,
+        config=config,
         **kwargs,
     )

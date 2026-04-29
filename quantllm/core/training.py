@@ -1,5 +1,5 @@
 """
-Advanced Training Utilities for QuantLLM v2.0
+Advanced Training Utilities for QuantLLM v2.1
 
 Provides auto-configuration and optimization for fine-tuning
 with minimal user input.
@@ -154,7 +154,7 @@ class AutoBatchSizeFinder:
             
             if training:
                 self.model.train()
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = self.model(dummy_input, labels=dummy_input)
                     loss = outputs.loss
                     loss.backward()
@@ -163,7 +163,7 @@ class AutoBatchSizeFinder:
             else:
                 self.model.eval()
                 with torch.inference_mode():
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         self.model(dummy_input)
             
             del dummy_input
@@ -512,7 +512,14 @@ def load_training_data(
     
     # Tokenize
     def tokenize_fn(examples):
-        texts = examples[text_column]
+        if text_column == '__instruction_output__':
+            # Combine instruction and output fields
+            texts = [
+                f"### Instruction:\n{inst}\n\n### Response:\n{out}"
+                for inst, out in zip(examples['instruction'], examples['output'])
+            ]
+        else:
+            texts = examples[text_column]
         result = tokenizer(
             texts,
             truncation=True,
