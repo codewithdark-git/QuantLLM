@@ -35,6 +35,7 @@ model = turbo("microsoft/phi-2", quantize=False, device="cpu")
 
 # Option B (recommended): load a pre-quantized GGUF via llama.cpp
 from quantllm import TurboModel
+
 model = TurboModel.from_gguf(
     "TheBloke/phi-2-GGUF",
     filename="phi-2.Q4_K_M.gguf",
@@ -99,11 +100,12 @@ The two supported paths are:
 
 ```python
 # Export an MLX-format model that uses Apple's native Metal kernels
-model = turbo("microsoft/phi-2", quantize=False)   # load on CPU first
+model = turbo("microsoft/phi-2", quantize=False)  # load on CPU first
 model.export(format="mlx", path="./phi-2-mlx")
 
 # Or download a GGUF and run it through llama.cpp's Metal backend
 from quantllm import TurboModel
+
 model = TurboModel.from_gguf(
     "TheBloke/phi-2-GGUF",
     filename="phi-2.Q4_K_M.gguf",
@@ -120,6 +122,7 @@ with `CMAKE_ARGS="-DLLAMA_METAL=on"`.
 
 ```python
 import os
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
 model = turbo(

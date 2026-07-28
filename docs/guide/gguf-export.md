@@ -115,11 +115,7 @@ from llama_cpp import Llama
 
 llm = Llama(model_path="model.Q4_K_M.gguf")
 
-output = llm(
-    "Write a poem about the ocean:",
-    max_tokens=100,
-    echo=True
-)
+output = llm("Write a poem about the ocean:", max_tokens=100, echo=True)
 print(output["choices"][0]["text"])
 ```
 
@@ -134,10 +130,7 @@ model = turbo(
     "meta-llama/Llama-3.2-3B",
     config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
 )
-model.push(
-    "your-username/my-model-gguf",
-    license="apache-2.0"
-)
+model.push("your-username/my-model-gguf", license="apache-2.0")
 ```
 
 The model card is automatically generated with:
@@ -171,11 +164,7 @@ Re-quantize a GGUF file to a different type:
 ```python
 from quantllm import quantize_gguf
 
-quantize_gguf(
-    input_path="model.F16.gguf",
-    output_path="model.Q4_K_M.gguf",
-    quant_type="Q4_K_M"
-)
+quantize_gguf(input_path="model.F16.gguf", output_path="model.Q4_K_M.gguf", quant_type="Q4_K_M")
 ```
 
 ---

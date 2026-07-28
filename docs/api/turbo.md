@@ -66,10 +66,10 @@ print(response)
 ```python
 model = turbo(
     "meta-llama/Llama-3.2-3B",
-    bits=4,                    # Force 4-bit quantization
-    max_length=4096,           # Context length
-    device="cuda:0",           # Specific GPU
-    dtype="bfloat16",          # Use bfloat16
+    bits=4,  # Force 4-bit quantization
+    max_length=4096,  # Context length
+    device="cuda:0",  # Specific GPU
+    dtype="bfloat16",  # Use bfloat16
 )
 ```
 

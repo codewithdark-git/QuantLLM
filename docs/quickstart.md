@@ -68,8 +68,8 @@ for token in model.generate("Count to 10:", stream=True):
 model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
 
 # Other quantization options
-model.export("gguf", "model.Q8_0.gguf", quantization="Q8_0")   # Higher quality
-model.export("gguf", "model.Q2_K.gguf", quantization="Q2_K")   # Smallest size
+model.export("gguf", "model.Q8_0.gguf", quantization="Q8_0")  # Higher quality
+model.export("gguf", "model.Q2_K.gguf", quantization="Q2_K")  # Smallest size
 ```
 
 ### ONNX (ONNX Runtime, TensorRT)
@@ -132,10 +132,7 @@ model = turbo(
     "meta-llama/Llama-3.2-3B",
     config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
 )
-model.push(
-    "your-username/my-awesome-model",
-    license="apache-2.0"
-)
+model.push("your-username/my-awesome-model", license="apache-2.0")
 ```
 
 The model card includes:
@@ -153,10 +150,10 @@ The model card includes:
 ```python
 model = turbo(
     "meta-llama/Llama-3.2-3B",
-    bits=4,                    # Force 4-bit quantization
-    max_length=4096,           # Context length
-    device="cuda:0",           # Specific GPU
-    dtype="bfloat16",          # Data type
+    bits=4,  # Force 4-bit quantization
+    max_length=4096,  # Context length
+    device="cuda:0",  # Specific GPU
+    dtype="bfloat16",  # Data type
 )
 ```
 
@@ -175,10 +172,7 @@ Load pre-quantized GGUF models directly:
 ```python
 from quantllm import TurboModel
 
-model = TurboModel.from_gguf(
-    "TheBloke/Llama-2-7B-Chat-GGUF",
-    filename="llama-2-7b-chat.Q4_K_M.gguf"
-)
+model = TurboModel.from_gguf("TheBloke/Llama-2-7B-Chat-GGUF", filename="llama-2-7b-chat.Q4_K_M.gguf")
 
 print(model.generate("Hello!"))
 ```

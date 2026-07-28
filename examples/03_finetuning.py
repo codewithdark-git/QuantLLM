@@ -19,7 +19,9 @@ model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=4)
 training_data = [
     {"text": "### Instruction:\nWhat is Python?\n\n### Response:\nPython is a high-level programming language."},
     {"text": "### Instruction:\nExplain AI.\n\n### Response:\nAI is artificial intelligence, machines that can learn."},
-    {"text": "### Instruction:\nWhat is machine learning?\n\n### Response:\nML is a subset of AI where systems learn from data."},
+    {
+        "text": "### Instruction:\nWhat is machine learning?\n\n### Response:\nML is a subset of AI where systems learn from data."
+    },
     # Add more examples...
 ]
 
@@ -50,10 +52,7 @@ print(f"   Output: {result['output_dir']}")
 # ============================================
 print("\n📝 Testing fine-tuned model...")
 
-response = model.generate(
-    "What is Python?",
-    max_new_tokens=50
-)
+response = model.generate("What is Python?", max_new_tokens=50)
 print(f"Response: {response}")
 
 # ============================================

@@ -44,8 +44,8 @@ model = turbo("meta-llama/Llama-3.2-3B")
 
 ```python
 # Force specific quantization
-model = turbo("meta-llama/Llama-3.2-3B", bits=4)   # 4-bit (smallest)
-model = turbo("meta-llama/Llama-3.2-3B", bits=8)   # 8-bit (balanced)
+model = turbo("meta-llama/Llama-3.2-3B", bits=4)  # 4-bit (smallest)
+model = turbo("meta-llama/Llama-3.2-3B", bits=8)  # 8-bit (balanced)
 model = turbo("meta-llama/Llama-3.2-3B", bits=16)  # FP16 (highest quality)
 ```
 
@@ -65,12 +65,12 @@ model = turbo("meta-llama/Llama-3.2-3B", quantize=False)
 ```python
 model = turbo(
     "meta-llama/Llama-3.2-3B",
-    bits=4,                      # Quantization bits (4, 8, 16)
-    max_length=4096,             # Maximum context length
-    device="cuda:0",             # Device (cuda, cpu, auto)
-    dtype="bfloat16",            # Data type (float16, bfloat16)
-    trust_remote_code=True,      # For custom model architectures
-    verbose=True,                # Show loading progress
+    bits=4,  # Quantization bits (4, 8, 16)
+    max_length=4096,  # Maximum context length
+    device="cuda:0",  # Device (cuda, cpu, auto)
+    dtype="bfloat16",  # Data type (float16, bfloat16)
+    trust_remote_code=True,  # For custom model architectures
+    verbose=True,  # Show loading progress
 )
 ```
 
@@ -100,6 +100,7 @@ register_architecture("newmodel", base_model_type="llama")
 # Optionally provide an explicit ``model_class`` (most useful for
 # fine-tuned variants that ship their own modelling code):
 from transformers import LlamaForCausalLM
+
 register_architecture(
     "newmodel",
     base_model_type="llama",
@@ -108,8 +109,8 @@ register_architecture(
 
 model = turbo(
     "new-model-org/NewModel-7B",
-    model_type_override="llama",     # optional explicit override
-    base_model_fallback=True,        # enabled by default; can be disabled
+    model_type_override="llama",  # optional explicit override
+    base_model_fallback=True,  # enabled by default; can be disabled
     trust_remote_code=True,
 )
 ```
@@ -189,8 +190,8 @@ or a missing `bitsandbytes` install will correctly report `False`.
 model = turbo(
     "meta-llama/Llama-3.2-3B",
     bits=4,
-    device_map="auto",           # Automatic device mapping
-    low_cpu_mem_usage=True,      # Reduce CPU memory during loading
+    device_map="auto",  # Automatic device mapping
+    low_cpu_mem_usage=True,  # Reduce CPU memory during loading
 )
 ```
 
@@ -223,10 +224,7 @@ Load pre-quantized GGUF models directly from HuggingFace:
 from quantllm import TurboModel
 
 # From HuggingFace Hub
-model = TurboModel.from_gguf(
-    "TheBloke/Llama-2-7B-Chat-GGUF",
-    filename="llama-2-7b-chat.Q4_K_M.gguf"
-)
+model = TurboModel.from_gguf("TheBloke/Llama-2-7B-Chat-GGUF", filename="llama-2-7b-chat.Q4_K_M.gguf")
 
 # From local file
 model = TurboModel.from_gguf("./models/my-model.gguf")

@@ -74,6 +74,7 @@ model.finetune("tatsu-lab/alpaca", epochs=1)
 
 # Or use datasets library
 from datasets import load_dataset
+
 dataset = load_dataset("your-dataset")
 model.finetune(dataset, epochs=3)
 ```
@@ -87,10 +88,10 @@ model.finetune(dataset, epochs=3)
 ```python
 model.finetune(
     "training_data.json",
-    epochs=3,                    # Number of training epochs
-    batch_size=4,                # Batch size (reduce if OOM)
-    learning_rate=2e-4,          # Learning rate
-    output_dir="./output",       # Save directory
+    epochs=3,  # Number of training epochs
+    batch_size=4,  # Batch size (reduce if OOM)
+    learning_rate=2e-4,  # Learning rate
+    output_dir="./output",  # Save directory
 )
 ```
 
@@ -102,21 +103,18 @@ model.finetune(
     epochs=5,
     batch_size=4,
     learning_rate=2e-4,
-    
     # LoRA parameters
-    lora_r=16,                   # LoRA rank (higher = more capacity)
-    lora_alpha=32,               # LoRA scaling (typically 2x lora_r)
-    lora_dropout=0.1,            # Dropout for regularization
-    
+    lora_r=16,  # LoRA rank (higher = more capacity)
+    lora_alpha=32,  # LoRA scaling (typically 2x lora_r)
+    lora_dropout=0.1,  # Dropout for regularization
     # Training options
-    warmup_steps=100,            # Learning rate warmup
-    max_steps=-1,                # Max steps (-1 for full epochs)
-    gradient_accumulation=4,     # Accumulate gradients
-    
+    warmup_steps=100,  # Learning rate warmup
+    max_steps=-1,  # Max steps (-1 for full epochs)
+    gradient_accumulation=4,  # Accumulate gradients
     # Output
     output_dir="./finetuned",
-    save_steps=500,              # Save checkpoint every N steps
-    logging_steps=10,            # Log every N steps
+    save_steps=500,  # Save checkpoint every N steps
+    logging_steps=10,  # Log every N steps
 )
 ```
 
@@ -155,16 +153,13 @@ from quantllm import turbo, QuantLLMHubManager
 model = turbo("meta-llama/Llama-3.2-3B")
 
 # Create hub manager
-manager = QuantLLMHubManager(
-    repo_id="your-username/finetuned-model",
-    hf_token="hf_..."
-)
+manager = QuantLLMHubManager(repo_id="your-username/finetuned-model", hf_token="hf_...")
 
 # Train with automatic tracking
 model.finetune(
     "training_data.json",
     epochs=3,
-    hub_manager=manager  # Automatically tracks hyperparameters
+    hub_manager=manager,  # Automatically tracks hyperparameters
 )
 
 # Push the result
@@ -210,6 +205,7 @@ model.save("./my-finetuned-model/")
 
 # Load later
 from quantllm import TurboModel
+
 model = TurboModel.from_pretrained("./my-finetuned-model/")
 ```
 
@@ -237,8 +233,8 @@ model = TurboModel.from_pretrained("./my-finetuned-model/")
 # If you run out of memory:
 model.finetune(
     data,
-    batch_size=1,                  # Smaller batch
-    gradient_accumulation=8,       # Accumulate gradients
+    batch_size=1,  # Smaller batch
+    gradient_accumulation=8,  # Accumulate gradients
 )
 ```
 

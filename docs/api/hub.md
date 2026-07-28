@@ -71,22 +71,13 @@ model = turbo(
 )
 
 # Push as GGUF
-model.push(
-    "your-username/llama-3.2-3b-gguf"
-)
+model.push("your-username/llama-3.2-3b-gguf")
 
 # Push as ONNX
-model.push(
-    "your-username/llama-3.2-3b-onnx",
-    format="onnx"
-)
+model.push("your-username/llama-3.2-3b-onnx", format="onnx")
 
 # Push as MLX
-model.push(
-    "your-username/llama-3.2-3b-mlx",
-    format="mlx",
-    quantization="4bit"
-)
+model.push("your-username/llama-3.2-3b-mlx", format="mlx", quantization="4bit")
 
 # Push as SafeTensors (default)
 model.push("your-username/llama-3.2-3b")
@@ -136,12 +127,14 @@ def track_hyperparameters(self, params: Dict[str, Any])
 
 **Example:**
 ```python
-manager.track_hyperparameters({
-    "epochs": 3,
-    "learning_rate": 2e-4,
-    "lora_r": 16,
-    "base_model": "meta-llama/Llama-3.2-3B",
-})
+manager.track_hyperparameters(
+    {
+        "epochs": 3,
+        "learning_rate": 2e-4,
+        "lora_r": 16,
+        "base_model": "meta-llama/Llama-3.2-3B",
+    }
+)
 ```
 
 #### save_final_model()
@@ -178,16 +171,13 @@ from quantllm import turbo, QuantLLMHubManager
 model = turbo("meta-llama/Llama-3.2-3B")
 
 # Create manager
-manager = QuantLLMHubManager(
-    "your-username/my-finetuned-model",
-    hf_token="hf_..."
-)
+manager = QuantLLMHubManager("your-username/my-finetuned-model", hf_token="hf_...")
 
 # Fine-tune with tracking
 model.finetune(
     "data.json",
     epochs=3,
-    hub_manager=manager  # Auto-tracks hyperparameters
+    hub_manager=manager,  # Auto-tracks hyperparameters
 )
 
 # Save and push
@@ -210,11 +200,13 @@ for quant in ["Q4_K_M", "Q5_K_M", "Q8_0"]:
     model.export("gguf", output, quantization=quant)
 
 # Track metadata
-manager.track_hyperparameters({
-    "format": "gguf",
-    "base_model": "meta-llama/Llama-3.2-3B",
-    "quantizations": ["Q4_K_M", "Q5_K_M", "Q8_0"],
-})
+manager.track_hyperparameters(
+    {
+        "format": "gguf",
+        "base_model": "meta-llama/Llama-3.2-3B",
+        "quantizations": ["Q4_K_M", "Q5_K_M", "Q8_0"],
+    }
+)
 
 manager.push()
 ```
@@ -247,12 +239,14 @@ tags:
 For **GGUF**:
 ```python
 from llama_cpp import Llama
+
 llm = Llama.from_pretrained(repo_id="user/model", filename="model.Q4_K_M.gguf")
 ```
 
 For **MLX**:
 ```python
 from mlx_lm import load, generate
+
 model, tokenizer = load("user/model")
 text = generate(model, tokenizer, prompt="Hello!")
 ```
@@ -260,6 +254,7 @@ text = generate(model, tokenizer, prompt="Hello!")
 For **ONNX**:
 ```python
 from optimum.onnxruntime import ORTModelForCausalLM
+
 model = ORTModelForCausalLM.from_pretrained("user/model")
 ```
 

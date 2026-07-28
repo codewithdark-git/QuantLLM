@@ -33,10 +33,7 @@ from peft import LoraConfig, get_peft_model
 import torch
 
 bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16
+    load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16
 )
 model = AutoModelForCausalLM.from_pretrained(
     "meta-llama/Llama-3-8B",
@@ -56,8 +53,8 @@ model = turbo(
     "meta-llama/Llama-3-8B",
     config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
 )  # Auto-quantizes
-model.generate("Hello!")                    # Generate text
-model.export()                              # Export to GGUF with shared config
+model.generate("Hello!")  # Generate text
+model.export()  # Export to GGUF with shared config
 ```
 
 ---
@@ -174,7 +171,7 @@ model = turbo("microsoft/phi-3-mini")
 # GGUF — For llama.cpp, Ollama, LM Studio
 model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
 
-# ONNX — For ONNX Runtime, TensorRT  
+# ONNX — For ONNX Runtime, TensorRT
 model.export("onnx", "./model-onnx/")
 
 # MLX — For Apple Silicon Macs
@@ -231,10 +228,7 @@ print(response)
 ```python
 from quantllm import TurboModel
 
-model = TurboModel.from_gguf(
-    "TheBloke/Llama-2-7B-Chat-GGUF", 
-    filename="llama-2-7b-chat.Q4_K_M.gguf"
-)
+model = TurboModel.from_gguf("TheBloke/Llama-2-7B-Chat-GGUF", filename="llama-2-7b-chat.Q4_K_M.gguf")
 print(model.generate("Hello!"))
 ```
 
@@ -277,10 +271,7 @@ from quantllm import turbo
 model = turbo("meta-llama/Llama-3.2-3B")
 
 # Push with auto-generated model card
-model.push(
-    "your-username/my-model",
-    license="apache-2.0"
-)
+model.push("your-username/my-model", license="apache-2.0")
 ```
 
 ---

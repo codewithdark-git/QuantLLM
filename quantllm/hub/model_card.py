@@ -45,8 +45,8 @@ class ModelCardGenerator:
         format: str,
         quantization: Optional[str] = None,
         license: str = "apache-2.0",
-        language: List[str] = None,
-        tags: List[str] = None,
+        language: List[str] | None = None,
+        tags: List[str] | None = None,
         **kwargs,
     ):
         """

@@ -9,10 +9,10 @@ The unified model class for loading, generating, fine-tuning, and exporting.
 ```python
 class TurboModel:
     """Ultra-fast LLM with auto-configuration."""
-    
-    model: PreTrainedModel           # The underlying HuggingFace model
-    tokenizer: PreTrainedTokenizer   # The tokenizer
-    config: SmartConfig              # Auto-detected configuration
+
+    model: PreTrainedModel  # The underlying HuggingFace model
+    tokenizer: PreTrainedTokenizer  # The tokenizer
+    config: SmartConfig  # Auto-detected configuration
 ```
 
 ---
@@ -64,10 +64,7 @@ def from_gguf(
 **Example:**
 ```python
 # From HuggingFace
-model = TurboModel.from_gguf(
-    "TheBloke/Llama-2-7B-Chat-GGUF",
-    filename="llama-2-7b-chat.Q4_K_M.gguf"
-)
+model = TurboModel.from_gguf("TheBloke/Llama-2-7B-Chat-GGUF", filename="llama-2-7b-chat.Q4_K_M.gguf")
 
 # From local file
 model = TurboModel.from_gguf("./models/my-model.gguf")
@@ -284,16 +281,10 @@ def push(
 **Example:**
 ```python
 # Push as GGUF
-model.push(
-    "your-username/my-model"
-)
+model.push("your-username/my-model")
 
 # Push as MLX
-model.push(
-    "your-username/my-model-mlx",
-    format="mlx",
-    quantization="4bit"
-)
+model.push("your-username/my-model-mlx", format="mlx", quantization="4bit")
 ```
 
 ---

@@ -82,6 +82,7 @@ quantllm.show_banner()
 
 # Quick test
 from quantllm import turbo
+
 model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 print(model.generate("Hello!"))
 ```

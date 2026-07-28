@@ -8,7 +8,7 @@ Consistent orange theme across the entire project.
 import logging
 import sys
 import re
-from typing import Optional, ContextManager, Generator, Iterable, Callable, Any
+from typing import Optional, ContextManager, Generator, Callable, Any
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -214,20 +214,21 @@ class StepProgress:
         console.print(f"[red]✗[/] Failed: {step}" + (f" - {message}" if message else ""))
 
 
-def track_progress(sequence: Iterable, description: str = "Processing...", total: Optional[int] = None) -> Iterable:
+def track_progress(sequence, description: str = "Processing...", total: Optional[int] = None):
     """Simple wrapper around rich.progress.track with orange theme."""
     columns = [
         SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
         TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
         BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE),
         TaskProgressColumn(),
-        TextColumn("[dim]•[/]"),
+        TextColumn("[dim]-[/]"),
         TimeRemainingColumn(),
     ]
 
     with Progress(*columns, console=console, transient=True) as progress:
-        seq_list = list(sequence) if total is None else sequence
-        task = progress.add_task(description, total=total or len(seq_list))
+        seq_list = list(sequence)
+        task_total = total if total is not None else len(seq_list)
+        task = progress.add_task(description, total=task_total)
         for item in seq_list:
             yield item
             progress.advance(task)
@@ -416,7 +417,7 @@ def reset_banner() -> None:
     _banner_shown = False
 
 
-def format_size(size_bytes: int) -> str:
+def format_size(size_bytes: float) -> str:
     """Format bytes to human readable size."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_bytes < 1024:

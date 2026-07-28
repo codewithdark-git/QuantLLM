@@ -17,10 +17,7 @@ model = turbo(
 )
 
 # Push with auto-generated model card
-model.push(
-    "your-username/my-model",
-    token="hf_..."
-)
+model.push("your-username/my-model", token="hf_...")
 ```
 
 ---
@@ -74,18 +71,12 @@ from quantllm import turbo, QuantLLMHubManager
 model = turbo("meta-llama/Llama-3.2-3B")
 
 # Create manager
-manager = QuantLLMHubManager(
-    repo_id="your-username/my-model",
-    hf_token="hf_..."
-)
+manager = QuantLLMHubManager(repo_id="your-username/my-model", hf_token="hf_...")
 
 # Track hyperparameters (for fine-tuned models)
-manager.track_hyperparameters({
-    "epochs": 3,
-    "learning_rate": 2e-4,
-    "lora_r": 16,
-    "base_model": "meta-llama/Llama-3.2-3B"
-})
+manager.track_hyperparameters(
+    {"epochs": 3, "learning_rate": 2e-4, "lora_r": 16, "base_model": "meta-llama/Llama-3.2-3B"}
+)
 
 # Save model
 manager.save_final_model(model)
@@ -157,10 +148,7 @@ from quantllm import turbo, TurboModel
 model = turbo("your-username/my-model")
 
 # Load GGUF models
-model = TurboModel.from_gguf(
-    "TheBloke/Llama-2-7B-Chat-GGUF",
-    filename="llama-2-7b-chat.Q4_K_M.gguf"
-)
+model = TurboModel.from_gguf("TheBloke/Llama-2-7B-Chat-GGUF", filename="llama-2-7b-chat.Q4_K_M.gguf")
 ```
 
 ### List GGUF Files
@@ -180,7 +168,7 @@ print(files)
 model.push(
     "your-username/private-model",
     token="hf_...",
-    private=True  # Makes repository private
+    private=True,  # Makes repository private
 )
 ```
 
@@ -200,7 +188,7 @@ manager = QuantLLMHubManager("user/repo", "hf_token")
 model.finetune(
     "data.json",
     epochs=3,
-    hub_manager=manager  # Tracks all hyperparameters
+    hub_manager=manager,  # Tracks all hyperparameters
 )
 
 # Push with full history
@@ -215,10 +203,7 @@ manager.push()
 Customize commit messages:
 
 ```python
-model.push(
-    "user/repo",
-    commit_message="v2.0 - Improved accuracy on coding tasks"
-)
+model.push("user/repo", commit_message="v2.0 - Improved accuracy on coding tasks")
 ```
 
 ---

@@ -59,18 +59,10 @@ Path to the created GGUF file.
 from quantllm import convert_to_gguf
 
 # Basic conversion
-convert_to_gguf(
-    "meta-llama/Llama-3.2-3B",
-    "llama3.Q4_K_M.gguf",
-    quant_type="Q4_K_M"
-)
+convert_to_gguf("meta-llama/Llama-3.2-3B", "llama3.Q4_K_M.gguf", quant_type="Q4_K_M")
 
 # Higher quality
-convert_to_gguf(
-    "meta-llama/Llama-3.2-3B",
-    "llama3.Q8_0.gguf",
-    quant_type="Q8_0"
-)
+convert_to_gguf("meta-llama/Llama-3.2-3B", "llama3.Q8_0.gguf", quant_type="Q8_0")
 ```
 
 ---
@@ -101,11 +93,7 @@ def quantize_gguf(
 from quantllm import quantize_gguf
 
 # Re-quantize F16 to Q4_K_M
-quantize_gguf(
-    "model.F16.gguf",
-    "model.Q4_K_M.gguf",
-    quant_type="Q4_K_M"
-)
+quantize_gguf("model.F16.gguf", "model.Q4_K_M.gguf", quant_type="Q4_K_M")
 ```
 
 ---
@@ -118,7 +106,7 @@ Available quantization types.
 from quantllm import GGUF_QUANT_TYPES
 
 print(GGUF_QUANT_TYPES)
-# ['Q2_K', 'Q3_K_S', 'Q3_K_M', 'Q3_K_L', 'Q4_K_S', 'Q4_K_M', 
+# ['Q2_K', 'Q3_K_S', 'Q3_K_M', 'Q3_K_L', 'Q4_K_S', 'Q4_K_M',
 #  'Q5_K_S', 'Q5_K_M', 'Q6_K', 'Q8_0', 'F16', 'F32']
 ```
 
