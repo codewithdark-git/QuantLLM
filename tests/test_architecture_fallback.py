@@ -202,10 +202,7 @@ def test_trust_remote_code_warns_for_unregistered_architecture(monkeypatch, capl
         )
 
     assert loaded.model.config.model_type == "llama"
-    assert (
-        "trust_remote_code=True is enabled for unregistered architecture 'newmodel'"
-        in caplog.text
-    )
+    assert "trust_remote_code=True is enabled for unregistered architecture 'newmodel'" in caplog.text
 
 
 def test_quantization_kwargs_are_preserved_during_fallback(monkeypatch):

@@ -56,9 +56,7 @@ class TurboModel(
         self._is_quantized_override: Optional[bool] = None
         self._is_finetuned = False
         self._lora_applied = False
-        self.export_push_config = (
-            ModelLoaderMixin._build_export_push_config(export_push_config)
-        )
+        self.export_push_config = ModelLoaderMixin._build_export_push_config(export_push_config)
         self.verbose = verbose
 
     def save(self, output_dir: str, safe_serialization: bool = True) -> str:
@@ -75,9 +73,7 @@ class TurboModel(
             self._lora_applied = False
             self.model = model_to_save
 
-        model_to_save.save_pretrained(
-            output_dir, safe_serialization=safe_serialization
-        )
+        model_to_save.save_pretrained(output_dir, safe_serialization=safe_serialization)
         if self.tokenizer:
             self.tokenizer.save_pretrained(output_dir)
 
@@ -89,9 +85,7 @@ class TurboModel(
     def _is_bnb_quantized(self) -> bool:
         """Return True if the loaded model is BitsAndBytes-quantized."""
         if hasattr(self.model, "config"):
-            quant_config = getattr(
-                self.model.config, "quantization_config", None
-            )
+            quant_config = getattr(self.model.config, "quantization_config", None)
             if quant_config:
                 quant_method = getattr(quant_config, "quant_method", None)
                 if quant_method in ("bitsandbytes", "bnb"):
@@ -105,9 +99,7 @@ class TurboModel(
             import bitsandbytes as bnb
 
             for module in self.model.modules():
-                if isinstance(
-                    module, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)
-                ):
+                if isinstance(module, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)):
                     return True
         except ImportError:
             pass
@@ -120,16 +112,12 @@ class TurboModel(
             return True
 
         if hasattr(self.model, "config"):
-            quant_config = getattr(
-                self.model.config, "quantization_config", None
-            )
+            quant_config = getattr(self.model.config, "quantization_config", None)
             if quant_config:
                 quant_method = getattr(quant_config, "quant_method", None)
                 if quant_method:
                     return True
-                if isinstance(quant_config, dict) and quant_config.get(
-                    "quant_method"
-                ):
+                if isinstance(quant_config, dict) and quant_config.get("quant_method"):
                     return True
         return False
 
@@ -150,9 +138,7 @@ class TurboModel(
 
     @_is_quantized.setter
     def _is_quantized(self, value: Optional[bool]) -> None:
-        self._is_quantized_override = (
-            None if value is None else bool(value)
-        )
+        self._is_quantized_override = None if value is None else bool(value)
 
     def report(self) -> Dict[str, Any]:
         """Return a structured snapshot of the actual loaded-model state.
@@ -170,16 +156,10 @@ class TurboModel(
 
         quant_method = None
         if hasattr(self.model, "config"):
-            quant_config = getattr(
-                self.model.config, "quantization_config", None
-            )
+            quant_config = getattr(self.model.config, "quantization_config", None)
             if quant_config is not None:
-                quant_method = getattr(
-                    quant_config, "quant_method", None
-                ) or (
-                    quant_config.get("quant_method")
-                    if isinstance(quant_config, dict)
-                    else None
+                quant_method = getattr(quant_config, "quant_method", None) or (
+                    quant_config.get("quant_method") if isinstance(quant_config, dict) else None
                 )
                 if not quant_method and self._is_bnb_quantized():
                     quant_method = "bitsandbytes"
@@ -198,9 +178,7 @@ class TurboModel(
             ),
             "params_billion": params_billion,
             "requested_bits": getattr(self.config, "bits", None),
-            "effective_loading_bits": getattr(
-                self.config, "effective_loading_bits", None
-            ),
+            "effective_loading_bits": getattr(self.config, "effective_loading_bits", None),
             "is_quantized": self.is_quantized,
             "quant_method": quant_method,
             "device": str(device) if device is not None else None,
@@ -221,11 +199,7 @@ class TurboModel(
             if self.verbose:
                 print_info(f"Reloading {model_name} in full precision...")
 
-            target_dtype = (
-                self.config.dtype
-                if self.config.dtype in [torch.float16, torch.bfloat16]
-                else torch.float16
-            )
+            target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
 
             try:
                 dequant_model = AutoModelForCausalLM.from_pretrained(
@@ -244,11 +218,7 @@ class TurboModel(
         try:
             import bitsandbytes as bnb
 
-            target_dtype = (
-                self.config.dtype
-                if self.config.dtype in [torch.float16, torch.bfloat16]
-                else torch.float16
-            )
+            target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
 
             dequant_model = AutoModelForCausalLM.from_config(
                 self.model.config,
@@ -258,48 +228,28 @@ class TurboModel(
             with torch.no_grad():
                 for name, module in self.model.named_modules():
                     if isinstance(module, bnb.nn.Linear4bit):
-                        target_module = dict(
-                            dequant_model.named_modules()
-                        ).get(name)
-                        if target_module is not None and hasattr(
-                            target_module, "weight"
-                        ):
+                        target_module = dict(dequant_model.named_modules()).get(name)
+                        if target_module is not None and hasattr(target_module, "weight"):
                             weight = module.weight
                             if hasattr(weight, "dequantize"):
                                 dequant_weight = weight.dequantize()
                             else:
-                                dequant_weight = (
-                                    bnb.functional.dequantize_4bit(
-                                        weight.data, weight.quant_state
-                                    )
-                                )
-                            target_module.weight.data.copy_(
-                                dequant_weight.to(target_dtype)
-                            )
+                                dequant_weight = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+                            target_module.weight.data.copy_(dequant_weight.to(target_dtype))
                             if module.bias is not None:
-                                target_module.bias.data.copy_(
-                                    module.bias.data.to(target_dtype)
-                                )
+                                target_module.bias.data.copy_(module.bias.data.to(target_dtype))
 
                     elif isinstance(module, bnb.nn.Linear8bitLt):
-                        target_module = dict(
-                            dequant_model.named_modules()
-                        ).get(name)
-                        if target_module is not None and hasattr(
-                            target_module, "weight"
-                        ):
+                        target_module = dict(dequant_model.named_modules()).get(name)
+                        if target_module is not None and hasattr(target_module, "weight"):
                             weight = module.weight
                             if hasattr(weight, "dequantize"):
                                 dequant_weight = weight.dequantize()
                             else:
                                 dequant_weight = weight.data.to(target_dtype)
-                            target_module.weight.data.copy_(
-                                dequant_weight.to(target_dtype)
-                            )
+                            target_module.weight.data.copy_(dequant_weight.to(target_dtype))
                             if module.bias is not None:
-                                target_module.bias.data.copy_(
-                                    module.bias.data.to(target_dtype)
-                                )
+                                target_module.bias.data.copy_(module.bias.data.to(target_dtype))
 
             gc.collect()
             if torch.cuda.is_available():
@@ -326,10 +276,7 @@ class TurboModel(
             )
 
             if not is_triton_available():
-                print_warning(
-                    "Triton is not available or no GPU detected. "
-                    "Skipping optimization."
-                )
+                print_warning("Triton is not available or no GPU detected. Skipping optimization.")
                 return
 
             if self.verbose:
@@ -338,9 +285,7 @@ class TurboModel(
             count = self._replace_with_triton(self.model, bits)
 
             if self.verbose:
-                print_success(
-                    f"Optimized {count} layers with Triton fused kernels!"
-                )
+                print_success(f"Optimized {count} layers with Triton fused kernels!")
 
     def _replace_with_triton(self, module: nn.Module, bits: int) -> int:
         """Recursively replace Linear layers with TritonQuantizedLinear."""
@@ -374,9 +319,7 @@ class TurboModel(
             params_str = f"{params:.2f}B"
         except Exception:
             params_str = "?"
-        model_id = getattr(
-            getattr(self.model, "config", None), "_name_or_path", "?"
-        )
+        model_id = getattr(getattr(self.model, "config", None), "_name_or_path", "?")
         return (
             "TurboModel(\n"
             f"  model={model_id},\n"

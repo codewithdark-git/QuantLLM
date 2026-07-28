@@ -44,9 +44,7 @@ class PushToHubMixin:
         format_lower = (
             format
             if format is not None
-            else self.export_push_config.get(
-                "push_format", DEFAULT_EXPORT_PUSH_CONFIG["push_format"]
-            )
+            else self.export_push_config.get("push_format", DEFAULT_EXPORT_PUSH_CONFIG["push_format"])
         ).lower()
         push_quantization = quantization or self.export_push_config.get(
             "push_quantization",
@@ -88,9 +86,7 @@ class PushToHubMixin:
 
         elif format_lower == "onnx":
             save_path = manager.staging_dir
-            self._export_onnx(
-                save_path, quantization=push_quantization, **kwargs
-            )
+            self._export_onnx(save_path, quantization=push_quantization, **kwargs)
 
             manager.track_hyperparameters(
                 {
@@ -104,9 +100,7 @@ class PushToHubMixin:
 
         elif format_lower == "mlx":
             save_path = manager.staging_dir
-            self._export_mlx(
-                save_path, quantization=push_quantization, **kwargs
-            )
+            self._export_mlx(save_path, quantization=push_quantization, **kwargs)
 
             manager.track_hyperparameters(
                 {

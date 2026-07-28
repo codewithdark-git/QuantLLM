@@ -148,9 +148,7 @@ class ModelLoaderMixin:
         hf_config = None
 
         try:
-            hf_config = AutoConfig.from_pretrained(
-                model_name, trust_remote_code=trust_remote_code
-            )
+            hf_config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
 
             existing_quant = getattr(hf_config, "quantization_config", None)
             if existing_quant:
@@ -237,9 +235,7 @@ class ModelLoaderMixin:
                     "for inference."
                 )
         else:
-            wanted_quantization = cls._should_apply_quantization(
-                quantize, smart_config.bits, from_config_only=False
-            )
+            wanted_quantization = cls._should_apply_quantization(quantize, smart_config.bits, from_config_only=False)
             if wanted_quantization and not actual_quantized:
                 instance._is_quantized_override = False
                 if verbose:
@@ -289,12 +285,8 @@ class ModelLoaderMixin:
         from_config_only: bool,
     ) -> PreTrainedModel:
         """Load model with architecture fallback and optional config-only mode."""
-        config_model_type = (
-            getattr(hf_config, "model_type", None) or ""
-        ).lower().strip()
-        is_registered_architecture = (
-            config_model_type in cls._architecture_registry if config_model_type else False
-        )
+        config_model_type = (getattr(hf_config, "model_type", None) or "").lower().strip()
+        is_registered_architecture = config_model_type in cls._architecture_registry if config_model_type else False
         resolved_model_type = cls.resolve_model_type(
             model_name,
             config_model_type=getattr(hf_config, "model_type", None),
@@ -344,9 +336,7 @@ class ModelLoaderMixin:
                 fallback_kwargs = dict(model_kwargs)
                 fallback_kwargs["config"] = resolved_config
                 try:
-                    return AutoModelForCausalLM.from_pretrained(
-                        model_name, **fallback_kwargs
-                    )
+                    return AutoModelForCausalLM.from_pretrained(model_name, **fallback_kwargs)
                 except Exception as fallback_config_error:
                     fallback_error = fallback_config_error
 
@@ -364,9 +354,7 @@ class ModelLoaderMixin:
                 except Exception as fallback_registered_error:
                     fallback_error = fallback_registered_error
 
-            error_details = (
-                f" Last fallback error: {fallback_error}" if fallback_error else ""
-            )
+            error_details = f" Last fallback error: {fallback_error}" if fallback_error else ""
             architecture_label = config_model_type or "<unknown>"
             resolved_label = resolved_model_type or "<none>"
 
@@ -377,8 +365,7 @@ class ModelLoaderMixin:
                 f"1) register_architecture('{architecture_label}', base_model_type='llama').\n"
                 "2) Use model_type_override='llama' (or your compatible base family).\n"
                 "3) Use from_config_only=True with a loadable config "
-                "(usually trust_remote_code=True)."
-                + error_details
+                "(usually trust_remote_code=True)." + error_details
             ) from (fallback_error or primary_error)
 
     @staticmethod
@@ -403,9 +390,7 @@ class ModelLoaderMixin:
                         "  BitsAndBytes supports 4/8-bit only. Using 4-bit for requested %s-bit.",
                         config.bits,
                     )
-                    logger.info(
-                        "     Tip: Export to GGUF for Q%s_K quantization!", config.bits
-                    )
+                    logger.info("     Tip: Export to GGUF for Q%s_K quantization!", config.bits)
             else:
                 quantization_config = BitsAndBytesConfig(load_in_8bit=True)
                 if config.bits != 8:
@@ -413,9 +398,7 @@ class ModelLoaderMixin:
                         "  BitsAndBytes supports 4/8-bit only. Using 8-bit for requested %s-bit.",
                         config.bits,
                     )
-                    logger.info(
-                        "     Tip: Export to GGUF for Q%s_K quantization!", config.bits
-                    )
+                    logger.info("     Tip: Export to GGUF for Q%s_K quantization!", config.bits)
 
             return {"quantization_config": quantization_config}
 
@@ -441,9 +424,7 @@ class ModelLoaderMixin:
             nullable_overrides = {"push_quantization"}
             for key, value in config.items():
                 mapped_key = aliases.get(key, key)
-                if mapped_key in resolved and (
-                    value is not None or mapped_key in nullable_overrides
-                ):
+                if mapped_key in resolved and (value is not None or mapped_key in nullable_overrides):
                     resolved[mapped_key] = value
 
             if "format" in config and "push_format" not in config:

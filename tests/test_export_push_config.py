@@ -28,9 +28,7 @@ def test_build_export_push_config_uses_deterministic_defaults():
 
 
 def test_build_export_push_config_aligns_push_values_with_export_values():
-    resolved = TurboModel._build_export_push_config(
-        {"format": "gguf", "quantization": "Q5_K_M"}
-    )
+    resolved = TurboModel._build_export_push_config({"format": "gguf", "quantization": "Q5_K_M"})
     assert resolved["format"] == "gguf"
     assert resolved["push_format"] == "gguf"
     assert resolved["quantization"] == "Q5_K_M"
@@ -75,12 +73,14 @@ def test_export_prefers_shared_quantization_over_smart_config_quant_type():
 
 
 def test_gguf_push_uses_shared_config_when_omitted(monkeypatch, tmp_path):
-    model = _stub_turbo({
-        "format": "gguf",
-        "push_format": "gguf",
-        "quantization": "Q4_K_M",
-        "push_quantization": "Q4_K_M",
-    })
+    model = _stub_turbo(
+        {
+            "format": "gguf",
+            "push_format": "gguf",
+            "quantization": "Q4_K_M",
+            "push_quantization": "Q4_K_M",
+        }
+    )
 
     calls = {}
 
@@ -108,9 +108,7 @@ def test_gguf_push_uses_shared_config_when_omitted(monkeypatch, tmp_path):
             calls["pushed"] = commit_message
 
         def save_final_model(self, *args, **kwargs):
-            raise AssertionError(
-                "save_final_model should not be called for GGUF push"
-            )
+            raise AssertionError("save_final_model should not be called for GGUF push")
 
     import quantllm.hub as hub_module
 
@@ -124,9 +122,7 @@ def test_gguf_push_uses_shared_config_when_omitted(monkeypatch, tmp_path):
 
 
 def test_onnx_push_does_not_force_quantization(monkeypatch, tmp_path):
-    model = _stub_turbo(
-        TurboModel._build_export_push_config({"push_format": "onnx"})
-    )
+    model = _stub_turbo(TurboModel._build_export_push_config({"push_format": "onnx"}))
 
     calls = {}
 
@@ -144,9 +140,7 @@ def test_onnx_push_does_not_force_quantization(monkeypatch, tmp_path):
             calls["pushed"] = commit_message
 
         def save_final_model(self, *args, **kwargs):
-            raise AssertionError(
-                "save_final_model should not be called for ONNX push"
-            )
+            raise AssertionError("save_final_model should not be called for ONNX push")
 
     def fake_export_onnx(output_path, quantization=None, **kwargs):
         calls["onnx_quantization"] = quantization

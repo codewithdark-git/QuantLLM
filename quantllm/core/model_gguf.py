@@ -47,10 +47,7 @@ class ModelGGUFMixin:
             if verbose:
                 print_info(f"Using gguf version: {gguf_version}")
         except ImportError:
-            raise ImportError(
-                "Loading GGUF models requires the 'gguf' package.\n"
-                "Please run: pip install gguf>=0.10.0"
-            )
+            raise ImportError("Loading GGUF models requires the 'gguf' package.\nPlease run: pip install gguf>=0.10.0")
 
         if filename is None:
             if verbose:
@@ -58,14 +55,10 @@ class ModelGGUFMixin:
             try:
                 available_files = cls.list_gguf_files(model_id)
                 if available_files:
-                    q4_files = [
-                        f for f in available_files if "q4_k_m" in f.lower()
-                    ]
+                    q4_files = [f for f in available_files if "q4_k_m" in f.lower()]
                     filename = q4_files[0] if q4_files else available_files[0]
                     if verbose:
-                        print_info(
-                            f"Found {len(available_files)} GGUF files, using: {filename}"
-                        )
+                        print_info(f"Found {len(available_files)} GGUF files, using: {filename}")
             except Exception as e:
                 if verbose:
                     print_warning(f"Could not list GGUF files: {e}")
@@ -99,23 +92,18 @@ class ModelGGUFMixin:
                 if "gguf" in str(e).lower() and "not found" in str(e).lower():
                     available = cls.list_gguf_files(model_id)
                     raise FileNotFoundError(
-                        f"GGUF file '{filename}' not found in {model_id}.\n"
-                        f"Available files: {available}"
+                        f"GGUF file '{filename}' not found in {model_id}.\nAvailable files: {available}"
                     ) from e
                 raise
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(
-                    model_id, gguf_file=filename
-                )
+                tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=filename)
             except Exception:
                 try:
                     tokenizer = AutoTokenizer.from_pretrained(model_id)
                 except Exception:
                     if verbose:
-                        print_warning(
-                            "Could not load tokenizer from GGUF repo, using default"
-                        )
+                        print_warning("Could not load tokenizer from GGUF repo, using default")
                     tokenizer = None
 
             if verbose:
@@ -166,6 +154,4 @@ class ModelGGUFMixin:
         except Exception as e:
             if os.path.isdir(model_id):
                 return [f for f in os.listdir(model_id) if f.endswith(".gguf")]
-            raise ValueError(
-                f"Could not list GGUF files from {model_id}: {e}"
-            )
+            raise ValueError(f"Could not list GGUF files from {model_id}: {e}")

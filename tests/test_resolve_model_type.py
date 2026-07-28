@@ -23,53 +23,71 @@ def _clean_registry(monkeypatch):
 def test_unknown_model_type_falls_back_to_family():
     """``qwen3`` is not registered in transformers <= 4.x but is a Qwen2
     derivative; resolution should return ``qwen2``."""
-    assert TurboModel.resolve_model_type(
-        "Qwen/Qwen3-8B",
-        config_model_type="qwen3",
-    ) == "qwen2"
+    assert (
+        TurboModel.resolve_model_type(
+            "Qwen/Qwen3-8B",
+            config_model_type="qwen3",
+        )
+        == "qwen2"
+    )
 
 
 def test_family_match_against_model_type_directly():
     """Resolving by ``model_type`` alone should still pick up the family
     even when the repo name does not contain the family marker."""
-    assert TurboModel.resolve_model_type(
-        "Qwen/private-fork",
-        config_model_type="qwen3",
-    ) == "qwen2"
+    assert (
+        TurboModel.resolve_model_type(
+            "Qwen/private-fork",
+            config_model_type="qwen3",
+        )
+        == "qwen2"
+    )
 
 
 def test_specific_family_wins_over_generic():
     """``phi3`` has its own entry and must NOT be flattened to ``phi``."""
-    assert TurboModel.resolve_model_type(
-        "microsoft/phi-4",
-        config_model_type="phi4",
-    ) == "phi3"
+    assert (
+        TurboModel.resolve_model_type(
+            "microsoft/phi-4",
+            config_model_type="phi4",
+        )
+        == "phi3"
+    )
 
 
 def test_user_registered_alias_takes_precedence():
     TurboModel.register_architecture("zoolm", base_model_type="mistral")
-    assert TurboModel.resolve_model_type(
-        "org/zoolm-13b",
-        config_model_type="zoolm",
-    ) == "mistral"
+    assert (
+        TurboModel.resolve_model_type(
+            "org/zoolm-13b",
+            config_model_type="zoolm",
+        )
+        == "mistral"
+    )
 
 
 def test_override_takes_precedence_over_everything():
     TurboModel.register_architecture("zoolm", base_model_type="mistral")
-    assert TurboModel.resolve_model_type(
-        "Qwen/Qwen3-8B",
-        config_model_type="qwen3",
-        model_type_override="llama",
-    ) == "llama"
+    assert (
+        TurboModel.resolve_model_type(
+            "Qwen/Qwen3-8B",
+            config_model_type="qwen3",
+            model_type_override="llama",
+        )
+        == "llama"
+    )
 
 
 def test_truly_unknown_model_type_is_returned_unchanged():
     """When nothing matches we surface the original ``model_type`` so the
     caller can decide how to react (registering, overriding, etc.)."""
-    assert TurboModel.resolve_model_type(
-        "org/exotic-1b",
-        config_model_type="something-totally-new",
-    ) == "something-totally-new"
+    assert (
+        TurboModel.resolve_model_type(
+            "org/exotic-1b",
+            config_model_type="something-totally-new",
+        )
+        == "something-totally-new"
+    )
 
 
 def test_no_config_returns_none_when_name_has_no_marker():

@@ -47,7 +47,7 @@ from .export import (
 __all__ = [
     # Main API
     "HardwareProfiler",
-    "SmartConfig", 
+    "SmartConfig",
     "ModelAnalyzer",
     "TurboModel",
     "turbo",

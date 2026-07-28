@@ -37,16 +37,19 @@ class ExportRouterMixin:
         available = ["safetensors"]
         try:
             import gguf
+
             available.append("gguf")
         except ImportError:
             pass
         try:
             import optimum.onnxruntime
+
             available.append("onnx")
         except ImportError:
             pass
         try:
             import mlx_lm
+
             available.append("mlx")
         except ImportError:
             pass
@@ -67,9 +70,7 @@ class ExportRouterMixin:
         format = (
             format
             if format is not None
-            else self.export_push_config.get(
-                "format", DEFAULT_EXPORT_PUSH_CONFIG["format"]
-            )
+            else self.export_push_config.get("format", DEFAULT_EXPORT_PUSH_CONFIG["format"])
         ).lower()
         effective_quantization = quantization
         if effective_quantization is None and format == "gguf":
@@ -104,14 +105,10 @@ class ExportRouterMixin:
             "mlx": self._export_mlx,
         }
         if format not in exporters:
-            raise ValueError(
-                f"Unknown format: {format}. Supported: {list(exporters.keys())}"
-            )
+            raise ValueError(f"Unknown format: {format}. Supported: {list(exporters.keys())}")
 
         print_header(f"Exporting to {format.upper()}")
-        result = exporters[format](
-            output_path, quantization=effective_quantization, **kwargs
-        )
+        result = exporters[format](output_path, quantization=effective_quantization, **kwargs)
         print_success(f"Exported to: {result}")
 
         return result
@@ -140,16 +137,19 @@ class ExportRouterMixin:
 
         start_time = time.time()
 
-        effective_shard_size = max_shard_size or (
-            DEFAULT_CHUNKED_SHARD_SIZE if chunked_conversion else None
-        )
+        effective_shard_size = max_shard_size or (DEFAULT_CHUNKED_SHARD_SIZE if chunked_conversion else None)
 
         quant_type = quantization or self.config.quant_type or "q4_k_m"
         quant_type_upper = quant_type.upper()
         quant_type_lower = quant_type.lower()
 
         passthrough_types = {
-            "f16", "f32", "bf16", "float16", "float32", "bfloat16",
+            "f16",
+            "f32",
+            "bf16",
+            "float16",
+            "float32",
+            "bfloat16",
         }
         needs_quantization = quant_type_lower not in passthrough_types
 
@@ -158,19 +158,12 @@ class ExportRouterMixin:
             if fast_mode:
                 print_info("Fast mode enabled")
             if chunked_conversion:
-                print_info(
-                    f"Chunked conversion enabled (max_shard_size={effective_shard_size})"
-                )
+                print_info(f"Chunked conversion enabled (max_shard_size={effective_shard_size})")
             if smart_tensor_ordering:
                 print_info("Smart tensor ordering enabled")
-                print_warning(
-                    "Smart tensor ordering may temporarily materialize a "
-                    "full state dict in memory."
-                )
+                print_warning("Smart tensor ordering may temporarily materialize a full state dict in memory.")
             if disk_offloading:
-                print_info(
-                    f"Disk offloading enabled ({disk_offload_dir or 'system temp'})"
-                )
+                print_info(f"Disk offloading enabled ({disk_offload_dir or 'system temp'})")
 
         if self.verbose:
             print_info("Checking llama.cpp installation...")
@@ -181,13 +174,8 @@ class ExportRouterMixin:
 
         if is_bnb_quantized:
             if self.verbose:
-                print_warning(
-                    "Model is BitsAndBytes quantized. Dequantizing for GGUF export..."
-                )
-                print_info(
-                    "This may use significant memory. For large models, "
-                    "consider loading with quantize=False."
-                )
+                print_warning("Model is BitsAndBytes quantized. Dequantizing for GGUF export...")
+                print_info("This may use significant memory. For large models, consider loading with quantize=False.")
             model_to_save = self._dequantize_model()
             if self.verbose:
                 print_success("Model dequantized successfully!")
@@ -211,17 +199,13 @@ class ExportRouterMixin:
                     save_kwargs["max_shard_size"] = effective_shard_size
 
                 if smart_tensor_ordering:
-                    save_kwargs["state_dict"] = memory_optimized_tensor_order(
-                        model_to_save.state_dict()
-                    )
+                    save_kwargs["state_dict"] = memory_optimized_tensor_order(model_to_save.state_dict())
 
                 try:
                     model_to_save.save_pretrained(temp_dir, **save_kwargs)
                 except Exception as e:
                     if self.verbose:
-                        print_warning(
-                            f"SafeTensors save failed ({e}), using PyTorch format..."
-                        )
+                        print_warning(f"SafeTensors save failed ({e}), using PyTorch format...")
                     save_kwargs["safe_serialization"] = False
                     model_to_save.save_pretrained(temp_dir, **save_kwargs)
 
@@ -235,9 +219,7 @@ class ExportRouterMixin:
                 print_header("Step 2/3: Converting to GGUF", icon="[convert]")
 
             if needs_quantization:
-                f16_gguf_file = os.path.join(
-                    temp_dir, f"{model_name}.F16.gguf"
-                )
+                f16_gguf_file = os.path.join(temp_dir, f"{model_name}.F16.gguf")
             else:
                 f16_gguf_file = f"{model_name}.{quant_type_upper}.gguf"
 
@@ -245,16 +227,12 @@ class ExportRouterMixin:
                 model_name=model_name,
                 input_folder=temp_dir,
                 model_dtype=model_dtype,
-                quantization_type=(
-                    "f16" if needs_quantization else quant_type_lower
-                ),
+                quantization_type=("f16" if needs_quantization else quant_type_lower),
                 print_output=self.verbose,
             )
 
             if not output_files:
-                raise RuntimeError(
-                    "GGUF conversion failed to produce output file."
-                )
+                raise RuntimeError("GGUF conversion failed to produce output file.")
 
             f16_file = output_files[0]
 
@@ -270,9 +248,7 @@ class ExportRouterMixin:
                         f"Step 3/3: Quantizing to {quant_type_upper}",
                         icon="[quant]",
                     )
-                    print_info(
-                        f"Applying {quant_type_upper} quantization..."
-                    )
+                    print_info(f"Applying {quant_type_upper} quantization...")
 
                 quantized_file = f"{model_name}.{quant_type_upper}.gguf"
 
@@ -285,10 +261,7 @@ class ExportRouterMixin:
 
                 final_file = quantized_file
 
-                if (
-                    os.path.exists(f16_gguf_file)
-                    and f16_gguf_file != quantized_file
-                ):
+                if os.path.exists(f16_gguf_file) and f16_gguf_file != quantized_file:
                     os.remove(f16_gguf_file)
 
                 if self.verbose:
@@ -296,9 +269,7 @@ class ExportRouterMixin:
             else:
                 final_file = f16_gguf_file
                 if self.verbose:
-                    print_info(
-                        "No quantization needed (already in target format)"
-                    )
+                    print_info("No quantization needed (already in target format)")
 
             if os.path.abspath(final_file) != os.path.abspath(output_path):
                 if self.verbose:
@@ -354,10 +325,7 @@ class ExportRouterMixin:
                 "Or: pip install quantllm[onnx]"
             )
             print_error(error_msg)
-            raise ImportError(
-                "ONNX export requires: pip install onnx onnxruntime "
-                "optimum[onnxruntime] onnxscript"
-            )
+            raise ImportError("ONNX export requires: pip install onnx onnxruntime optimum[onnxruntime] onnxscript")
 
         os.makedirs(output_path, exist_ok=True)
         model_name = self.model.config._name_or_path
@@ -371,10 +339,7 @@ class ExportRouterMixin:
             try:
                 if self._is_bnb_quantized():
                     if self.verbose:
-                        print_info(
-                            "BNB quantized model detected. Exporting from "
-                            "original HuggingFace model..."
-                        )
+                        print_info("BNB quantized model detected. Exporting from original HuggingFace model...")
                     ort_model = ORTModelForCausalLM.from_pretrained(
                         model_name,
                         export=True,
@@ -385,9 +350,7 @@ class ExportRouterMixin:
                     os.makedirs(temp_path, exist_ok=True)
 
                     try:
-                        self.model.save_pretrained(
-                            temp_path, safe_serialization=True
-                        )
+                        self.model.save_pretrained(temp_path, safe_serialization=True)
                         self.tokenizer.save_pretrained(temp_path)
                         ort_model = ORTModelForCausalLM.from_pretrained(
                             temp_path,
@@ -404,9 +367,7 @@ class ExportRouterMixin:
                 progress.update(task, completed=100)
                 error_str = str(e)
                 if "onnxscript" in error_str.lower():
-                    raise ImportError(
-                        "ONNX export requires onnxscript: pip install onnxscript"
-                    ) from e
+                    raise ImportError("ONNX export requires onnxscript: pip install onnxscript") from e
                 raise
 
             progress.update(task, completed=100)
@@ -432,58 +393,46 @@ class ExportRouterMixin:
 
             bit_request = None
             for bit_pattern in [
-                "2bit", "3bit", "4bit", "5bit", "6bit",
-                "q2", "q3", "q4", "q5", "q6",
+                "2bit",
+                "3bit",
+                "4bit",
+                "5bit",
+                "6bit",
+                "q2",
+                "q3",
+                "q4",
+                "q5",
+                "q6",
             ]:
                 if bit_pattern in quant_lower:
                     bit_request = bit_pattern
                     break
 
             if bit_request:
-                print_warning(
-                    f"ONNX only supports INT8 (8-bit) quantization, "
-                    f"not {quant_type}."
-                )
-                print_info(
-                    "For lower bit quantization, use GGUF format instead."
-                )
+                print_warning(f"ONNX only supports INT8 (8-bit) quantization, not {quant_type}.")
+                print_info("For lower bit quantization, use GGUF format instead.")
                 print_info("Proceeding with INT8 quantization...")
 
             if "avx512" in quant_lower or "vnni" in quant_lower:
-                qconfig = AutoQuantizationConfig.avx512_vnni(
-                    is_static=False, per_channel=True
-                )
+                qconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=True)
             elif "arm64" in quant_lower or "arm" in quant_lower:
-                qconfig = AutoQuantizationConfig.arm64(
-                    is_static=False, per_channel=True
-                )
+                qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=True)
             elif "static" in quant_lower:
-                qconfig = AutoQuantizationConfig.avx2(
-                    is_static=True, per_channel=True
-                )
+                qconfig = AutoQuantizationConfig.avx2(is_static=True, per_channel=True)
             else:
-                qconfig = AutoQuantizationConfig.avx2(
-                    is_static=False, per_channel=True
-                )
+                qconfig = AutoQuantizationConfig.avx2(is_static=False, per_channel=True)
 
-            quantizer.quantize(
-                save_dir=model_path, quantization_config=qconfig
-            )
+            quantizer.quantize(save_dir=model_path, quantization_config=qconfig)
 
             if self.verbose:
                 print_success("ONNX INT8 quantization applied successfully")
 
         except ImportError:
-            print_warning(
-                "Optimum quantization not available. "
-                "Skipping ONNX quantization."
-            )
+            print_warning("Optimum quantization not available. Skipping ONNX quantization.")
             print_info("Install with: pip install optimum[onnxruntime]")
         except Exception as e:
             print_warning(f"ONNX quantization failed: {e}")
-            print_info(
-                "The unquantized ONNX model is still available."
-            )
+            print_info("The unquantized ONNX model is still available.")
 
     def _export_mlx(
         self,
@@ -495,13 +444,8 @@ class ExportRouterMixin:
         import platform
 
         if platform.system() != "Darwin" or platform.machine() != "arm64":
-            print_warning(
-                "MLX export is optimized for Apple Silicon Macs."
-            )
-            print_info(
-                "The model will be saved but may not run efficiently on "
-                "this system."
-            )
+            print_warning("MLX export is optimized for Apple Silicon Macs.")
+            print_info("The model will be saved but may not run efficiently on this system.")
 
         try:
             import mlx
@@ -521,9 +465,7 @@ class ExportRouterMixin:
                     print_info("Using mlx-lm for conversion...")
 
                 with QuantLLMProgress() as progress:
-                    task = progress.add_task(
-                        "Converting to MLX...", total=None
-                    )
+                    task = progress.add_task("Converting to MLX...", total=None)
 
                     if self._is_bnb_quantized():
                         source_path = model_name
@@ -539,34 +481,16 @@ class ExportRouterMixin:
                     }
 
                     if quantization:
-                        quant_lower = (
-                            quantization.lower()
-                            .replace("_", "")
-                            .replace("-", "")
-                        )
+                        quant_lower = quantization.lower().replace("_", "").replace("-", "")
 
                         if any(x in quant_lower for x in ["2", "3"]):
-                            print_warning(
-                                f"MLX only supports 4-bit and 8-bit, "
-                                f"not {quantization}."
-                            )
-                            print_info(
-                                "Using 4-bit quantization "
-                                "(smallest available)."
-                            )
+                            print_warning(f"MLX only supports 4-bit and 8-bit, not {quantization}.")
+                            print_info("Using 4-bit quantization (smallest available).")
                             convert_args["quantize"] = True
                             convert_args["q_bits"] = 4
-                        elif any(
-                            x in quant_lower for x in ["5", "6", "7"]
-                        ):
-                            print_warning(
-                                f"MLX only supports 4-bit and 8-bit, "
-                                f"not {quantization}."
-                            )
-                            print_info(
-                                "Using 8-bit quantization "
-                                "(closest available)."
-                            )
+                        elif any(x in quant_lower for x in ["5", "6", "7"]):
+                            print_warning(f"MLX only supports 4-bit and 8-bit, not {quantization}.")
+                            print_info("Using 8-bit quantization (closest available).")
                             convert_args["quantize"] = True
                             convert_args["q_bits"] = 8
                         elif "4" in quant_lower:
@@ -591,13 +515,8 @@ class ExportRouterMixin:
                 raise
         else:
             if self.verbose:
-                print_warning(
-                    "mlx-lm not installed. Saving as HuggingFace format."
-                )
-                print_info(
-                    "To convert to MLX: pip install mlx-lm && "
-                    "python -m mlx_lm.convert ..."
-                )
+                print_warning("mlx-lm not installed. Saving as HuggingFace format.")
+                print_info("To convert to MLX: pip install mlx-lm && python -m mlx_lm.convert ...")
 
             self.model.save_pretrained(output_path)
             self.tokenizer.save_pretrained(output_path)
@@ -605,18 +524,11 @@ class ExportRouterMixin:
             readme_path = os.path.join(output_path, "CONVERT_TO_MLX.md")
             with open(readme_path, "w") as f:
                 f.write("# Convert to MLX\n\n")
-                f.write(
-                    "This model was saved in HuggingFace format.\n"
-                )
-                f.write(
-                    "To convert to MLX format on Apple Silicon:\n\n"
-                )
+                f.write("This model was saved in HuggingFace format.\n")
+                f.write("To convert to MLX format on Apple Silicon:\n\n")
                 f.write("```bash\n")
                 f.write("pip install mlx-lm\n")
-                f.write(
-                    f"python -m mlx_lm.convert --hf-path {output_path} "
-                    f"--mlx-path ./mlx_model\n"
-                )
+                f.write(f"python -m mlx_lm.convert --hf-path {output_path} --mlx-path ./mlx_model\n")
                 f.write("```\n")
 
         if self.verbose:

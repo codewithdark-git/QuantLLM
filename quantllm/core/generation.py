@@ -178,10 +178,7 @@ class GenerationMixin:
         """
         prompt = None
 
-        if (
-            hasattr(self.tokenizer, "chat_template")
-            and self.tokenizer.chat_template is not None
-        ):
+        if hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template is not None:
             try:
                 prompt = self.tokenizer.apply_chat_template(
                     messages,
@@ -208,9 +205,7 @@ class GenerationMixin:
         return self.generate(prompt, **kwargs)
 
     @staticmethod
-    def _enable_flash_attention(
-        model: PreTrainedModel, verbose: bool = True
-    ) -> None:
+    def _enable_flash_attention(model: PreTrainedModel, verbose: bool = True) -> None:
         """Enable Flash Attention if available."""
         try:
             if hasattr(model, "config"):
@@ -224,9 +219,7 @@ class GenerationMixin:
                     except ImportError:
                         model.config._attn_implementation = "sdpa"
                         if verbose:
-                            logger.info(
-                                "  SDPA (Scaled Dot-Product Attention) configured"
-                            )
+                            logger.info("  SDPA (Scaled Dot-Product Attention) configured")
         except Exception:
             if verbose:
                 logger.warning("  Flash Attention / SDPA not available")

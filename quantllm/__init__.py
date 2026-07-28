@@ -11,19 +11,19 @@ Features:
 
 Example:
     >>> from quantllm import turbo
-    >>> 
+    >>>
     >>> # Load any model (auto-quantizes to 4-bit)
     >>> model = turbo(
     ...     "meta-llama/Llama-3.2-3B",
     ...     config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
     ... )
-    >>> 
+    >>>
     >>> # Generate text
     >>> model.generate("Hello, world!")
-    >>> 
+    >>>
     >>> # Export to GGUF with Q4_K_M quantization
     >>> model.export()
-    >>> 
+    >>>
     >>> # Push to HuggingFace Hub
     >>> model.push("username/my-model")
 """
@@ -89,13 +89,13 @@ def _should_show_banner() -> bool:
     env_banner = os.environ.get("QUANTLLM_BANNER", "").lower()
     if env_banner == "0" or env_banner == "false":
         return False
-    
+
     # Don't show in non-interactive environments
     if not sys.stdout.isatty():
         # Unless explicitly enabled
         if env_banner not in ("1", "true"):
             return False
-    
+
     return True
 
 
@@ -107,7 +107,7 @@ if _should_show_banner():
 def show_banner(force: bool = False):
     """
     Display the QuantLLM banner.
-    
+
     Args:
         force: If True, show banner even if already displayed
     """
@@ -122,7 +122,6 @@ __all__ = [
     "SmartConfig",
     "HardwareProfiler",
     "ModelAnalyzer",
-    
     # GGUF Export & Quantization
     "convert_to_gguf",
     "quantize_gguf",
@@ -132,12 +131,10 @@ __all__ = [
     "ensure_llama_cpp_installed",
     "GGUF_QUANT_TYPES",
     "QUANT_RECOMMENDATIONS",
-    
     # Hub
     "QuantLLMHubManager",
     "ModelCardGenerator",
     "generate_model_card",
-    
     # Utils
     "configure_logging",
     "enable_logging",

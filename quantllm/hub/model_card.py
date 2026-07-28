@@ -12,14 +12,14 @@ from datetime import datetime
 class ModelCardGenerator:
     """
     Generate HuggingFace-compatible model cards for different export formats.
-    
+
     Supports:
         - GGUF (llama.cpp, Ollama, LM Studio)
         - ONNX (ONNX Runtime, TensorRT)
         - MLX (Apple Silicon)
         - SafeTensors (Transformers)
     """
-    
+
     # Format-specific library names for HuggingFace
     LIBRARY_NAMES = {
         "gguf": "gguf",
@@ -28,7 +28,7 @@ class ModelCardGenerator:
         "safetensors": "transformers",
         "pytorch": "transformers",
     }
-    
+
     # Format-specific tags
     FORMAT_TAGS = {
         "gguf": ["gguf", "llama-cpp", "quantized", "transformers"],
@@ -37,7 +37,7 @@ class ModelCardGenerator:
         "safetensors": ["transformers", "safetensors"],
         "pytorch": ["transformers", "pytorch"],
     }
-    
+
     def __init__(
         self,
         repo_id: str,
@@ -47,11 +47,11 @@ class ModelCardGenerator:
         license: str = "apache-2.0",
         language: List[str] = None,
         tags: List[str] = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize model card generator.
-        
+
         Args:
             repo_id: HuggingFace repo ID (e.g., "user/model-name")
             base_model: Original base model name
@@ -69,7 +69,7 @@ class ModelCardGenerator:
         self.language = language or ["en"]
         self.extra_tags = tags or []
         self.extra_params = kwargs
-        
+
     def generate(self) -> str:
         """Generate the complete model card content."""
         sections = [
@@ -81,20 +81,20 @@ class ModelCardGenerator:
             self._generate_quantization_section(),
             self._generate_footer(),
         ]
-        
+
         return "\n".join(sections)
-    
+
     def _generate_yaml_header(self) -> str:
         """Generate YAML frontmatter for HuggingFace."""
         library_name = self.LIBRARY_NAMES.get(self.format, "transformers")
-        
+
         # Collect all tags
         tags = ["quantllm"]
         tags.extend(self.FORMAT_TAGS.get(self.format, []))
         if self.quantization:
             tags.append(f"{self.quantization.lower()}")
         tags.extend(self.extra_tags)
-        
+
         # Remove duplicates while preserving order
         seen = set()
         unique_tags = []
@@ -102,38 +102,38 @@ class ModelCardGenerator:
             if tag not in seen:
                 seen.add(tag)
                 unique_tags.append(tag)
-        
+
         yaml_lines = [
             "---",
             f"license: {self.license}",
             f"base_model: {self.base_model}",
             f"library_name: {library_name}",
         ]
-        
+
         # Add language
         if self.language:
             yaml_lines.append("language:")
             for lang in self.language:
                 yaml_lines.append(f"  - {lang}")
-        
+
         # Add tags
         yaml_lines.append("tags:")
         for tag in unique_tags:
             yaml_lines.append(f"  - {tag}")
-        
+
         # Add pipeline tag for transformers
         if self.format in ["safetensors", "pytorch"]:
             yaml_lines.append("pipeline_tag: text-generation")
-        
+
         yaml_lines.append("---")
-        
+
         return "\n".join(yaml_lines)
-    
+
     def _generate_header_banner(self) -> str:
         """Generate prominent header with QuantLLM branding."""
-        model_name = self.repo_id.split('/')[-1]
+        model_name = self.repo_id.split("/")[-1]
         format_upper = self.format.upper()
-        
+
         # Format-specific emoji
         format_emoji = {
             "gguf": "🦙",
@@ -142,8 +142,8 @@ class ModelCardGenerator:
             "safetensors": "🤗",
         }
         emoji = format_emoji.get(self.format, "📦")
-        
-        return f'''
+
+        return f"""
 <div align="center">
 
 # {emoji} {model_name}
@@ -152,15 +152,15 @@ class ModelCardGenerator:
 
 [![QuantLLM](https://img.shields.io/badge/🚀_Made_with-QuantLLM-orange?style=for-the-badge)](https://github.com/codewithdark-git/QuantLLM)
 [![Format](https://img.shields.io/badge/Format-{format_upper}-blue?style=for-the-badge)]()
-{f'[![Quantization](https://img.shields.io/badge/Quant-{self.quantization}-green?style=for-the-badge)]()' if self.quantization else ''}
+{f"[![Quantization](https://img.shields.io/badge/Quant-{self.quantization}-green?style=for-the-badge)]()" if self.quantization else ""}
 
 <a href="https://github.com/codewithdark-git/QuantLLM">⭐ Star QuantLLM on GitHub</a>
 
 </div>
 
 ---
-'''
-    
+"""
+
     def _generate_description(self) -> str:
         """Generate description section."""
         format_desc = {
@@ -169,11 +169,11 @@ class ModelCardGenerator:
             "mlx": "**MLX** format optimized for Apple Silicon (M1/M2/M3/M4) Macs with native acceleration",
             "safetensors": "**SafeTensors** format for use with HuggingFace Transformers and PyTorch",
         }
-        
-        return f'''
+
+        return f"""
 ## 📖 About This Model
 
-This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** converted to {format_desc.get(self.format, self.format.upper() + ' format')}.
+This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** converted to {format_desc.get(self.format, self.format.upper() + " format")}.
 
 | Property | Value |
 |----------|-------|
@@ -182,8 +182,8 @@ This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** 
 | **Quantization** | {self.quantization or "None (Full Precision)"} |
 | **License** | {self.license} |
 | **Created With** | [QuantLLM](https://github.com/codewithdark-git/QuantLLM) |
-'''
-    
+"""
+
     def _generate_usage_section(self) -> str:
         """Generate format-specific usage examples."""
         if self.format == "gguf":
@@ -194,13 +194,13 @@ This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** 
             return self._generate_mlx_usage()
         else:
             return self._generate_transformers_usage()
-    
+
     def _generate_gguf_usage(self) -> str:
         """Generate GGUF usage examples."""
-        model_name = self.repo_id.split('/')[-1]
+        model_name = self.repo_id.split("/")[-1]
         quant = self.quantization or "Q4_K_M"
         filename = f"{model_name}.{quant}.gguf"
-        
+
         return f'''
 ## 🚀 Quick Start
 
@@ -257,7 +257,7 @@ huggingface-cli download {self.repo_id} {filename} --local-dir .
 ./llama-cli -m {filename} -p "Hello! " -n 128
 ```
 '''
-    
+
     def _generate_onnx_usage(self) -> str:
         """Generate ONNX usage examples."""
         return f'''
@@ -301,7 +301,7 @@ outputs = session.run(None, dict(inputs))
 pip install optimum[onnxruntime] transformers
 ```
 '''
-    
+
     def _generate_mlx_usage(self) -> str:
         """Generate MLX usage examples for Apple Silicon."""
         return f'''
@@ -374,7 +374,7 @@ python -m mlx_lm.chat --model {self.repo_id}
 pip install mlx-lm
 ```
 '''
-    
+
     def _generate_transformers_usage(self) -> str:
         """Generate Transformers usage examples."""
         return f'''
@@ -414,10 +414,10 @@ print(response)
 pip install transformers torch
 ```
 '''
-    
+
     def _generate_details_section(self) -> str:
         """Generate model details section."""
-        return f'''
+        return f"""
 ## 📊 Model Details
 
 | Property | Value |
@@ -428,13 +428,13 @@ pip install transformers torch
 | **License** | `{self.license}` |
 | **Export Date** | {datetime.now().strftime("%Y-%m-%d")} |
 | **Exported By** | [QuantLLM v2.1](https://github.com/codewithdark-git/QuantLLM) |
-'''
-    
+"""
+
     def _generate_quantization_section(self) -> str:
         """Generate quantization details for GGUF."""
         if self.format != "gguf" or not self.quantization:
             return ""
-        
+
         quant_info = {
             "Q2_K": ("2-bit", "Smallest file size, experimental quality", "🔴"),
             "Q3_K_S": ("3-bit", "Very small, reduced quality", "🟠"),
@@ -448,11 +448,11 @@ pip install transformers torch
             "Q8_0": ("8-bit", "Near-original quality, largest size", "🔵"),
             "F16": ("16-bit", "Full precision, reference quality", "⚪"),
         }
-        
+
         quant = self.quantization.upper()
         info = quant_info.get(quant, ("N/A", "Custom quantization", "⚪"))
-        
-        return f'''
+
+        return f"""
 ## 📦 Quantization Details
 
 This model uses **{quant}** quantization:
@@ -473,8 +473,8 @@ This model uses **{quant}** quantization:
 | Q5_K_M | 5-bit | 🟢 High | Quality-focused |
 | Q6_K | 6-bit | 🔵 Very High | Near-original |
 | Q8_0 | 8-bit | 🔵 Excellent | Maximum quality |
-'''
-    
+"""
+
     def _generate_footer(self) -> str:
         """Generate footer section with QuantLLM promotion."""
         return f'''
@@ -495,7 +495,7 @@ from quantllm import turbo
 model = turbo("{self.base_model}")
 
 # Export to any format
-model.export("{self.format}", quantization="{self.quantization or 'Q4_K_M'}")
+model.export("{self.format}", quantization="{self.quantization or "Q4_K_M"}")
 
 # Push to HuggingFace
 model.push("your-repo", format="{self.format}")
@@ -514,30 +514,22 @@ model.push("your-repo", format="{self.format}")
 
 
 def generate_model_card(
-    repo_id: str,
-    base_model: str,
-    format: str,
-    quantization: Optional[str] = None,
-    **kwargs
+    repo_id: str, base_model: str, format: str, quantization: Optional[str] = None, **kwargs
 ) -> str:
     """
     Convenience function to generate a model card.
-    
+
     Args:
         repo_id: HuggingFace repo ID
         base_model: Original base model
         format: Export format (gguf, onnx, mlx, safetensors)
         quantization: Quantization type
         **kwargs: Additional parameters
-        
+
     Returns:
         Model card content as string
     """
     generator = ModelCardGenerator(
-        repo_id=repo_id,
-        base_model=base_model,
-        format=format,
-        quantization=quantization,
-        **kwargs
+        repo_id=repo_id, base_model=base_model, format=format, quantization=quantization, **kwargs
     )
     return generator.generate()

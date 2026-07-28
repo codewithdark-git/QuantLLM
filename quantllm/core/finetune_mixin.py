@@ -72,9 +72,7 @@ class FinetuneMixin:
                 DataCollatorForLanguageModeling,
             )
         except ImportError:
-            raise ImportError(
-                "peft is required for fine-tuning. Install with: pip install peft"
-            )
+            raise ImportError("peft is required for fine-tuning. Install with: pip install peft")
 
         if self._is_quantized:
             self.model = prepare_model_for_kbit_training(self.model)
@@ -100,23 +98,16 @@ class FinetuneMixin:
             self.model = get_peft_model(self.model, lora_config)
             self._lora_applied = True
 
-        trainable = sum(
-            p.numel() for p in self.model.parameters() if p.requires_grad
-        )
+        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.model.parameters())
-        print_info(
-            f"LoRA applied: {trainable:,} trainable params "
-            f"({100 * trainable / total:.2f}%)"
-        )
+        print_info(f"LoRA applied: {trainable:,} trainable params ({100 * trainable / total:.2f}%)")
 
         train_dataset = self._prepare_dataset(data)
 
         epochs = epochs or 3
         batch_size = batch_size or self.config.batch_size
         learning_rate = learning_rate or 2e-4
-        output_dir = output_dir or (
-            f"./output/{self.model.config._name_or_path.split('/')[-1]}"
-        )
+        output_dir = output_dir or (f"./output/{self.model.config._name_or_path.split('/')[-1]}")
 
         if hub_manager:
             hub_manager.track_hyperparameters(
@@ -145,11 +136,7 @@ class FinetuneMixin:
                 warmup_ratio=0.03,
                 lr_scheduler_type="cosine",
                 gradient_checkpointing=self.config.gradient_checkpointing,
-                optim=(
-                    "paged_adamw_32bit"
-                    if self.config.bits <= 4
-                    else "adamw_torch"
-                ),
+                optim=("paged_adamw_32bit" if self.config.bits <= 4 else "adamw_torch"),
                 torch_compile=self.config.compile_model,
                 **kwargs,
             )
@@ -159,9 +146,7 @@ class FinetuneMixin:
                 args=training_args,
                 train_dataset=train_dataset,
                 processing_class=self.tokenizer,
-                data_collator=DataCollatorForLanguageModeling(
-                    self.tokenizer, mlm=False
-                ),
+                data_collator=DataCollatorForLanguageModeling(self.tokenizer, mlm=False),
             )
 
             result = trainer.train()
@@ -181,10 +166,7 @@ class FinetuneMixin:
         except Exception as e:
             print_error(f"Training failed: {e}")
             if "out of memory" in str(e).lower():
-                print_info(
-                    "Tip: Try reducing batch_size or enabling "
-                    "gradient_checkpointing in config."
-                )
+                print_info("Tip: Try reducing batch_size or enabling gradient_checkpointing in config.")
             raise
 
     def _get_lora_target_modules(self) -> List[str]:
@@ -193,29 +175,47 @@ class FinetuneMixin:
 
         target_patterns = {
             "llama": [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
             ],
             "mistral": [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
             ],
             "qwen2": [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
             ],
             "phi": ["q_proj", "k_proj", "v_proj", "dense", "fc1", "fc2"],
             "gemma": [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
             ],
         }
 
         return target_patterns.get(model_type, ["q_proj", "v_proj"])
 
-    def _prepare_dataset(
-        self, data: Union[str, List[Dict], Any]
-    ) -> Any:
+    def _prepare_dataset(self, data: Union[str, List[Dict], Any]) -> Any:
         """Prepare dataset for training."""
         from datasets import Dataset, load_dataset
 
@@ -235,20 +235,11 @@ class FinetuneMixin:
             elif "instruction" in examples and "output" in examples:
                 texts = [
                     f"### Instruction:\n{inst}\n\n### Response:\n{out}"
-                    for inst, out in zip(
-                        examples["instruction"], examples["output"]
-                    )
+                    for inst, out in zip(examples["instruction"], examples["output"])
                 ]
             else:
-                keys = [
-                    k
-                    for k in examples.keys()
-                    if isinstance(examples[k][0], str)
-                ]
-                texts = [
-                    " ".join([examples[k][i] for k in keys])
-                    for i in range(len(examples[keys[0]]))
-                ]
+                keys = [k for k in examples.keys() if isinstance(examples[k][0], str)]
+                texts = [" ".join([examples[k][i] for k in keys]) for i in range(len(examples[keys[0]]))]
 
             return self.tokenizer(
                 texts,
