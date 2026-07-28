@@ -30,7 +30,7 @@ class QuantLLMHubManager:
         self.api = HfApi(token=hf_token)
 
         # State
-        self.hyperparameters = {}
+        self.hyperparameters: dict[str, Any] = {}
         self.staging_dir = f"./hub_staging/{repo_id.split('/')[-1]}"
         self._ensure_staging_dir()
 

@@ -5,7 +5,7 @@ Provides the :class:`GenerationMixin` used by :class:`TurboModel` for
 """
 
 import sys
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 from transformers import PreTrainedModel
@@ -19,6 +19,11 @@ from ..utils import (
 
 class GenerationMixin:
     """Generation methods mixed into :class:`TurboModel`."""
+
+    # -- declared by concrete class / other mixins (for mypy) --
+    model: Any
+    tokenizer: Any
+    config: Any
 
     def generate(
         self,

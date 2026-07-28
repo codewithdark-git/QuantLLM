@@ -127,7 +127,7 @@ def install_llama_cpp(
     # Check if already installed and working
     if not force_reinstall:
         try:
-            return check_llama_cpp()
+            return check_llama_cpp()  # type: ignore[return-value]
         except FileNotFoundError:
             pass  # Continue with installation
 
@@ -210,7 +210,7 @@ def install_llama_cpp(
         print_success("llama.cpp installed successfully!")
         print_info(f"Quantizer: {quantizer_path}")
         print_info(f"Converter: {converter_path}")
-        return quantizer_path, converter_path
+        return quantizer_path, converter_path  # type: ignore[return-value]
     except FileNotFoundError as e:
         raise RuntimeError(f"llama.cpp compiled but executables not found: {e}")
 
@@ -376,7 +376,7 @@ def quantize_gguf(
     # Run quantization with progress tracking
     try:
         process = subprocess.Popen(
-            cmd,
+            cmd,  # type: ignore[arg-type]
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
@@ -395,7 +395,7 @@ def quantize_gguf(
             with QuantLLMProgress() as progress:
                 task = progress.add_task(f"Quantizing to {quant_type}...", total=100)
 
-                for line in process.stdout:
+                for line in process.stdout:  # type: ignore[union-attr]
                     output_lines.append(line)
 
                     # Try to parse progress
@@ -404,18 +404,18 @@ def quantize_gguf(
                         current, total = int(match.group(1)), int(match.group(2))
                         pct = (current / total) * 100
                         progress.update(task, completed=pct)
-                        last_progress = pct
+                        last_progress = pct  # type: ignore[assignment]
                     else:
                         # Try percentage pattern
                         match = percent_pattern.search(line)
                         if match:
                             pct = float(match.group(1))
                             progress.update(task, completed=pct)
-                            last_progress = pct
+                            last_progress = pct  # type: ignore[assignment]
 
                 progress.update(task, completed=100)
         else:
-            for line in process.stdout:
+            for line in process.stdout:  # type: ignore[union-attr]
                 output_lines.append(line)
 
         process.wait()
@@ -482,7 +482,7 @@ def convert_to_gguf(
     if converter_location is None:
         _, converter_location = check_llama_cpp()
 
-    if not os.path.exists(converter_location):
+    if not os.path.exists(converter_location):  # type: ignore[arg-type]
         raise FileNotFoundError(f"Converter not found: {converter_location}")
 
     # Validate input folder contains required files
@@ -555,7 +555,7 @@ def convert_to_gguf(
     # Run conversion with proper error capture and progress tracking
     try:
         process = subprocess.Popen(
-            cmd,
+            cmd,  # type: ignore[arg-type]
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             universal_newlines=True,
@@ -575,7 +575,7 @@ def convert_to_gguf(
                 task = progress.add_task("Converting to GGUF...", total=100)
                 total_tensors = None
 
-                for line in iter(process.stdout.readline, ""):
+                for line in iter(process.stdout.readline, ""):  # type: ignore[union-attr]
                     if not line:
                         break
                     line = line.strip()
@@ -601,7 +601,7 @@ def convert_to_gguf(
                 progress.update(task, completed=100, description="Conversion complete!")
 
                 # Read any remaining stderr
-                stderr_output = process.stderr.read()
+                stderr_output = process.stderr.read()  # type: ignore[union-attr]
                 if stderr_output:
                     stderr_lines = stderr_output.strip().split("\n")
         else:
@@ -725,7 +725,7 @@ def ensure_llama_cpp_installed(force_reinstall: bool = False) -> Tuple[str, str]
     """
     try:
         if not force_reinstall:
-            return check_llama_cpp()
+            return check_llama_cpp()  # type: ignore[return-value]
     except FileNotFoundError:
         pass
 

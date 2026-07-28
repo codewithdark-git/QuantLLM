@@ -354,11 +354,11 @@ class GradientCheckpointManager:
         if hasattr(model, "gradient_checkpointing_enable"):
             # HuggingFace models
             try:
-                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": use_reentrant})
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": use_reentrant})  # type: ignore[operator]
                 return True
             except TypeError:
                 # Older versions don't support kwargs
-                model.gradient_checkpointing_enable()
+                model.gradient_checkpointing_enable()  # type: ignore[operator]
                 return True
 
         # Manual implementation for other models
@@ -410,7 +410,7 @@ class GradientCheckpointManager:
             "layers": num_layers,
             "activation_reduction_ratio": savings_ratio,
             "estimated_savings_percent": savings_ratio * 100,
-            "trade_off": "~20-30% slower training for significant memory savings",
+            "trade_off": "~20-30% slower training for significant memory savings",  # type: ignore[dict-item]
         }
 
 
@@ -501,10 +501,10 @@ def setup_memory_efficient_training(
     # Enable gradient checkpointing
     if gradient_checkpointing:
         success = GradientCheckpointManager.enable_for_model(model)
-        result["gradient_checkpointing_enabled"] = success
+        result["gradient_checkpointing_enabled"] = success  # type: ignore[assignment]
         if success:
             savings = GradientCheckpointManager.estimate_memory_savings(model)
-            result["estimated_memory_savings"] = savings
+            result["estimated_memory_savings"] = savings  # type: ignore[assignment]
 
     # Setup optimizer
     params = [p for p in model.parameters() if p.requires_grad]
@@ -515,11 +515,11 @@ def setup_memory_efficient_training(
             optimizer_class=torch.optim.AdamW,
             lr=learning_rate,
         )
-        result["optimizer_type"] = "cpu_offload"
+        result["optimizer_type"] = "cpu_offload"  # type: ignore[assignment]
     else:
-        optimizer = torch.optim.AdamW(params, lr=learning_rate)
-        result["optimizer_type"] = "standard"
+        optimizer = torch.optim.AdamW(params, lr=learning_rate)  # type: ignore[assignment]
+        result["optimizer_type"] = "standard"  # type: ignore[assignment]
 
-    result["optimizer"] = optimizer
+    result["optimizer"] = optimizer  # type: ignore[assignment]
 
     return result

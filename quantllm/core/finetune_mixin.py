@@ -22,6 +22,14 @@ from ..utils import (
 class FinetuneMixin:
     """Fine-tuning methods mixed into :class:`TurboModel`."""
 
+    # -- declared by concrete class (for mypy) --
+    model: Any
+    tokenizer: Any
+    config: Any
+    _is_quantized: bool
+    _is_finetuned: bool
+    _lora_applied: bool
+
     def finetune(
         self,
         data: Union[str, List[Dict[str, str]], Any],

@@ -45,6 +45,17 @@ DEFAULT_EXPORT_PUSH_CONFIG: Dict[str, Any] = {
 class ModelLoaderMixin:
     """Model-loading methods mixed into :class:`TurboModel`."""
 
+    _enable_flash_attention: Any
+    _architecture_registry: Any
+    _model_class_registry: Any
+    resolve_model_type: Any
+    verbose: bool
+    _has_runtime_quantization: Any
+    _is_quantized_override: Any
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
     @classmethod
     def from_pretrained(
         cls,
@@ -210,7 +221,7 @@ class ModelLoaderMixin:
 
         if smart_config.compile_model:
             try:
-                model = torch.compile(model, mode="reduce-overhead")
+                model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
                 if verbose:
                     logger.info("  torch.compile enabled")
             except Exception as e:

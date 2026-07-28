@@ -71,7 +71,7 @@ def compile_model(
         import torch._dynamo as dynamo
 
         dynamo.config.suppress_errors = True
-        dynamo.config.automatic_dynamic_shapes = dynamic
+        dynamo.config.automatic_dynamic_shapes = dynamic  # type: ignore[attr-defined]
 
         # Compile the model
         compiled = torch.compile(
@@ -82,7 +82,7 @@ def compile_model(
             backend=backend,
         )
 
-        return compiled
+        return compiled  # type: ignore[return-value]
 
     except Exception as e:
         print(f"Warning: torch.compile failed: {e}")

@@ -8,7 +8,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from .model_loader import DEFAULT_EXPORT_PUSH_CONFIG
 from ..utils import (
@@ -26,6 +26,16 @@ from ..utils import (
 
 class ExportRouterMixin:
     """Export methods mixed into :class:`TurboModel`."""
+
+    # -- declared by concrete class / other mixins (for mypy) --
+    model: Any
+    tokenizer: Any
+    config: Any
+    verbose: bool
+    export_push_config: Any
+    _lora_applied: bool
+    _is_bnb_quantized: Any  # method on TurboModel
+    _dequantize_model: Any
 
     @staticmethod
     def list_available_formats() -> list:
@@ -87,7 +97,7 @@ class ExportRouterMixin:
         if output_path is None:
             model_name = self.model.config._name_or_path.split("/")[-1]
             if format == "gguf":
-                quant = effective_quantization
+                quant = effective_quantization or "Q4_K_M"
                 output_path = f"{model_name}.{quant.upper()}.gguf"
             elif format == "safetensors":
                 output_path = f"./{model_name}-quantllm/"
@@ -194,7 +204,7 @@ class ExportRouterMixin:
 
             with QuantLLMProgress() as progress:
                 task = progress.add_task("Saving model weights...", total=None)
-                save_kwargs = {"safe_serialization": True}
+                save_kwargs: dict[str, Any] = {"safe_serialization": True}
                 if effective_shard_size:
                     save_kwargs["max_shard_size"] = effective_shard_size
 

@@ -151,7 +151,7 @@ class AutoBatchSizeFinder:
                 0,
                 self.tokenizer.vocab_size,
                 (batch_size, self.max_seq_length),
-                device=self.model.device if hasattr(self.model, "device") else "cuda",
+                device=self.model.device if hasattr(self.model, "device") else "cuda",  # type: ignore[arg-type]
             )
 
             if training:

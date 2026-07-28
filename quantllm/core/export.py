@@ -107,7 +107,7 @@ class UniversalExporter:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             # Save model to temp
-            self.model.save_pretrained(temp_dir, safe_serialization=True)
+            self.model.save_pretrained(temp_dir, safe_serialization=True)  # type: ignore[operator]
             if self.tokenizer:
                 self.tokenizer.save_pretrained(temp_dir)
 
@@ -143,7 +143,7 @@ class UniversalExporter:
         os.makedirs(output_path, exist_ok=True)
 
         # Save model
-        self.model.save_pretrained(output_path, safe_serialization=True)
+        self.model.save_pretrained(output_path, safe_serialization=True)  # type: ignore[operator]
 
         # Save tokenizer if available
         if self.tokenizer:
@@ -184,7 +184,7 @@ class UniversalExporter:
             )
             dummy_input = {k: v.to(self.model.device) for k, v in dummy_input.items()}
         else:
-            dummy_input = {"input_ids": torch.zeros(1, 32, dtype=torch.long, device=self.model.device)}
+            dummy_input = {"input_ids": torch.zeros(1, 32, dtype=torch.long, device=self.model.device)}  # type: ignore[call-overload]
 
         # Export to ONNX
         self.model.eval()
@@ -258,7 +258,7 @@ class UniversalExporter:
 
         # First save as HF format
         temp_hf_path = os.path.join(output_path, "_temp_hf")
-        self.model.save_pretrained(temp_hf_path)
+        self.model.save_pretrained(temp_hf_path)  # type: ignore[operator]
         if self.tokenizer:
             self.tokenizer.save_pretrained(temp_hf_path)
 
@@ -272,11 +272,11 @@ class UniversalExporter:
         }
         if quantization:
             if quantization in ("4bit", "4"):
-                convert_kwargs["quantize"] = True
-                convert_kwargs["q_bits"] = 4
+                convert_kwargs["quantize"] = True  # type: ignore[assignment]
+                convert_kwargs["q_bits"] = 4  # type: ignore[assignment]
             elif quantization in ("8bit", "8"):
-                convert_kwargs["quantize"] = True
-                convert_kwargs["q_bits"] = 8
+                convert_kwargs["quantize"] = True  # type: ignore[assignment]
+                convert_kwargs["q_bits"] = 8  # type: ignore[assignment]
 
         convert(**convert_kwargs)
 
@@ -346,7 +346,7 @@ class UniversalExporter:
         torch.save(
             {
                 "model_state_dict": self.model.state_dict(),
-                "config": self.model.config.to_dict() if hasattr(self.model, "config") else {},
+                "config": self.model.config.to_dict() if hasattr(self.model, "config") else {},  # type: ignore[operator, union-attr]
             },
             output_path,
         )

@@ -5,7 +5,7 @@ the ``from_gguf`` entry point.
 """
 
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -22,6 +22,11 @@ from ..utils import (
 
 class ModelGGUFMixin:
     """GGUF-loading methods mixed into :class:`TurboModel`."""
+
+    _is_quantized_override: Any
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
 
     @classmethod
     def from_gguf(

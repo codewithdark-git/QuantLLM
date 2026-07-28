@@ -467,20 +467,20 @@ class TritonQuantizedLinear(nn.Module):
         if self._use_triton and x.is_cuda:
             return fused_dequant_matmul(
                 x,
-                self.qweight,
-                self.scales,
-                self.zeros,
-                self.bias,
+                self.qweight,  # type: ignore[arg-type]
+                self.scales,  # type: ignore[arg-type]
+                self.zeros,  # type: ignore[arg-type]
+                self.bias,  # type: ignore[arg-type]
                 self.group_size,
             )
         else:
             # CPU fallback or non-CUDA
             return _pytorch_dequant_matmul(
                 x,
-                self.qweight,
-                self.scales,
-                self.zeros,
-                self.bias,
+                self.qweight,  # type: ignore[arg-type]
+                self.scales,  # type: ignore[arg-type]
+                self.zeros,  # type: ignore[arg-type]
+                self.bias,  # type: ignore[arg-type]
                 self.group_size,
             )
 
@@ -527,12 +527,12 @@ class TritonQuantizedLinear(nn.Module):
             zeros[g] = 0  # Symmetric quantization
 
         # Store quantized values
-        self.qweight.copy_(qweight)
-        self.scales.copy_(scales)
-        self.zeros.copy_(zeros)
+        self.qweight.copy_(qweight)  # type: ignore[operator]
+        self.scales.copy_(scales)  # type: ignore[operator]
+        self.zeros.copy_(zeros)  # type: ignore[operator]
 
         if linear.bias is not None and self.bias is not None:
-            self.bias.copy_(linear.bias.data)
+            self.bias.copy_(linear.bias.data)  # type: ignore[operator]
 
         # Clear any cache
         self._weight_cache = None

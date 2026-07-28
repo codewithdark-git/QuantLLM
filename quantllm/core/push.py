@@ -5,7 +5,7 @@ the ``push_to_hub`` method.
 """
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from .model_loader import DEFAULT_EXPORT_PUSH_CONFIG
 from ..utils import (
@@ -17,6 +17,13 @@ from ..utils import (
 
 class PushToHubMixin:
     """Hub-push methods mixed into :class:`TurboModel`."""
+
+    # -- declared by concrete class / other mixins (for mypy) --
+    model: Any
+    export_push_config: Any
+    export: Any
+    _export_onnx: Any
+    _export_mlx: Any
 
     def push_to_hub(
         self,

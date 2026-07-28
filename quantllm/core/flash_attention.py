@@ -58,10 +58,10 @@ def check_flash_attention_requirements() -> dict:
 
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
-        result["compute_capability"] = (props.major, props.minor)
+        result["compute_capability"] = (props.major, props.minor)  # type: ignore[assignment]
 
         # Flash Attention 2 requires Ampere (SM80) or newer
-        if result["compute_capability"] >= (8, 0):
+        if result["compute_capability"] >= (8, 0):  # type: ignore[operator]
             result["meets_requirements"] = _FLASH_ATTN_AVAILABLE
 
     return result
@@ -196,7 +196,7 @@ else:
         """Fallback attention when Flash Attention is not available."""
         return _pytorch_attention(q, k, v, softmax_scale, causal, dropout_p)
 
-    def flash_attention_with_kv_cache(*args, **kwargs):
+    def flash_attention_with_kv_cache(*args, **kwargs):  # type: ignore[misc]
         raise NotImplementedError("Flash Attention not available. Install with: pip install flash-attn")
 
 
