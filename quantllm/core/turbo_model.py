@@ -11,7 +11,13 @@ from typing import Any, Dict, List, Optional, Type, Union
 
 import torch
 import torch.nn as nn
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
 
 from .architecture import ArchitectureMixin
 from .export_router import ExportRouterMixin
@@ -190,8 +196,6 @@ class TurboModel(
     def _dequantize_model(self) -> nn.Module:
         """Dequantize a BitsAndBytes model to full precision for GGUF export."""
         import gc
-
-        from transformers import AutoModelForCausalLM
 
         model_name = getattr(self.model.config, "_name_or_path", None)
 

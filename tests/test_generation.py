@@ -25,21 +25,32 @@ def _smart_config():
 
 
 def _tokenizer():
-    tok = SimpleNamespace(
-        pad_token="<pad>",
-        pad_token_id=0,
-        eos_token="</s>",
-        eos_token_id=2,
-        chat_template=None,
-        decode=lambda ids, **kw: "test response",
-    )
-    tok.__call__ = Mock(
-        return_value={
-            "input_ids": torch.tensor([[1, 2, 3]]),
-            "attention_mask": torch.tensor([[1, 1, 1]]),
-        }
-    )
-    return tok
+    """Returns a mock tokenizer compatible with and GenerationMixin.generate()."""
+
+    class MockTokenizer:
+        def __init__(self):
+            self.eos_token_id = 2
+            self.bos_token_id = 1
+            self.pad_token_id = 0
+
+        def __call__(self, model_inputs=None, return_tensors="pt", **kwargs):
+            inputs = model_inputs or kwargs.get("text", "")
+            if isinstance(inputs, str):
+                inputs = [inputs]
+            input_ids = torch.tensor([[1, 2, 3] for _ in inputs], dtype=torch.long)
+            attention_mask = torch.ones_like(input_ids)
+            return {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            }
+
+        def decode(self, token_ids, skip_special_tokens=False):
+            return " ".join(["word"] * len(token_ids))
+
+        def apply_chat_template(self, messages, add_generation_prompt=False):
+            return "Hello, how can I help?"
+
+    return MockTokenizer()
 
 
 def _fake_model():
@@ -53,14 +64,15 @@ def _fake_model():
         device=torch.device("cpu"),
     )
 
+    class FakeOutput(list):
+        pass
+
     def fake_generate(**kwargs):
         batch_size = kwargs["input_ids"].shape[0]
         seq_len = kwargs["input_ids"].shape[1]
         extra = min(kwargs.get("max_new_tokens", 10), 10)
-        return SimpleNamespace(
-            shape=(batch_size, seq_len + extra),
-            __getitem__=lambda self, idx: torch.ones(seq_len + extra, dtype=torch.long),
-        )
+        full_len = seq_len + extra
+        return FakeOutput([torch.ones(full_len, dtype=torch.long)])
 
     model.generate = Mock(side_effect=fake_generate)
     model.num_parameters = Mock(return_value=7_000_000_000)
@@ -202,19 +214,16 @@ def test_generate_handles_stop_strings(monkeypatch):
 
     instance = TurboModel.__new__(TurboModel)
     instance.model = _fake_model()
-    tok = SimpleNamespace(
-        pad_token="<pad>",
-        pad_token_id=0,
-        eos_token="</s>",
-        eos_token_id=2,
-        chat_template=None,
-    )
-    tok.__call__ = Mock(
-        return_value={
-            "input_ids": torch.tensor([[1, 2, 3]]),
-            "attention_mask": torch.tensor([[1, 1, 1]]),
-        }
-    )
+    tok = Mock()
+    tok.pad_token = "<pad>"
+    tok.pad_token_id = 0
+    tok.eos_token = "</s>"
+    tok.eos_token_id = 2
+    tok.chat_template = None
+    tok.return_value = {
+        "input_ids": torch.tensor([[1, 2, 3]]),
+        "attention_mask": torch.tensor([[1, 1, 1]]),
+    }
     tok.decode = Mock(return_value="Some output before END rest ignored")
     instance.tokenizer = tok
     instance.config = _smart_config()

@@ -5,6 +5,7 @@ import transformers
 
 from quantllm.core.turbo_model import TurboModel
 import quantllm.core.turbo_model as turbo_model_module
+import quantllm.core.model_loader as model_loader_module
 
 
 class _DummySmartConfig(SimpleNamespace):
@@ -107,12 +108,12 @@ def test_from_pretrained_supports_from_config_only(monkeypatch):
     monkeypatch.setattr(TurboModel, "_architecture_registry", {})
     monkeypatch.setattr(TurboModel, "_model_class_registry", {})
     monkeypatch.setattr(
-        turbo_model_module.SmartConfig,
+        model_loader_module.SmartConfig,
         "detect",
         lambda *args, **kwargs: _make_smart_config(),
     )
     monkeypatch.setattr(
-        turbo_model_module.AutoTokenizer,
+        model_loader_module.AutoTokenizer,
         "from_pretrained",
         lambda *args, **kwargs: _make_tokenizer(),
     )
@@ -140,7 +141,7 @@ def test_from_pretrained_supports_from_config_only(monkeypatch):
             return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
 
     monkeypatch.setattr(
-        turbo_model_module,
+        model_loader_module,
         "AutoModelForCausalLM",
         _FakeAutoModel,
     )
@@ -161,12 +162,12 @@ def test_trust_remote_code_warns_for_unregistered_architecture(monkeypatch, capl
     monkeypatch.setattr(TurboModel, "_architecture_registry", {})
     monkeypatch.setattr(TurboModel, "_model_class_registry", {})
     monkeypatch.setattr(
-        turbo_model_module.SmartConfig,
+        model_loader_module.SmartConfig,
         "detect",
         lambda *args, **kwargs: _make_smart_config(),
     )
     monkeypatch.setattr(
-        turbo_model_module.AutoTokenizer,
+        model_loader_module.AutoTokenizer,
         "from_pretrained",
         lambda *args, **kwargs: _make_tokenizer(),
     )
@@ -187,7 +188,7 @@ def test_trust_remote_code_warns_for_unregistered_architecture(monkeypatch, capl
             raise ValueError("Unrecognized configuration class")
 
     monkeypatch.setattr(
-        turbo_model_module,
+        model_loader_module,
         "AutoModelForCausalLM",
         _FakeAutoModel,
     )
@@ -211,12 +212,12 @@ def test_quantization_kwargs_are_preserved_during_fallback(monkeypatch):
     smart_config = _make_smart_config()
     smart_config.bits = 4
     monkeypatch.setattr(
-        turbo_model_module.SmartConfig,
+        model_loader_module.SmartConfig,
         "detect",
         lambda *args, **kwargs: smart_config,
     )
     monkeypatch.setattr(
-        turbo_model_module.AutoTokenizer,
+        model_loader_module.AutoTokenizer,
         "from_pretrained",
         lambda *args, **kwargs: _make_tokenizer(),
     )
@@ -245,7 +246,7 @@ def test_quantization_kwargs_are_preserved_during_fallback(monkeypatch):
             return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
 
     monkeypatch.setattr(
-        turbo_model_module,
+        model_loader_module,
         "AutoModelForCausalLM",
         _FakeAutoModel,
     )

@@ -18,6 +18,7 @@ import transformers
 
 from quantllm.core.turbo_model import TurboModel
 import quantllm.core.turbo_model as turbo_model_module
+import quantllm.core.model_loader as model_loader_module
 
 
 def _smart_config(bits: int = 16):
@@ -41,12 +42,12 @@ def _patch_common(monkeypatch, *, model_type: str = "llama", quant_config=None, 
     monkeypatch.setattr(TurboModel, "_architecture_registry", {})
     monkeypatch.setattr(TurboModel, "_model_class_registry", {})
     monkeypatch.setattr(
-        turbo_model_module.SmartConfig,
+        model_loader_module.SmartConfig,
         "detect",
         lambda *a, **kw: _smart_config(bits=smart_bits),
     )
     monkeypatch.setattr(
-        turbo_model_module.AutoTokenizer,
+        model_loader_module.AutoTokenizer,
         "from_pretrained",
         lambda *a, **kw: _tokenizer(),
     )
@@ -76,7 +77,7 @@ def test_from_config_only_does_not_lie_about_quantization(monkeypatch):
             # ``quantization_config`` attribute on its config.
             return SimpleNamespace(config=SimpleNamespace(model_type="llama"))
 
-    monkeypatch.setattr(turbo_model_module, "AutoModelForCausalLM", _FakeAutoModel)
+    monkeypatch.setattr(model_loader_module, "AutoModelForCausalLM", _FakeAutoModel)
 
     loaded = TurboModel.from_pretrained(
         "org/llama-like-7b",
@@ -117,7 +118,7 @@ def test_runtime_quantization_property_reads_model_config(monkeypatch):
         def from_pretrained(cls, *a, **kw):
             return fake_model
 
-    monkeypatch.setattr(turbo_model_module, "AutoModelForCausalLM", _FakeAutoModel)
+    monkeypatch.setattr(model_loader_module, "AutoModelForCausalLM", _FakeAutoModel)
 
     loaded = TurboModel.from_pretrained(
         "org/llama-gptq",
@@ -169,7 +170,7 @@ def test_report_returns_structured_state(monkeypatch):
         def from_pretrained(cls, *a, **kw):
             return fake_model
 
-    monkeypatch.setattr(turbo_model_module, "AutoModelForCausalLM", _FakeAutoModel)
+    monkeypatch.setattr(model_loader_module, "AutoModelForCausalLM", _FakeAutoModel)
 
     loaded = TurboModel.from_pretrained("org/llama-7b", quantize=False, verbose=False)
     report = loaded.report()
