@@ -469,7 +469,7 @@ class TurboModel:
         device: Optional[str] = None,
         dtype: Optional[str] = None,
         # Advanced options
-        trust_remote_code: bool = True,
+        trust_remote_code: bool = False,
         quantize: bool = True,
         model_type_override: Optional[str] = None,
         base_model_fallback: bool = True,
@@ -2547,5 +2547,6 @@ def turbo(
         dtype=dtype,
         base_model_fallback=base_model_fallback,
         config=config,
+        trust_remote_code=True,
         **kwargs,
     )

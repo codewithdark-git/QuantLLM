@@ -1,4 +1,8 @@
 # QuantLLM v2.1 (pre-release) Requirements
+#
+# NOTE: This file mirrors setup.py install_requires for development convenience.
+# Extras (gguf, onnx, mlx, triton, flash, hub, full, dev) are only installed
+# when requested via ``pip install -e '.[extra]'``.
 
 # Core dependencies
 torch>=2.0.0
@@ -20,20 +24,5 @@ psutil>=5.9.0
 huggingface-hub>=0.19.0
 rich>=13.0.0
 
-# Optional - Training
-wandb>=0.15.0
-tensorboard>=2.14.0
-evaluate>=0.4.0
-
 # GGUF export & loading
 gguf>=0.10.0
-
-# ONNX export (optional - for onnx format)
-# pip install optimum[onnxruntime] onnxscript
-onnx>=1.14.0
-onnxruntime>=1.16.0
-optimum>=1.14.0
-onnxscript>=0.1.0
-
-# MLX export (optional - Apple Silicon only)
-# pip install mlx mlx-lm  (macOS ARM64 only)
