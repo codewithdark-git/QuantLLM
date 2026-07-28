@@ -27,6 +27,31 @@ from ..utils import (
 class ExportRouterMixin:
     """Export methods mixed into :class:`TurboModel`."""
 
+    @staticmethod
+    def list_available_formats() -> list:
+        """Return formats that can be exported with the current environment.
+
+        Checks for availability of optional dependencies (optimum, mlx-lm)
+        without importing them eagerly.
+        """
+        available = ["safetensors"]
+        try:
+            import gguf
+            available.append("gguf")
+        except ImportError:
+            pass
+        try:
+            import optimum.onnxruntime
+            available.append("onnx")
+        except ImportError:
+            pass
+        try:
+            import mlx_lm
+            available.append("mlx")
+        except ImportError:
+            pass
+        return available
+
     def export(
         self,
         format: Optional[str] = None,
