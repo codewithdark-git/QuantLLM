@@ -2,19 +2,103 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# NOTE: Project metadata, dependencies and extras are still declared in
-# ``setup.py`` for now to keep a single source of truth and avoid duplicating
-# the install-requires list. ``setup.py`` defines:
-#
-# * ``install_requires`` (mandatory deps)
-# * ``extras_require`` (``gguf``, ``onnx``, ``mlx``, ``triton``, ``flash``,
-#   ``hub``, ``full``, ``dev``)
-# * ``entry_points`` (the ``quantllm`` CLI)
-#
-# Adding a ``[project]`` table here would silently override those values in
-# editable installs, which has tripped up several contributors. Once the
-# ``setup.py`` migration to PEP 621 is complete, this file will own the full
-# project metadata.
+[project]
+name = "quantllm"
+version = "2.1.0rc1"
+description = "Ultra-fast LLM quantization, fine-tuning, and deployment with one line of code"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Dark Coder", email = "codewithdark90@gmail.com"},
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = [
+    "llm", "quantization", "gguf", "transformers", "pytorch",
+    "fine-tuning", "lora", "inference", "llama", "mistral",
+    "machine-learning", "deep-learning", "nlp",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.36.0",
+    "datasets>=2.14.0",
+    "accelerate>=0.24.0",
+    "peft>=0.6.0",
+    "bitsandbytes>=0.41.0",
+    "scipy>=1.10.0",
+    "scikit-learn>=1.3.0",
+    "tqdm>=4.65.0",
+    "numpy>=1.24.0",
+    "sentencepiece>=0.1.99",
+    "protobuf>=3.20.0",
+    "einops>=0.7.0",
+    "psutil>=5.9.0",
+    "huggingface-hub>=0.19.0",
+    "rich>=13.0.0",
+    "gguf>=0.10.0",
+]
+
+[project.optional-dependencies]
+gguf = ["gguf>=0.10.0"]
+onnx = [
+    "onnx>=1.14.0",
+    "onnxruntime>=1.16.0",
+    "optimum[onnxruntime]>=1.14.0",
+    "onnxscript>=0.1.0",
+]
+mlx = ["mlx>=0.1.0", "mlx-lm>=0.1.0"]
+triton = ["triton>=2.1.0"]
+flash = ["flash-attn>=2.3.0"]
+hub = ["hf-lifecycle @ git+https://github.com/codewithdark-git/huggingface-lifecycle.git"]
+full = [
+    "gguf>=0.10.0",
+    "onnx>=1.14.0",
+    "onnxruntime>=1.16.0",
+    "optimum[onnxruntime]>=1.14.0",
+    "onnxscript>=0.1.0",
+    "triton>=2.1.0",
+    "wandb>=0.15.0",
+    "tensorboard>=2.14.0",
+    "evaluate>=0.4.0",
+    "flash-attn>=2.3.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.1.0",
+    "mypy>=1.8.0",
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.3.0",
+    "sphinx-copybutton>=0.5.2",
+    "myst-parser>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/codewithdark-git/QuantLLM"
+Documentation = "https://quantllm.readthedocs.io/"
+"Bug Tracker" = "https://github.com/codewithdark-git/QuantLLM/issues"
+Sponsor = "https://github.com/sponsors/codewithdark-git"
+
+[project.scripts]
+quantllm = "quantllm.cli:main"
+
+[tool.setuptools.packages.find]
+exclude = ["tests", "tests.*", "docs", "examples"]
 
 [tool.ruff]
 line-length = 120
@@ -52,10 +136,16 @@ ignore = [
     "E741",   # ambiguous variable names
 ]
 
-[tool.ruff.lint.per-file-ignores]
+[tool.myft.lint.per-file-ignores]
 "tests/*" = ["F401", "F811", "F841"]
 "quantllm/__init__.py" = ["F401", "E402"]
 "quantllm/core/__init__.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
