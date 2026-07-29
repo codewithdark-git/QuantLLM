@@ -4,7 +4,7 @@ All notable changes to QuantLLM are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — production hardening on top of v2.1.0rc1
+## [2.1.0] — 2026-07-29
 
 ### Fixed
 
@@ -93,3 +93,6 @@ Initial public release of the `turbo()` API and the GGUF / ONNX / MLX
 export pipeline. See the GitHub
 [releases page](https://github.com/codewithdark-git/QuantLLM/releases/tag/v2.0.0)
 for the full notes.
+
+[2.1.0]: https://github.com/codewithdark-git/QuantLLM/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/codewithdark-git/QuantLLM/releases/tag/v2.0.0

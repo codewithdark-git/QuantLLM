@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/images/1.png" alt="QuantLLM Logo" />
   
-  # 🚀 QuantLLM v2.1 (pre-release)
+  # 🚀 QuantLLM v2.1
   
   **The Ultra-Fast LLM Quantization & Export Library**
 
@@ -139,7 +139,7 @@ Llama 2/3, Mistral, Mixtral, Qwen 1/2, Phi 1/2/3, Gemma, Falcon, DeepSeek, Yi, S
 
 ```
 ╔════════════════════════════════════════════════════════════╗
-║   🚀 QuantLLM v2.1.0rc1                                    ║
+║   🚀 QuantLLM v2.1.0                                        ║
 ║   Ultra-fast LLM Quantization & Export                     ║
 ║   ✓ GGUF  ✓ ONNX  ✓ MLX  ✓ SafeTensors                     ║
 ╚════════════════════════════════════════════════════════════╝

@@ -192,7 +192,7 @@ quantllm.show_banner()
 ```
 ╔════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║   🚀 QuantLLM v2.1.0rc1                                       ║
+║   🚀 QuantLLM v2.1.0                                           ║
 ║   Ultra-fast LLM Quantization & Export                     ║
 ║                                                            ║
 ║   ✓ GGUF  ✓ ONNX  ✓ MLX  ✓ SafeTensors                     ║

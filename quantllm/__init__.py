@@ -77,7 +77,7 @@ from .utils import (
 # Configure logging (minimal by default)
 configure_logging("WARNING")
 
-__version__ = "2.1.0rc1"
+__version__ = "2.1.0"
 __title__ = "QuantLLM"
 __description__ = "Ultra-fast LLM Quantization & Export (GGUF, ONNX, MLX)"
 __author__ = "Dark Coder"
