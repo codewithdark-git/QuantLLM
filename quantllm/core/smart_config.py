@@ -290,68 +290,39 @@ class SmartConfig:
         }
 
     def print_summary(self) -> None:
-        """Print a formatted summary of the configuration using Rich."""
-        from rich.console import Console
-        from rich.table import Table
-        from rich.panel import Panel
-        from rich import box
+        """Print a plain-text summary of the configuration."""
+        from quantllm.utils import format_size, print_header, print_info, print_warning
 
-        console = Console()
+        print("")
+        print("  QuantLLM Configuration")
+        print("  " + "-" * 40)
 
-        # Main table
-        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-        table.add_column("Category", style="bold orange1")
-        table.add_column("Details", style="white")
-
-        # Quantization
-        bits_info = f"[bold]Bits:[/bold] {self.bits}"
+        bits_info = f"Bits: {self.bits}"
         if self.bits != self.effective_loading_bits and self.bits < 16:
             bits_info += f" (loads as {self.effective_loading_bits}-bit)"
-        table.add_row(
-            "📦 Quantization",
-            f"{bits_info}  [bold]Type:[/bold] {self.quant_type}  [bold]Group:[/bold] {self.group_size}",
-        )
+        print(f"    Quantization:  {bits_info}  Type: {self.quant_type}  Group: {self.group_size}")
 
-        # Memory
         mem_status = []
-        mem_status.append(
-            f"Offload: [{'red' if self.cpu_offload else 'green'}]{'Yes' if self.cpu_offload else 'No'}[/]"
-        )
-        mem_status.append(
-            f"Checkpoint: [{'green' if self.gradient_checkpointing else 'yellow'}]{'Yes' if self.gradient_checkpointing else 'No'}[/]"
-        )
-        table.add_row("💾 Memory", "  ".join(mem_status))
+        mem_status.append(f"Offload: {'Yes' if self.cpu_offload else 'No'}")
+        mem_status.append(f"Checkpoint: {'Yes' if self.gradient_checkpointing else 'No'}")
+        print(f"    Memory:        {'  '.join(mem_status)}")
 
-        # Speed
         speed_status = []
-        speed_status.append(
-            f"FlashAttn: [{'green' if self.use_flash_attention else 'yellow'}]{'Yes' if self.use_flash_attention else 'No'}[/]"
-        )
-        speed_status.append(
-            f"Fused: [{'green' if self.use_fused_kernels else 'yellow'}]{'Yes' if self.use_fused_kernels else 'No'}[/]"
-        )
-        speed_status.append(
-            f"Compile: [{'green' if self.compile_model else 'dim'}]{'Yes' if self.compile_model else 'No'}[/]"
-        )
-        table.add_row("⚡ Speed", "  ".join(speed_status))
+        speed_status.append(f"FlashAttn: {'Yes' if self.use_flash_attention else 'No'}")
+        speed_status.append(f"Fused: {'Yes' if self.use_fused_kernels else 'No'}")
+        speed_status.append(f"Compile: {'Yes' if self.compile_model else 'No'}")
+        print(f"    Speed:         {'  '.join(speed_status)}")
 
-        # Training
         train_stats = f"Batch: {self.batch_size}  Accum: {self.gradient_accumulation_steps}  Eff: {self.batch_size * self.gradient_accumulation_steps}"
-        table.add_row("🎯 Training", train_stats)
+        print(f"    Training:      {train_stats}")
 
-        # Hardware
         hw_info = f"{str(self.device).upper()} ({str(self.dtype).split('.')[-1]})  Seq: {self.max_seq_length}"
-        table.add_row("🖥️  Hardware", hw_info)
+        print(f"    Hardware:      {hw_info}")
 
-        # Stats
         params = self.stats.get("params", 0) / 1e9
         fp16_size = self.stats.get("fp16_size", 0)
         quant_size = self.stats.get("quant_size", 0)
         savings = (1 - quant_size / fp16_size) * 100 if fp16_size > 0 else 0
-
-        table.add_row(
-            "📊 Model Stats",
-            f"Params: {params:.2f}B  Size: {fp16_size:.2f}GB ➔ {quant_size:.2f}GB  (Saved: {savings:.0f}%)",
-        )
-
-        console.print(Panel(table, title="[bold white]QuantLLM Configuration[/]", border_style="orange1", expand=False))
+        size_str = f"Params: {params:.2f}B  Size: {fp16_size:.2f}GB -> {quant_size:.2f}GB  (Saved: {savings:.0f}%)"
+        print(f"    Model Stats:   {size_str}")
+        print("")

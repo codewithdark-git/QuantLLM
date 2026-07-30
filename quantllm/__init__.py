@@ -1,13 +1,17 @@
 """
-QuantLLM v2.1 - Ultra-fast LLM Quantization & GGUF Export
+QuantLLM v2.2 - Ultra-fast LLM Quantization, Fine-tuning & Deployment
 
-The simplest way to load, quantize, fine-tune, and export LLMs.
+The simplest way to load, quantize, fine-tune, serve, and deploy LLMs.
 
 Features:
     - Load any HuggingFace model with automatic quantization
-    - Export to GGUF, ONNX, MLX formats with proper quantization
+    - Native HQQ quantization (2-8 bit, no calibration data needed)
+    - Export to GGUF, ONNX, MLX formats
     - Fine-tune with LoRA
+    - OpenAI-compatible inference server
     - Push to HuggingFace Hub with auto-generated model cards
+    - Benchmark suite & hardware auto-benchmark
+    - Dynamic model registry (QuantLLM HF org)
 
 Example:
     >>> from quantllm import turbo
@@ -41,7 +45,7 @@ from .core import (
     ModelAnalyzer,
 )
 
-# ====== GGUF Export & Quantization ======
+# ====== Quantization (GGUF + HQQ) ======
 from .quant import (
     convert_to_gguf,
     quantize_gguf,
@@ -51,6 +55,10 @@ from .quant import (
     ensure_llama_cpp_installed,
     GGUF_QUANT_TYPES,
     QUANT_RECOMMENDATIONS,
+    HQQLinear,
+    HQQQuantizer,
+    HQQConfig,
+    HQQ_QUANT_TYPES,
 )
 
 # ====== Hub Integration ======
@@ -77,9 +85,9 @@ from .utils import (
 # Configure logging (minimal by default)
 configure_logging("WARNING")
 
-__version__ = "2.1.0"
+__version__ = "2.2.0.dev"
 __title__ = "QuantLLM"
-__description__ = "Ultra-fast LLM Quantization & Export (GGUF, ONNX, MLX)"
+__description__ = "Ultra-fast LLM Quantization, Fine-tuning, Serving & Deployment"
 __author__ = "Dark Coder"
 
 
@@ -122,7 +130,7 @@ __all__ = [
     "SmartConfig",
     "HardwareProfiler",
     "ModelAnalyzer",
-    # GGUF Export & Quantization
+    # Quantization (GGUF)
     "convert_to_gguf",
     "quantize_gguf",
     "export_to_gguf",
@@ -131,6 +139,11 @@ __all__ = [
     "ensure_llama_cpp_installed",
     "GGUF_QUANT_TYPES",
     "QUANT_RECOMMENDATIONS",
+    # Quantization (HQQ)
+    "HQQLinear",
+    "HQQQuantizer",
+    "HQQConfig",
+    "HQQ_QUANT_TYPES",
     # Hub
     "QuantLLMHubManager",
     "ModelCardGenerator",

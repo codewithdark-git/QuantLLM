@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quantllm"
-version = "2.1.0"
+version = "2.2.0.dev"
 description = "Ultra-fast LLM quantization, fine-tuning, and deployment with one line of code"
 readme = "README.md"
 license = {text = "MIT"}
@@ -75,6 +75,8 @@ full = [
     "evaluate>=0.4.0",
     "flash-attn>=2.3.0",
 ]
+server = ["fastapi>=0.100.0", "uvicorn>=0.23.0", "pydantic>=2.0.0"]
+bench = ["pandas>=1.5.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
