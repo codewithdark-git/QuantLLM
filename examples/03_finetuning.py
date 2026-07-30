@@ -1,38 +1,46 @@
 """
-QuantLLM v2.1 - Fine-tuning Example
+QuantLLM v2.2 -- Fine-tuning with LoRA
 
-Fine-tune a quantized model using LoRA.
+Fine-tune a model on a small custom dataset, test the result,
+then export to GGUF.
 """
 
 from quantllm import turbo
 
-# ============================================
-# 1. Load Model
-# ============================================
-print("📦 Loading model...")
-model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=4)
-
-# ============================================
-# 2. Prepare Training Data
-# ============================================
-# Simple format: list of dicts with "text" key
+# Sample training data (instruction format)
 training_data = [
-    {"text": "### Instruction:\nWhat is Python?\n\n### Response:\nPython is a high-level programming language."},
-    {"text": "### Instruction:\nExplain AI.\n\n### Response:\nAI is artificial intelligence, machines that can learn."},
     {
-        "text": "### Instruction:\nWhat is machine learning?\n\n### Response:\nML is a subset of AI where systems learn from data."
+        "text": (
+            "### Instruction:\n"
+            "What is Python?\n\n"
+            "### Response:\n"
+            "Python is a high-level, interpreted programming language."
+        )
     },
-    # Add more examples...
+    {
+        "text": (
+            "### Instruction:\n"
+            "Explain AI.\n\n"
+            "### Response:\n"
+            "AI is artificial intelligence -- machines that can learn and reason."
+        )
+    },
+    {
+        "text": (
+            "### Instruction:\n"
+            "What is machine learning?\n\n"
+            "### Response:\n"
+            "ML is a subset of AI where systems learn patterns from data."
+        )
+    },
 ]
 
-# Or use a HuggingFace dataset
-# training_data = "tatsu-lab/alpaca"
+# Load model
+print("Loading TinyLlama...")
+model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
 
-# ============================================
-# 3. Fine-tune
-# ============================================
-print("\n🎯 Starting fine-tuning...")
-
+# Fine-tune
+print("\nFine-tuning (1 epoch, 3 samples)...")
 result = model.finetune(
     data=training_data,
     epochs=1,
@@ -42,23 +50,17 @@ result = model.finetune(
     lora_alpha=16,
     output_dir="./finetuned_model",
 )
+print(f"  train_loss: {result['train_loss']:.4f}")
+print(f"  output_dir: {result['output_dir']}")
 
-print(f"\n✅ Training complete!")
-print(f"   Loss: {result['train_loss']:.4f}")
-print(f"   Output: {result['output_dir']}")
-
-# ============================================
-# 4. Test the Fine-tuned Model
-# ============================================
-print("\n📝 Testing fine-tuned model...")
-
+# Test
+print("\nTesting fine-tuned model...")
 response = model.generate("What is Python?", max_new_tokens=50)
-print(f"Response: {response}")
+print(f"  {response}")
 
-# ============================================
-# 5. Export Fine-tuned Model
-# ============================================
-print("\n📦 Exporting to GGUF...")
-model.export("gguf", "finetuned-q4.gguf")
+# Export
+print("\nExporting to GGUF...")
+path = model.export("gguf", "finetuned-q4.gguf")
+print(f"  {path}")
 
-print("\n✅ Done!")
+print("\nFine-tuning complete.")

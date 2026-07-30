@@ -4,6 +4,41 @@ All notable changes to QuantLLM are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — v2.2.0 (Ecosystem & Features)
+
+### Added
+
+- **Native HQQ Quantization (`quantllm/quant/hqq.py`).** Half-Quadratic
+  Quantization produces state-of-the-art quality at 2-4 bits without
+  requiring calibration data. Supports 2/3/4/8-bit weight-only
+  quantization of linear layers with per-channel normalization and
+  half-quadratic splitting optimization.
+- **`quantllm serve` Inference Server.** OpenAI-compatible FastAPI server
+  with `/v1/chat/completions` and `/v1/completions` endpoints, streaming
+  via SSE, auto-detection of transformers vs llama-cpp-python backends,
+  and model warmup on startup.
+- **`quantllm bench` Benchmark Suite.** Measures prefill throughput,
+  decode throughput, peak VRAM, and latency. Results auto-save to
+  `benchmark_results.json` for regression tracking.
+- **`quantllm compare` Hardware Auto-Benchmark.** Detects CPU/GPU/RAM,
+  runs micro-benchmarks, scores quantization methods and export formats,
+  and prints ranked recommendations. Caches to
+  `~/.cache/quantllm/hardware_profile.json`.
+- **Dynamic Model Registry (`quantllm/registry.py`).** Fetches curated
+  models from the `QuantLLM` HuggingFace organization. Supports
+  `quantllm models list`, `quantllm models search`, `quantllm models info`,
+  and programmatic model registration via `register_model()`.
+- **Expanded CLI with subcommand groups.** `quantllm --help` now shows:
+  `version`, `info`, `convert`, `finetune`, `export`, `serve`, `bench`,
+  `compare`, `models`, `register`.
+- **HQQ_QUANT_TYPES** mapping matching GGUF types for cross-compatibility.
+
+### Changed
+
+- Version bumped to `2.2.0.dev` for active development.
+- `pyproject.toml` now includes `[server]` and `[bench]` optional
+  dependency groups.
+
 ## [2.1.0] — 2026-07-29
 
 ### Fixed

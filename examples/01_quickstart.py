@@ -1,53 +1,47 @@
 """
-QuantLLM v2.1 - Quick Start Example
+QuantLLM v2.2 -- Quick Start
 
-The simplest way to use QuantLLM.
+Load a model, generate text, chat, stream, and export.
+This is the simplest way to verify the package works.
 """
 
 from quantllm import turbo
 
-# ============================================
-# 1. Load a Model (One Line!)
-# ============================================
-print("Loading model...")
+# Load a model with automatic 4-bit quantization
+print("Loading TinyLlama...")
 model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+print(f"  device: {model.config.device}, dtype: {model.config.dtype}")
+print(f"  bits: {model.config.bits}, quant: {model.config.quant_type}")
 
-# Show configuration
-model.config.print_summary()
-
-# ============================================
-# 2. Generate Text
-# ============================================
-print("\n📝 Generating text...")
-
+# Generate text
+print("\nGenerating...")
 response = model.generate(
     "Explain quantum computing in simple terms.",
     max_new_tokens=100,
     temperature=0.7,
 )
+print(f"  {response}")
 
-print(f"\nResponse:\n{response}")
-
-# ============================================
-# 3. Chat Mode
-# ============================================
-print("\n💬 Chat mode...")
-
+# Chat
+print("\nChat...")
 messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "What is Python?"},
 ]
-
 response = model.chat(messages, max_new_tokens=100)
-print(f"\nChat response:\n{response}")
+print(f"  {response}")
 
-# ============================================
-# 4. Streaming Generation
-# ============================================
-print("\n🔄 Streaming generation...")
-
-print("Response: ", end="", flush=True)
-for token in model.generate("Count from 1 to 10:", stream=True, max_new_tokens=50):
+# Streaming
+print("\nStreaming...")
+for token in model.generate(
+    "Count from 1 to 5:", stream=True, max_new_tokens=30
+):
     print(token, end="", flush=True)
-print("\n")
+print()
 
-print("✅ Quick start complete!")
+# Export
+print("\nExporting to GGUF (Q4_K_M)...")
+path = model.export("gguf", "tinyllama-q4.gguf", quantization="Q4_K_M")
+print(f"  Exported to {path}")
+
+print("\nQuick start complete.")

@@ -3,7 +3,7 @@
 project = "QuantLLM"
 copyright = "2024, Dark Coder"
 author = "Dark Coder"
-release = "2.1.0"
+release = "2.2.0"
 
 # Extensions
 extensions = [

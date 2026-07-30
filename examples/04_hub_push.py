@@ -1,45 +1,56 @@
 """
-QuantLLM v2.1 - Push to HuggingFace Hub
+QuantLLM v2.2 -- Push to HuggingFace Hub
 
-Push your models to HuggingFace Hub with auto-generated model cards.
+Push a quantized model to the HuggingFace Hub with an
+auto-generated model card.  Requires HF_TOKEN or a token
+passed explicitly.
+
+Skip if no token is available (safely no-ops).
 """
+
+import os
 
 from quantllm import turbo
 
-# ============================================
-# 1. Load and Prepare Model
-# ============================================
-print("📦 Loading model...")
+# Check for credentials
+token = os.environ.get("HF_TOKEN")
+if not token:
+    print("HF_TOKEN not set -- push will fail.")
+    print("Set it and re-run, or pass token= explicitly.")
+    print("  export HF_TOKEN=hf_...")
+    print("Continuing in dry-run mode for demonstration.\n")
+
+# Load model with shared export/push config
 model = turbo(
     "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    bits=4,
-    config={"format": "gguf", "quantization": "Q4_K_M", "push_format": "gguf"},
+    config={
+        "format": "gguf",
+        "quantization": "Q4_K_M",
+        "push_format": "gguf",
+    },
 )
 
-# ============================================
-# 2. Push to Hub (GGUF format)
-# ============================================
-print("\n🚀 Pushing GGUF to HuggingFace Hub...")
-
-# Uses shared config — format and quantization from config={}
+# Push GGUF to Hub
+repo = "YOUR_USERNAME/my-quantized-tinyllama-gguf"
+print(f"Pushing to {repo} ...")
+print("  (This will export and upload automatically)")
 model.push(
-    "YOUR_USERNAME/my-quantized-tinyllama-gguf",
+    repo,
+    private=False,
     license="apache-2.0",
-    # token="hf_..."  # Or set HF_TOKEN env var
+    token=token or None,
 )
+print(f"  https://huggingface.co/{repo}")
 
-print("\n✅ GGUF pushed to Hub!")
-
-# ============================================
-# 3. Push SafeTensors format
-# ============================================
-print("\n📦 Pushing SafeTensors to HuggingFace Hub...")
-
+# Push SafeTensors format to a different repo
+repo2 = "YOUR_USERNAME/my-quantized-tinyllama"
+print(f"\nPushing SafeTensors to {repo2} ...")
 model.push(
-    "YOUR_USERNAME/my-quantized-tinyllama",
+    repo2,
     format="safetensors",
     license="apache-2.0",
+    token=token or None,
 )
+print(f"  https://huggingface.co/{repo2}")
 
-print("\n✅ SafeTensors pushed to Hub!")
-print("   Visit: https://huggingface.co/YOUR_USERNAME/my-quantized-tinyllama")
+print("\nPush complete.")
