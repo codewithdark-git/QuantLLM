@@ -1,424 +1,466 @@
 """
-Unified Progress Tracking and Logging System for QuantLLM.
+Terminal output, progress bars, and branded banner for QuantLLM.
 
-Uses `rich` for beautiful output and progress bars.
-Consistent orange theme across the entire project.
+All functions degrade gracefully in non-TTY environments.  Rich progress
+bars are tried first, falling back to tqdm, then to plain text.  All
+text output uses only ASCII characters -- no emoji, no unicode box
+drawing that could cause encoding errors on Windows cp437.
 """
 
-import logging
-import sys
-import re
-from typing import Optional, ContextManager, Generator, Callable, Any
-from rich.console import Console
-from rich.logging import RichHandler
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    TimeRemainingColumn,
-    TimeElapsedColumn,
-    TransferSpeedColumn,
-    DownloadColumn,
-    FileSizeColumn,
-    MofNCompleteColumn,
-)
-from rich.theme import Theme
-from rich.panel import Panel
-from rich.table import Table
-from rich.live import Live
+from __future__ import annotations
 
-# QuantLLM Brand Colors - Orange Theme
+import os
+import re
+import sys
+from typing import Any, Callable, Generator, Iterator, Optional, TypeVar, Union
+
+# ---------------------------------------------------------------------------
+# Theme constants (kept for API compatibility; consumers apply their own color)
+# ---------------------------------------------------------------------------
 QUANTLLM_ORANGE = "orange1"
 QUANTLLM_ORANGE_LIGHT = "dark_orange"
 QUANTLLM_ACCENT = "orange3"
 
-# Custom theme - QuantLLM Orange Theme
-custom_theme = Theme(
-    {
-        # Primary colors
-        "info": QUANTLLM_ORANGE,
-        "warning": "yellow",
-        "error": "red bold",
-        "success": "green bold",
-        # Progress bar styling
-        "progress.description": f"bold {QUANTLLM_ORANGE}",
-        "progress.percentage": f"bold {QUANTLLM_ORANGE}",
-        "progress.remaining": "dim white",
-        "bar.complete": QUANTLLM_ORANGE,
+# ---------------------------------------------------------------------------
+# Console  --  plain-print wrapper (no rich dependency)
+# ---------------------------------------------------------------------------
+
+_T = TypeVar("_T")
+
+
+class _SimpleConsole:
+    """Stand-in for ``rich.console.Console`` that writes to stderr via print.
+
+    All ``print``-style methods are provided so callers that received a
+    ``Console`` object from ``quantllm.utils.console`` continue to work.
+    """
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        """Print to stderr, stripping rich markup tags."""
+        text = " ".join(str(a) for a in args)
+        text = _strip_rich_markup(text)
+        file = kwargs.pop("file", sys.stderr)
+        print(text, file=file, **kwargs)
+
+    # The rich Console also exposes ``log``, ``rule``, ``input`` etc.
+    # We provide no-op stubs so callers that pass ``file=console`` don't
+    # crash -- they just don't get rich formatting.
+    def log(self, *args: Any, **kwargs: Any) -> None:
+        self.print(*args, **kwargs)
+
+    def rule(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def input(self, *args: Any, **kwargs: Any) -> str:
+        text = " ".join(str(a) for a in args)
+        return builtins_input(_strip_rich_markup(text))
+
+    def __repr__(self) -> str:
+        return "SimpleConsole()"
+
+
+builtins_input = __builtins__["input"] if isinstance(__builtins__, dict) else __builtins__.input  # type: ignore[assignment]
+
+console = _SimpleConsole()
+
+
+def _strip_rich_markup(text: str) -> str:
+    """Remove ``[bold ...][/]`` rich markup tags from *text*."""
+    text = re.sub(r"\[/?\w+(?:\s+\w+(?:=.*?)?)*\]", "", text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Progress bars  --  try rich / tqdm, fall back to simple text
+# ---------------------------------------------------------------------------
+
+_ProgressObj = Any  # rich.Progress | tqdm.tqdm | _TextProgress | Progress
+
+
+class _TextProgress:
+    """Ultra-simple fallback progress indicator.
+
+    Prints ``description: 42%`` lines as the progress advances.
+    """
+
+    def __init__(self, transient: bool = True) -> None:
+        self._transient = transient
+        self._tasks: dict[int, dict[str, Any]] = {}
+        self._next_id = 0
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def add_task(self, description: str, total: Optional[Union[int, float]] = None) -> int:
+        tid = self._next_id
+        self._next_id += 1
+        self._tasks[tid] = {"description": description, "total": total, "completed": 0.0}
+        return tid
+
+    def update(self, task_id: int, *, completed: Optional[float] = None, advance: Optional[float] = None, description: Optional[str] = None, **kwargs: Any) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        if description is not None:
+            task["description"] = description
+        if advance is not None:
+            task["completed"] += advance
+        if completed is not None:
+            task["completed"] = completed
+
+        total = task.get("total")
+        pct = (task["completed"] / total * 100) if total else 0
+        desc = _strip_rich_markup(task["description"])
+        print(f"  {desc}: {pct:.0f}%", file=sys.stderr)
+
+    def advance(self, task_id: int, advance: float = 1) -> None:
+        self.update(task_id, advance=advance)
+
+    def __enter__(self) -> "_TextProgress":
+        self.start()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.stop()
+
+
+# Module-level flag so we only log the "rich unavailable" warning once.
+_HAS_RICH = False
+_RICH_CHECKED = False
+
+
+def _check_rich() -> bool:
+    global _HAS_RICH, _RICH_CHECKED
+    if not _RICH_CHECKED:
+        try:
+            import rich  # noqa: F401
+            _HAS_RICH = True
+        except ImportError:
+            _HAS_RICH = False
+        _RICH_CHECKED = True
+    return _HAS_RICH
+
+
+def _best_progress(style: str = "default", transient: bool = True) -> Any:
+    """Return the best available progress-bar implementation.
+
+    Preference: rich > tqdm > ``_TextProgress``.
+    """
+    if _check_rich():
+        return _rich_progress(style, transient)
+    try:
+        from tqdm.auto import tqdm  # noqa: F401
+        return _tqdm_progress(style, transient)
+    except ImportError:
+        pass
+    return _TextProgress(transient=transient)
+
+
+def _rich_progress(style: str, transient: bool) -> Any:
+    """Build a rich Progress with columns matching *style*."""
+    from rich.console import Console as RichConsole
+    from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+        TransferSpeedColumn,
+    )
+
+    theme_overrides = {
+        "progress.description": "bold orange1",
+        "progress.percentage": "bold orange1",
+        "bar.complete": "orange1",
         "bar.finished": "green",
-        "bar.pulse": QUANTLLM_ORANGE_LIGHT,
-        # Table styling
-        "table.header": f"bold {QUANTLLM_ORANGE}",
-        "table.border": QUANTLLM_ACCENT,
     }
-)
 
-console = Console(theme=custom_theme)
+    style_columns = {
+        "default": [
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[bold orange1]{task.description}"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TextColumn(""),
+            TimeElapsedColumn(),
+        ],
+        "spinner": [
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[bold orange1]{task.description}"),
+        ],
+        "download": [
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[bold orange1]{task.description}"),
+            BarColumn(bar_width=40),
+            DownloadColumn(),
+            TextColumn(""),
+            TransferSpeedColumn(),
+        ],
+        "steps": [
+            SpinnerColumn(spinner_name="dots"),
+            TextColumn("[bold orange1]{task.description}"),
+            MofNCompleteColumn(),
+            BarColumn(bar_width=30),
+            TimeElapsedColumn(),
+        ],
+    }
 
-# ============================================
-# Logging Configuration
-# ============================================
+    columns = style_columns.get(style, style_columns["default"])
+    return Progress(*columns, transient=transient)
 
 
-def configure_logging(level: str = "INFO") -> None:
-    """Configure rich-based logging. Safe to call multiple times."""
-    root_logger = logging.getLogger()
-    # Remove existing RichHandlers to avoid duplicates
-    root_logger.handlers = [h for h in root_logger.handlers if not isinstance(h, RichHandler)]
-    root_logger.setLevel(level)
-    handler = RichHandler(console=console, rich_tracebacks=True, markup=True, show_path=False)
-    handler.setLevel(level)
-    root_logger.addHandler(handler)
+def _tqdm_progress(style: str, transient: bool) -> Any:
+    """Build a tqdm progress bar as a context manager."""
+    from tqdm.auto import tqdm
 
+    class _TqdmWrapper:
+        def __init__(self) -> None:
+            self._bar: Any = None
 
-def get_logger(name: str = "quantllm") -> logging.Logger:
-    """Get the project logger."""
-    return logging.getLogger(name)
+        def start(self) -> None:
+            pass
 
+        def stop(self) -> None:
+            if self._bar is not None:
+                self._bar.close()
 
-logger = get_logger()
+        def add_task(self, description: str, total: Optional[Union[int, float]] = None) -> int:
+            desc_clean = _strip_rich_markup(description)
+            self._bar = tqdm(total=total, desc=desc_clean, unit="step", leave=not transient)
+            return 0
 
-# ============================================
-# Progress Tracking
-# ============================================
+        def update(self, task_id: int, *, completed: Optional[float] = None, advance: Optional[float] = None, description: Optional[str] = None, **kwargs: Any) -> None:
+            if self._bar is None:
+                return
+            if advance is not None:
+                self._bar.update(advance)
+            elif completed is not None and self._bar.total:
+                self._bar.n = int(completed)
+                self._bar.refresh()
+
+        def advance(self, task_id: int, advance: float = 1) -> None:
+            self.update(task_id, advance=advance)
+
+        def __enter__(self) -> "_TqdmWrapper":
+            self.start()
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            self.stop()
+
+    return _TqdmWrapper()
 
 
 class QuantLLMProgress:
-    """
-    Unified progress tracking context manager.
+    """Unified progress tracking that works in every environment.
 
-    Usage:
+    Tries rich (fancy) > tqdm (compact) > simple text (always works).
+
+    Usage::
+
         with QuantLLMProgress() as p:
             task = p.add_task("Processing...", total=100)
             p.update(task, advance=1)
-
-        # Or with download style
-        with QuantLLMProgress(style="download") as p:
-            task = p.add_task("Downloading...", total=1024*1024)
-            p.update(task, advance=chunk_size)
     """
 
-    STYLES = {
-        "default": [
-            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
-            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
-            BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE, finished_style="green"),
-            TaskProgressColumn(),
-            TextColumn("[dim]•[/]"),
-            TimeElapsedColumn(),
-            TextColumn("[dim]•[/]"),
-            TimeRemainingColumn(),
-        ],
-        "spinner": [
-            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
-            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
-        ],
-        "download": [
-            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
-            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
-            BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE),
-            DownloadColumn(),
-            TextColumn("[dim]•[/]"),
-            TransferSpeedColumn(),
-            TextColumn("[dim]•[/]"),
-            TimeRemainingColumn(),
-        ],
-        "steps": [
-            SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
-            TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
-            MofNCompleteColumn(),
-            BarColumn(bar_width=30, complete_style=QUANTLLM_ORANGE),
-            TimeElapsedColumn(),
-        ],
-    }
-
     def __init__(self, transient: bool = True, disable_bar: bool = False, style: str = "default"):
-        if disable_bar:
-            columns = self.STYLES["spinner"]
-        else:
-            columns = self.STYLES.get(style, self.STYLES["default"])
+        self._impl = _best_progress(style=style, transient=transient)
 
-        self.progress = Progress(
-            *columns,
-            console=console,
-            transient=transient,
-            expand=False,
-        )
+    def __enter__(self) -> Any:
+        if hasattr(self._impl, "start"):
+            self._impl.start()
+        elif hasattr(self._impl, "__enter__"):
+            return self._impl.__enter__()
+        return self._impl
 
-    def __enter__(self) -> Progress:
-        self.progress.start()
-        return self.progress
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.progress.stop()
+    def __exit__(self, *args: Any) -> None:
+        if hasattr(self._impl, "stop"):
+            self._impl.stop()
+        elif hasattr(self._impl, "__exit__"):
+            self._impl.__exit__(*args)
 
 
 class StepProgress:
-    """
-    Multi-step progress tracker for complex operations with orange theme.
+    """Multi-step progress tracker.
 
-    Usage:
+    Usage::
+
         with StepProgress(["Download", "Convert", "Quantize"]) as steps:
             steps.start("Download")
-            # ... download ...
             steps.complete("Download")
-
-            steps.start("Convert")
-            # ... convert ...
-            steps.complete("Convert")
     """
 
     def __init__(self, steps: list, title: str = "Progress"):
         self.steps = steps
         self.title = title
-        self.current_step = 0
         self.step_status = {step: "pending" for step in steps}
 
-    def __enter__(self):
-        self._print_status()
+    def __enter__(self) -> "StepProgress":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
-            console.print()
+    def __exit__(self, *args: Any) -> None:
+        pass
 
-    def _print_status(self):
-        """Print current status of all steps."""
-        icons = {"pending": "○", "running": "◐", "complete": "●", "error": "✗"}
-        colors = {"pending": "dim", "running": QUANTLLM_ORANGE, "complete": "green", "error": "red"}
-
-        lines = [f"[bold {QUANTLLM_ORANGE}]{self.title}[/]"]
-        for i, step in enumerate(self.steps, 1):
-            status = self.step_status[step]
-            icon = icons[status]
-            color = colors[status]
-            lines.append(f"  [{color}]{icon}[/] Step {i}: {step}")
-
-        console.print("\n".join(lines))
-
-    def start(self, step: str):
-        """Mark step as running."""
+    def start(self, step: str) -> None:
         self.step_status[step] = "running"
-        console.print(f"[{QUANTLLM_ORANGE}]▶[/] Starting: {step}...")
+        print(f"  >> {step}...", file=sys.stderr)
 
-    def complete(self, step: str):
-        """Mark step as complete."""
+    def complete(self, step: str) -> None:
         self.step_status[step] = "complete"
-        console.print(f"[green]✓[/] Completed: {step}")
+        print(f"  OK  {step}", file=sys.stderr)
 
-    def error(self, step: str, message: str = ""):
-        """Mark step as error."""
+    def error(self, step: str, message: str = "") -> None:
         self.step_status[step] = "error"
-        console.print(f"[red]✗[/] Failed: {step}" + (f" - {message}" if message else ""))
+        msg = f"  FAIL {step}" + (f" - {message}" if message else "")
+        print(msg, file=sys.stderr)
 
 
-def track_progress(sequence, description: str = "Processing...", total: Optional[int] = None):
-    """Simple wrapper around rich.progress.track with orange theme."""
-    columns = [
-        SpinnerColumn(spinner_name="dots", style=QUANTLLM_ORANGE),
-        TextColumn(f"[bold {QUANTLLM_ORANGE}]{{task.description}}"),
-        BarColumn(bar_width=40, complete_style=QUANTLLM_ORANGE),
-        TaskProgressColumn(),
-        TextColumn("[dim]-[/]"),
-        TimeRemainingColumn(),
-    ]
-
-    with Progress(*columns, console=console, transient=True) as progress:
-        seq_list = list(sequence)
-        task_total = total if total is not None else len(seq_list)
-        task = progress.add_task(description, total=task_total)
-        for item in seq_list:
+def track_progress(sequence: Iterator[_T], description: str = "Processing...", total: Optional[int] = None) -> Generator[_T, None, None]:
+    """Iterate over *sequence* with a progress indicator."""
+    seq = list(sequence)
+    n = total if total is not None else len(seq)
+    with QuantLLMProgress() as p:
+        task = p.add_task(description, total=n)
+        for item in seq:
             yield item
-            progress.advance(task)
+            p.update(task, advance=1)
 
 
-def stream_subprocess_output(
-    process,
-    description: str = "Processing...",
-    parse_progress: Optional[Callable[[str], Optional[float]]] = None,
-) -> tuple:
-    """
-    Stream subprocess output with optional progress parsing.
-
-    Args:
-        process: subprocess.Popen object
-        description: Description for progress bar
-        parse_progress: Function that parses a line and returns progress (0-100) or None
-
-    Returns:
-        Tuple of (stdout_lines, stderr_lines)
-    """
-    stdout_lines = []
-    stderr_lines = []
+def stream_subprocess_output(process: Any, description: str = "Processing...", parse_progress: Optional[Callable[[str], Optional[float]]] = None) -> tuple[list[str], list[str]]:
+    """Stream subprocess stdout/stderr with optional progress parsing."""
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
 
     if parse_progress:
         with QuantLLMProgress() as progress:
             task = progress.add_task(description, total=100)
-
             for line in iter(process.stdout.readline, ""):
                 if not line:
                     break
                 line = line.strip()
                 stdout_lines.append(line)
-
-                # Try to parse progress
                 pct = parse_progress(line)
                 if pct is not None:
                     progress.update(task, completed=pct)
-                else:
-                    # Update description with latest line
-                    progress.update(task, description=f"{description}: {line[:40]}...")
-
             progress.update(task, completed=100)
     else:
-        # Just stream without progress
         for line in iter(process.stdout.readline, ""):
             if not line:
                 break
             stdout_lines.append(line.strip())
-            console.print(f"[dim]{line.strip()}[/]")
+            print(f"  {line.strip()}", file=sys.stderr)
 
     process.wait()
-
     if process.stderr:
         stderr_lines = process.stderr.read().strip().split("\n")
-
     return stdout_lines, stderr_lines
 
 
-# ============================================
-# Helper Functions - Orange Theme
-# ============================================
+# ---------------------------------------------------------------------------
+# Simple print helpers (no rich, no emoji, no ANSI)
+# ---------------------------------------------------------------------------
 
 
-def print_header(title: str, icon: str = "🚀") -> None:
-    """Print a styled header with orange theme."""
-    width = 60
-    console.print()
-    console.print(f"[bold {QUANTLLM_ORANGE}]{'═' * width}[/]")
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/] {icon} [bold white]{title.center(width - 6)}[/] [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(f"[bold {QUANTLLM_ORANGE}]{'═' * width}[/]")
+def print_header(title: str, icon: str = "") -> None:
+    width = 50
+    sep = "=" * width
+    print(f"\n{sep}\n  {title}\n{sep}", file=sys.stderr)
 
 
 def print_subheader(title: str) -> None:
-    """Print a smaller styled subheader."""
-    console.print(f"\n[bold {QUANTLLM_ORANGE}]── {title} ──[/]")
+    print(f"\n  -- {title} --", file=sys.stderr)
 
 
 def print_success(msg: str) -> None:
-    """Print success message."""
-    console.print(f"[green]✓[/] {msg}")
+    print(f"  OK  {msg}", file=sys.stderr)
 
 
 def print_warning(msg: str) -> None:
-    """Print warning message."""
-    console.print(f"[yellow]⚠[/] {msg}")
+    print(f"  WARN {msg}", file=sys.stderr)
 
 
 def print_error(msg: str) -> None:
-    """Print error message."""
-    console.print(f"[red bold]✗ Error:[/] {msg}")
+    print(f"  ERROR {msg}", file=sys.stderr)
 
 
 def print_info(msg: str) -> None:
-    """Print info message with orange icon."""
-    console.print(f"[{QUANTLLM_ORANGE}]ℹ[/] {msg}")
+    print(f"  INFO {msg}", file=sys.stderr)
 
 
 def print_step(step: int, total: int, msg: str) -> None:
-    """Print a step in a multi-step process."""
-    console.print(f"[bold {QUANTLLM_ORANGE}][{step}/{total}][/] {msg}")
+    print(f"  [{step}/{total}] {msg}", file=sys.stderr)
 
 
 def print_table(title: str, data: dict) -> None:
-    """Print a formatted table with orange theme."""
-    table = Table(title=title, show_header=False, border_style=QUANTLLM_ORANGE)
-    table.add_column("Key", style="bold")
-    table.add_column("Value")
-
+    print(f"\n  {title}:", file=sys.stderr)
     for key, value in data.items():
-        table.add_row(str(key), str(value))
+        print(f"    {key}: {value}", file=sys.stderr)
+    print(file=sys.stderr)
 
-    console.print(table)
 
-
-def print_model_card(model_name: str, params: str, quantization: str, memory: str, **extras) -> None:
-    """Print a model summary card with orange theme."""
-    table = Table(title=f"[bold]{model_name}[/]", border_style=QUANTLLM_ORANGE, show_header=False)
-    table.add_column("Property", style=f"bold {QUANTLLM_ORANGE}")
-    table.add_column("Value")
-
-    table.add_row("Parameters", params)
-    table.add_row("Quantization", quantization)
-    table.add_row("Memory Usage", memory)
-
+def print_model_card(model_name: str, params: str, quantization: str, memory: str, **extras: str) -> None:
+    print(f"\n  Model: {model_name}", file=sys.stderr)
+    print(f"    Parameters:   {params}", file=sys.stderr)
+    print(f"    Quantization: {quantization}", file=sys.stderr)
+    print(f"    Memory:       {memory}", file=sys.stderr)
     for key, value in extras.items():
-        table.add_row(key.replace("_", " ").title(), str(value))
-
-    console.print(table)
+        print(f"    {key.replace('_', ' ').title()}: {value}", file=sys.stderr)
 
 
-# Track if banner has been shown (to prevent duplicate displays)
+# ---------------------------------------------------------------------------
+# Banner  --  brand display with specs and functionality
+# ---------------------------------------------------------------------------
+
 _banner_shown = False
 
 
 def print_banner(version: str = "2.0.0", force: bool = False) -> None:
-    """
-    Print QuantLLM banner with version info.
-
-    Args:
-        version: Version string to display
-        force: If True, show banner even if already shown
-    """
+    """Print the QuantLLM brand banner to stderr (once)."""
     global _banner_shown
-
-    # Only show once unless forced
     if _banner_shown and not force:
         return
-
     _banner_shown = True
 
-    console.print()
-    console.print(f"[bold {QUANTLLM_ORANGE}]╔════════════════════════════════════════════════════════════╗[/]")
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/]   🚀 [bold white]QuantLLM[/] [dim]v{version}[/]                                     [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/]   [dim]Ultra-fast LLM Quantization & Export[/]                   [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/]   [green]✓[/] GGUF  [green]✓[/] ONNX  [green]✓[/] MLX  [green]✓[/] SafeTensors             [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(
-        f"[bold {QUANTLLM_ORANGE}]║[/]                                                            [bold {QUANTLLM_ORANGE}]║[/]"
-    )
-    console.print(f"[bold {QUANTLLM_ORANGE}]╚════════════════════════════════════════════════════════════╝[/]")
-    console.print()
+    lines = [
+        "+-------------------------------------------------+",
+        f"|   QuantLLM v{version:<37} |",
+        f"|   Ultra-fast LLM Quantization & Serving        |",
+        "+-------------------------------------------------+",
+        f"|   Formats:  GGUF | ONNX | MLX | SafeTensors    |",
+        f"|   Features: Quantize | Finetune | Serve | Push  |",
+        f"|   Server:   OpenAI-compatible API              |",
+        f"|   Models:   Hub Registry + Auto-Architecture   |",
+        f"|   Quant:    2-8 bit HQQ + GGUF (Q2-Q8, IQ)    |",
+        "+-------------------------------------------------+",
+    ]
+    print("", file=sys.stderr)
+    for line in lines:
+        print(f"  {line}", file=sys.stderr)
+    print("", file=sys.stderr)
 
 
 def is_banner_shown() -> bool:
-    """Check if banner has already been displayed."""
     return _banner_shown
 
 
 def reset_banner() -> None:
-    """Reset banner state (for testing)."""
     global _banner_shown
     _banner_shown = False
 
 
+# ---------------------------------------------------------------------------
+# Formatters
+# ---------------------------------------------------------------------------
+
+
 def format_size(size_bytes: float) -> str:
-    """Format bytes to human readable size."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_bytes < 1024:
             return f"{size_bytes:.2f} {unit}"
@@ -427,14 +469,9 @@ def format_size(size_bytes: float) -> str:
 
 
 def format_time(seconds: float) -> str:
-    """Format seconds to human readable time."""
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{mins}m {secs}s"
+        return f"{int(seconds // 60)}m {int(seconds % 60)}s"
     else:
-        hours = int(seconds // 3600)
-        mins = int((seconds % 3600) // 60)
-        return f"{hours}h {mins}m"
+        return f"{int(seconds // 3600)}h {int((seconds % 3600) // 60)}m"

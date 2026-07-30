@@ -2,18 +2,20 @@
 QuantLLM Utilities
 
 Provides logging, progress tracking, and memory management utilities.
-Consistent orange theme across the entire project.
 """
+
+from .logging import (
+    configure_logging,
+    get_logger,
+    logger,
+)
 
 from .progress import (
     # Theme colors
     QUANTLLM_ORANGE,
     QUANTLLM_ORANGE_LIGHT,
     QUANTLLM_ACCENT,
-    # Logging
-    configure_logging,
-    get_logger,
-    logger,
+    # Console
     console,
     # Progress tracking
     QuantLLMProgress,
