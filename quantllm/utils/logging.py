@@ -66,9 +66,7 @@ class _StderrHandler(logging.Handler):
 
     def __init__(self, formatter: Optional[logging.Formatter] = None) -> None:
         super().__init__()
-        self._formatter = formatter or logging.Formatter(
-            _LOG_TEXT_FORMAT, datefmt=_LOG_DATE_FORMAT
-        )
+        self._formatter = formatter or logging.Formatter(_LOG_TEXT_FORMAT, datefmt=_LOG_DATE_FORMAT)
         self.setFormatter(self._formatter)
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -143,9 +141,7 @@ def configure_logging(
         resolved_max = int(_env("MAX_BYTES", str(max_bytes)))
         resolved_backup = int(_env("BACKUP", str(backup_count)))
         file_fmt = json_fmt if resolved_fmt == "json" else text_fmt
-        file_handler = RotatingFileHandler(
-            resolved_file, maxBytes=resolved_max, backupCount=resolved_backup
-        )
+        file_handler = RotatingFileHandler(resolved_file, maxBytes=resolved_max, backupCount=resolved_backup)
         file_handler.setFormatter(file_fmt)
         logger.addHandler(file_handler)
 

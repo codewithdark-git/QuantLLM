@@ -35,18 +35,26 @@ class BenchmarkComparer:
             except Exception as e:
                 if self.verbose:
                     from ..utils import print_warning
+
                     print_warning(f"{name} failed: {e}")
         return self.results
 
     def generate_comparison_report(self) -> str:
         if not self.results:
             return "No data."
-        lines = ["=" * 80, "  QuantLLM Comparison", f"  Model: {self.model_name}", "=" * 80,
-                 f"  {'Config':<15} {'Decode':<12} {'Prefill':<12} {'Latency':<12} {'VRAM':<10} {'Size':<10}",
-                 f"  {'-'*15} {'-'*12} {'-'*12} {'-'*12} {'-'*10} {'-'*10}"]
+        lines = [
+            "=" * 80,
+            "  QuantLLM Comparison",
+            f"  Model: {self.model_name}",
+            "=" * 80,
+            f"  {'Config':<15} {'Decode':<12} {'Prefill':<12} {'Latency':<12} {'VRAM':<10} {'Size':<10}",
+            f"  {'-' * 15} {'-' * 12} {'-' * 12} {'-' * 12} {'-' * 10} {'-' * 10}",
+        ]
         for name, r in self.results.items():
-            lines.append(f"  {name:<15} {r.decode_tokens_per_sec:<12.1f} {r.prefill_tokens_per_sec:<12.1f} "
-                         f"{r.total_latency_ms:<12.1f} {r.peak_vram_gb:<10.2f} {r.model_size_gb:<10.2f}")
+            lines.append(
+                f"  {name:<15} {r.decode_tokens_per_sec:<12.1f} {r.prefill_tokens_per_sec:<12.1f} "
+                f"{r.total_latency_ms:<12.1f} {r.peak_vram_gb:<10.2f} {r.model_size_gb:<10.2f}"
+            )
 
         best = max(self.results, key=lambda k: self.results[k].decode_tokens_per_sec) if self.results else None
         if best:

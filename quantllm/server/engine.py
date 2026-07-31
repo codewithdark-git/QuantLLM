@@ -42,8 +42,8 @@ class InferenceEngine:
 
     def __init__(self, config: ServerConfig):
         self.config = config
-        self.model = None
-        self.tokenizer = None
+        self.model: Any = None
+        self.tokenizer: Any = None
         self.backend = "transformers"
 
     def load(self) -> None:
@@ -57,6 +57,7 @@ class InferenceEngine:
         if name.endswith(".gguf") or "gguf" in name:
             try:
                 import llama_cpp
+
                 return True
             except ImportError:
                 pass
@@ -65,18 +66,24 @@ class InferenceEngine:
     def _load_transformers(self) -> None:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        self.tokenizer = AutoTokenizer.from_pretrained(self.config.model, trust_remote_code=self.config.trust_remote_code)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.config.model, trust_remote_code=self.config.trust_remote_code
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         dtype = {"auto": "auto", "float16": torch.float16, "bfloat16": torch.bfloat16}.get(self.config.dtype, "auto")
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.config.model, torch_dtype=dtype, device_map="auto", trust_remote_code=self.config.trust_remote_code,
+            self.config.model,
+            torch_dtype=dtype,
+            device_map="auto",
+            trust_remote_code=self.config.trust_remote_code,
         )
         self.model.eval()
 
     def _load_llama_cpp(self) -> None:
         from llama_cpp import Llama
+
         self.model = Llama(model_path=self.config.model, n_ctx=self.config.max_seq_length, verbose=False)
         self.backend = "llama-cpp-python"
 
@@ -89,14 +96,21 @@ class InferenceEngine:
 
     @torch.inference_mode()
     def generate(
-        self, prompt: str, max_tokens: int = 512, temperature: float = 0.7,
-        top_p: float = 0.9, stop: Optional[List[str]] = None, stream: bool = False,
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        stop: Optional[List[str]] = None,
+        stream: bool = False,
     ):
         if self.backend == "llama-cpp-python":
             return self._gen_llama_cpp(prompt, max_tokens, temperature, top_p, stop, stream)
         return self._gen_transformers(prompt, max_tokens, temperature, top_p, stop, stream)
 
-    def _gen_transformers(self, prompt: str, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]], stream: bool):
+    def _gen_transformers(
+        self, prompt: str, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]], stream: bool
+    ):
         inputs = self.tokenizer(prompt, return_tensors="pt")
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
@@ -104,21 +118,34 @@ class InferenceEngine:
             return self._stream_transformers(inputs, max_tokens, temperature, top_p, stop)
 
         outputs = self.model.generate(
-            **inputs, max_new_tokens=max_tokens, temperature=temperature,
-            top_p=top_p, do_sample=temperature > 0,
-            pad_token_id=self.tokenizer.pad_token_id, eos_token_id=self.tokenizer.eos_token_id,
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=temperature > 0,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
         )
-        text = self.tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+        text = self.tokenizer.decode(outputs[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True)
         return self._apply_stops(text, stop)
 
-    async def _stream_transformers(self, inputs: Dict, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]]):
+    async def _stream_transformers(
+        self, inputs: Dict, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]]
+    ):
         from threading import Thread
         from transformers import TextIteratorStreamer
 
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-        kwargs = {**inputs, "max_new_tokens": max_tokens, "temperature": temperature, "top_p": top_p,
-                  "do_sample": temperature > 0, "pad_token_id": self.tokenizer.pad_token_id,
-                  "eos_token_id": self.tokenizer.eos_token_id, "streamer": streamer}
+        kwargs = {
+            **inputs,
+            "max_new_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "do_sample": temperature > 0,
+            "pad_token_id": self.tokenizer.pad_token_id,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "streamer": streamer,
+        }
         thread = Thread(target=self.model.generate, kwargs=kwargs)
         thread.start()
 
@@ -130,13 +157,21 @@ class InferenceEngine:
             yield text
         thread.join()
 
-    def _gen_llama_cpp(self, prompt: str, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]], stream: bool):
+    def _gen_llama_cpp(
+        self, prompt: str, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]], stream: bool
+    ):
         if stream:
             return self._stream_llama_cpp(prompt, max_tokens, temperature, top_p, stop)
-        return self.model(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop or [])["choices"][0]["text"]
+        return self.model(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop or [])[
+            "choices"
+        ][0]["text"]
 
-    async def _stream_llama_cpp(self, prompt: str, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]]):
-        for chunk in self.model(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop or [], stream=True):
+    async def _stream_llama_cpp(
+        self, prompt: str, max_tokens: int, temperature: float, top_p: float, stop: Optional[List[str]]
+    ):
+        for chunk in self.model(
+            prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop or [], stream=True
+        ):
             yield chunk["choices"][0]["text"]
 
     @staticmethod
@@ -167,34 +202,79 @@ def _build_chat_prompt(engine: InferenceEngine, messages: List[Dict[str, str]]) 
     return "".join(parts)
 
 
-def create_chat_completion(engine: InferenceEngine, messages: List[Dict[str, str]], max_tokens: int = 512,
-                           temperature: float = 0.7, top_p: float = 0.9, stream: bool = False, stop: Optional[List[str]] = None) -> Dict:
+def create_chat_completion(
+    engine: InferenceEngine,
+    messages: List[Dict[str, str]],
+    max_tokens: int = 512,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    stream: bool = False,
+    stop: Optional[List[str]] = None,
+) -> Dict:
     prompt = _build_chat_prompt(engine, messages)
     cid = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
     if stream:
-        return {"type": "stream", "id": cid, "created": created, "model": engine.config.model,
-                "engine": engine, "prompt": prompt, "max_tokens": max_tokens, "temperature": temperature, "top_p": top_p, "stop": stop}
+        return {
+            "type": "stream",
+            "id": cid,
+            "created": created,
+            "model": engine.config.model,
+            "engine": engine,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stop": stop,
+        }
 
     text = engine.generate(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop, stream=False)
     ct, pt = engine.get_token_count(text), engine.get_token_count(prompt)
-    return {"id": cid, "object": "chat.completion", "created": created, "model": engine.config.model,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+    return {
+        "id": cid,
+        "object": "chat.completion",
+        "created": created,
+        "model": engine.config.model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct},
+    }
 
 
-def create_completion(engine: InferenceEngine, prompt: str, max_tokens: int = 512, temperature: float = 0.7,
-                      top_p: float = 0.9, stream: bool = False, stop: Optional[List[str]] = None) -> Dict:
+def create_completion(
+    engine: InferenceEngine,
+    prompt: str,
+    max_tokens: int = 512,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    stream: bool = False,
+    stop: Optional[List[str]] = None,
+) -> Dict:
     cid = f"cmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
     if stream:
-        return {"type": "stream", "id": cid, "created": created, "model": engine.config.model,
-                "engine": engine, "prompt": prompt, "max_tokens": max_tokens, "temperature": temperature, "top_p": top_p, "stop": stop, "is_chat": False}
+        return {
+            "type": "stream",
+            "id": cid,
+            "created": created,
+            "model": engine.config.model,
+            "engine": engine,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stop": stop,
+            "is_chat": False,
+        }
 
     text = engine.generate(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p, stop=stop, stream=False)
     ct, pt = engine.get_token_count(text), engine.get_token_count(prompt)
-    return {"id": cid, "object": "text_completion", "created": created, "model": engine.config.model,
-            "choices": [{"index": 0, "text": text, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+    return {
+        "id": cid,
+        "object": "text_completion",
+        "created": created,
+        "model": engine.config.model,
+        "choices": [{"index": 0, "text": text, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct},
+    }

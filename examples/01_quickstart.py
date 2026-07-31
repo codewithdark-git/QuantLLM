@@ -33,9 +33,7 @@ print(f"  {response}")
 
 # Streaming
 print("\nStreaming...")
-for token in model.generate(
-    "Count from 1 to 5:", stream=True, max_new_tokens=30
-):
+for token in model.generate("Count from 1 to 5:", stream=True, max_new_tokens=30):
     print(token, end="", flush=True)
 print()
 

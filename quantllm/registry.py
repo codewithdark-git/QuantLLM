@@ -32,21 +32,28 @@ class ModelRegistry:
         """Fetch model list from the QuantLLM HF organization."""
         try:
             from huggingface_hub import HfApi
+
             api = HfApi()
             models = api.list_models(author=self.org, sort="downloads", direction=-1, limit=50)
             result = []
             for m in models:
-                card_data = getattr(m, 'card_data', None) or {}
-                result.append({
-                    "name": m.modelId,
-                    "family": (card_data.get('tags', ['unknown'])[0] if isinstance(card_data.get('tags'), list) else 'unknown'),
-                    "params": card_data.get('params', 0) or 0,
-                    "formats": self._detect_formats(m.modelId),
-                    "quality_score": card_data.get('quality_score', 3.0) or 3.0,
-                    "speed_score": card_data.get('speed_score', 3.0) or 3.0,
-                    "verified": card_data.get('verified', False) or False,
-                    "recommended": card_data.get('recommended_quant', 'Q4_K_M') or 'Q4_K_M',
-                })
+                card_data = getattr(m, "card_data", None) or {}
+                result.append(
+                    {
+                        "name": m.modelId,
+                        "family": (
+                            card_data.get("tags", ["unknown"])[0]
+                            if isinstance(card_data.get("tags"), list)
+                            else "unknown"
+                        ),
+                        "params": card_data.get("params", 0) or 0,
+                        "formats": self._detect_formats(m.modelId),
+                        "quality_score": card_data.get("quality_score", 3.0) or 3.0,
+                        "speed_score": card_data.get("speed_score", 3.0) or 3.0,
+                        "verified": card_data.get("verified", False) or False,
+                        "recommended": card_data.get("recommended_quant", "Q4_K_M") or "Q4_K_M",
+                    }
+                )
             return result
         except Exception:
             return []
@@ -66,14 +73,46 @@ class ModelRegistry:
 
     def _load_builtin(self) -> List[Dict[str, Any]]:
         return [
-            {"name": "QuantLLM/TinyLlama-1.1B-GGUF", "family": "tinyllama", "params": 1.1, "formats": ["gguf"],
-             "quality_score": 3.2, "speed_score": 5.0, "verified": True, "recommended": "Q4_K_M"},
-            {"name": "QuantLLM/Llama-3.2-3B-GGUF", "family": "llama", "params": 3.2, "formats": ["gguf"],
-             "quality_score": 4.5, "speed_score": 4.2, "verified": True, "recommended": "Q4_K_M"},
-            {"name": "QuantLLM/Mistral-7B-GGUF", "family": "mistral", "params": 7.0, "formats": ["gguf"],
-             "quality_score": 4.3, "speed_score": 4.0, "verified": True, "recommended": "Q4_K_M"},
-            {"name": "QuantLLM/Phi-3-mini-4k-instruct", "family": "phi", "params": 3.8, "formats": ["safetensors"],
-             "quality_score": 4.2, "speed_score": 4.3, "verified": True, "recommended": "4bit"},
+            {
+                "name": "QuantLLM/TinyLlama-1.1B-GGUF",
+                "family": "tinyllama",
+                "params": 1.1,
+                "formats": ["gguf"],
+                "quality_score": 3.2,
+                "speed_score": 5.0,
+                "verified": True,
+                "recommended": "Q4_K_M",
+            },
+            {
+                "name": "QuantLLM/Llama-3.2-3B-GGUF",
+                "family": "llama",
+                "params": 3.2,
+                "formats": ["gguf"],
+                "quality_score": 4.5,
+                "speed_score": 4.2,
+                "verified": True,
+                "recommended": "Q4_K_M",
+            },
+            {
+                "name": "QuantLLM/Mistral-7B-GGUF",
+                "family": "mistral",
+                "params": 7.0,
+                "formats": ["gguf"],
+                "quality_score": 4.3,
+                "speed_score": 4.0,
+                "verified": True,
+                "recommended": "Q4_K_M",
+            },
+            {
+                "name": "QuantLLM/Phi-3-mini-4k-instruct",
+                "family": "phi",
+                "params": 3.8,
+                "formats": ["safetensors"],
+                "quality_score": 4.2,
+                "speed_score": 4.3,
+                "verified": True,
+                "recommended": "4bit",
+            },
         ]
 
     @property
@@ -116,6 +155,7 @@ class ModelRegistry:
         """Register a model by creating/updating its HF model card."""
         try:
             from huggingface_hub import HfApi
+
             api = HfApi()
             tags = [metadata.get("family", "llama")]
             card_data = {
@@ -133,6 +173,7 @@ class ModelRegistry:
             return True
         except Exception as e:
             from ..utils import print_warning
+
             print_warning(f"Failed to register model: {e}")
             return False
 
@@ -140,12 +181,16 @@ class ModelRegistry:
         items = models if models is not None else self.models
         if not items:
             return "No models found."
-        lines = ["=" * 110,
-                 f"  {'Model':<55} {'Family':<12} {'Params':<8} {'Quality':<9} {'Speed':<7} {'Verified':<9}",
-                 f"  {'-'*55} {'-'*12} {'-'*8} {'-'*9} {'-'*7} {'-'*9}"]
+        lines = [
+            "=" * 110,
+            f"  {'Model':<55} {'Family':<12} {'Params':<8} {'Quality':<9} {'Speed':<7} {'Verified':<9}",
+            f"  {'-' * 55} {'-' * 12} {'-' * 8} {'-' * 9} {'-' * 7} {'-' * 9}",
+        ]
         for m in items:
-            lines.append(f"  {m['name'][:53]:<55} {m['family']:<12} {m['params']:<8.1f} "
-                         f"{m['quality_score']:<9.1f} {m['speed_score']:<7.1f} {'Yes' if m.get('verified') else 'No':<9}")
+            lines.append(
+                f"  {m['name'][:53]:<55} {m['family']:<12} {m['params']:<8.1f} "
+                f"{m['quality_score']:<9.1f} {m['speed_score']:<7.1f} {'Yes' if m.get('verified') else 'No':<9}"
+            )
         lines.append("=" * 110)
         return "\n".join(lines)
 
@@ -169,17 +214,31 @@ def model_info(name: str) -> str:
     m = _registry.get_model(name)
     if not m:
         return f"Model '{name}' not found."
-    return (f"  Model:        {m['name']}\n"
-            f"  Family:       {m['family']}\n"
-            f"  Params:       {m['params']}B\n"
-            f"  Formats:      {', '.join(m['formats'])}\n"
-            f"  Recommended:  {m['recommended']}\n"
-            f"  Quality:      {m['quality_score']}/5.0\n"
-            f"  Speed:        {m['speed_score']}/5.0\n"
-            f"  Verified:     {'Yes' if m.get('verified') else 'No'}")
+    return (
+        f"  Model:        {m['name']}\n"
+        f"  Family:       {m['family']}\n"
+        f"  Params:       {m['params']}B\n"
+        f"  Formats:      {', '.join(m['formats'])}\n"
+        f"  Recommended:  {m['recommended']}\n"
+        f"  Quality:      {m['quality_score']}/5.0\n"
+        f"  Speed:        {m['speed_score']}/5.0\n"
+        f"  Verified:     {'Yes' if m.get('verified') else 'No'}"
+    )
 
 
-def register_model(model_id: str, family: str = "llama", params: float = 0.0,
-                   quality_score: float = 3.0, speed_score: float = 3.0, **kwargs) -> bool:
-    metadata = {"family": family, "params": params, "quality_score": quality_score, "speed_score": speed_score, **kwargs}
+def register_model(
+    model_id: str,
+    family: str = "llama",
+    params: float = 0.0,
+    quality_score: float = 3.0,
+    speed_score: float = 3.0,
+    **kwargs,
+) -> bool:
+    metadata = {
+        "family": family,
+        "params": params,
+        "quality_score": quality_score,
+        "speed_score": speed_score,
+        **kwargs,
+    }
     return _registry.register_model(model_id, metadata)

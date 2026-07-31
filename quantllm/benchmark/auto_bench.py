@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -63,6 +64,7 @@ class HardwareAutoBench:
             hw.cpu_name = platform.processor() or "Unknown"
         try:
             import psutil
+
             hw.ram_gb = psutil.virtual_memory().total / (1024**3)
         except Exception:
             hw.ram_gb = 16.0
@@ -129,7 +131,7 @@ class HardwareAutoBench:
         quant = self._score_quant(micro)
         bq = quant[0] if quant else None
 
-        formats = [{"format": "safetensors", "score": 9.0, "reason": "Best HF compatibility"}]
+        formats: List[Dict[str, Any]] = [{"format": "safetensors", "score": 9.0, "reason": "Best HF compatibility"}]
         if self.hw.has_cuda:
             formats.append({"format": "gguf", "score": 8.5, "reason": "Optimized for llama.cpp/Ollama"})
         if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -138,7 +140,8 @@ class HardwareAutoBench:
         formats.sort(key=lambda x: x["score"], reverse=True)
 
         recs = {
-            "hardware": asdict(self.hw), "micro": micro,
+            "hardware": asdict(self.hw),
+            "micro": micro,
             "quant_scores": [{"method": q.method, "bits": q.bits, "overall": q.overall} for q in quant],
             "format_scores": formats,
             "recommended_quant": {"method": bq.method if bq else "bitsandbytes", "bits": bq.bits if bq else 4},
@@ -152,9 +155,13 @@ class HardwareAutoBench:
     def generate_report(self) -> str:
         r = self.get_recommendations()
         h = r["hardware"]
-        lines = ["=" * 70, "  QuantLLM Hardware Auto-Benchmark Report", "=" * 70,
-                  f"\n  CPU: {h['cpu_name']} ({h['cpu_cores']} cores, {h['ram_gb']:.1f} GB RAM)"]
-        if h['has_cuda']:
+        lines = [
+            "=" * 70,
+            "  QuantLLM Hardware Auto-Benchmark Report",
+            "=" * 70,
+            f"\n  CPU: {h['cpu_name']} ({h['cpu_cores']} cores, {h['ram_gb']:.1f} GB RAM)",
+        ]
+        if h["has_cuda"]:
             lines.append(f"  GPU: {h['gpu_name']} ({h['gpu_vram_gb']:.1f} GB, SM{h['gpu_compute']})")
         else:
             lines.append(f"  GPU: None (CPU mode)")

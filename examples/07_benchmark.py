@@ -40,6 +40,7 @@ print("\nRunning comparison (FP16, BnB-8bit, BnB-4bit)...")
 print("  (This loads the model three times, may take a while)")
 try:
     from quantllm.benchmark import BenchmarkComparer
+
     comparer = BenchmarkComparer(
         model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         verbose=True,

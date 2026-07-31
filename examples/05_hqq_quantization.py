@@ -28,12 +28,13 @@ print(f"  Dequantised:  {list(hqq_layer.dequantize().shape)}")
 # Size comparison
 orig = weight.numel() * 4
 quant = HQQQuantizer.estimate_size(weight, config)
-print(f"  Size: {orig/1024:.0f} KB -> {quant/1024:.0f} KB ({quant/orig:.3f}x)")
+print(f"  Size: {orig / 1024:.0f} KB -> {quant / 1024:.0f} KB ({quant / orig:.3f}x)")
 
 # ------------------------------------------------------------------
 # Quantise a full model
 # ------------------------------------------------------------------
 print("\nQuantising a full model...")
+
 
 class DemoModel(torch.nn.Module):
     def __init__(self):
@@ -46,6 +47,7 @@ class DemoModel(torch.nn.Module):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         return self.fc3(x)
+
 
 model = DemoModel()
 print(f"  Original params: {sum(p.numel() for p in model.parameters())}")

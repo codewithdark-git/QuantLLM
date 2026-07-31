@@ -9,6 +9,7 @@ import pytest
 class TestServerConfig:
     def test_default_config(self):
         from quantllm.server import ServerConfig
+
         cfg = ServerConfig()
         assert cfg.host == "0.0.0.0"
         assert cfg.port == 8080
@@ -16,12 +17,14 @@ class TestServerConfig:
 
     def test_from_cli(self):
         from quantllm.server import ServerConfig
+
         cfg = ServerConfig.from_cli(model="test-model", port=9090)
         assert cfg.model == "test-model"
         assert cfg.port == 9090
 
     def test_from_cli_env(self, monkeypatch):
         from quantllm.server import ServerConfig
+
         monkeypatch.setenv("QUANTLLM_MODEL", "env-model")
         cfg = ServerConfig.from_cli()
         assert cfg.model == "env-model"
@@ -30,6 +33,7 @@ class TestServerConfig:
 class TestInferenceEngine:
     def test_init(self):
         from quantllm.server import InferenceEngine, ServerConfig
+
         cfg = ServerConfig(model="test-model")
         engine = InferenceEngine(cfg)
         assert engine.config.model == "test-model"
@@ -37,6 +41,7 @@ class TestInferenceEngine:
 
     def test_detect_gguf_backend(self, monkeypatch):
         from quantllm.server import InferenceEngine, ServerConfig
+
         cfg = ServerConfig(model="/path/to/model.gguf")
         engine = InferenceEngine(cfg)
 
@@ -50,6 +55,7 @@ class TestInferenceEngine:
 
     def test_load_transformers_mocked(self, monkeypatch):
         from quantllm.server import InferenceEngine, ServerConfig
+
         cfg = ServerConfig(model="test-model")
         engine = InferenceEngine(cfg)
 
@@ -110,4 +116,5 @@ class TestInferenceEngine:
 class TestServerCLI:
     def test_serve_imports(self):
         from quantllm.server.app import run_server
+
         assert callable(run_server)

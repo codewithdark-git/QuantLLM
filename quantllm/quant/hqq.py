@@ -35,6 +35,8 @@ class HQQConfig:
 class HQQLinear(nn.Module):
     """HQQ-quantized linear layer with half-quadratic optimization."""
 
+    bias: Optional[torch.Tensor]
+
     def __init__(
         self,
         in_features: int,
@@ -51,7 +53,11 @@ class HQQLinear(nn.Module):
         self.num_groups = (in_features + group_size - 1) // group_size
 
         dtype = torch.uint8
-        qweight_shape = (out_features, self.num_groups, group_size // 2) if bits == 4 else (out_features, self.num_groups, group_size)
+        qweight_shape = (
+            (out_features, self.num_groups, group_size // 2)
+            if bits == 4
+            else (out_features, self.num_groups, group_size)
+        )
         self.register_buffer("qweight", torch.empty(qweight_shape, dtype=dtype))
         self.register_buffer("scales", torch.empty(out_features, self.num_groups, 1, dtype=torch.float16))
         self.register_buffer("zeros", torch.empty(out_features, self.num_groups, 1, dtype=torch.float16))
@@ -67,7 +73,7 @@ class HQQLinear(nn.Module):
         high = (wq >> 4) & 0xF
         low = wq & 0xF
         out = torch.stack([high, low], dim=-1).reshape(wq.shape[0], wq.shape[1], -1)
-        return out[:, :, :self.group_size]
+        return out[:, :, : self.group_size]
 
     def quantize(self, weight: torch.Tensor) -> None:
         device = weight.device
@@ -125,7 +131,9 @@ class HQQQuantizer:
             for part in parts[:-1]:
                 parent = getattr(parent, part)
 
-            hqq = HQQLinear(module.in_features, module.out_features, bits=bits, group_size=group_size, bias=module.bias is not None)
+            hqq = HQQLinear(
+                module.in_features, module.out_features, bits=bits, group_size=group_size, bias=module.bias is not None
+            )
             hqq.to(module.weight.device)
             hqq.quantize(module.weight.data)
             if module.bias is not None:

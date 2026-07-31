@@ -12,7 +12,7 @@ import importlib
 import os
 import platform
 import warnings
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -152,11 +152,6 @@ def optimize_for_cpu(model: nn.Module, bits: int = 4, group_size: int = 128) -> 
     Returns:
         Model with CPU-optimized quantized linear layers.
     """
-    if bits == 8:
-        linear_cls = CPUInt8Linear
-    else:
-        linear_cls = CPUInt4Linear
-
     replacements = []
     skip_names = {"lm_head", "embed_tokens", "embed"}
 
@@ -172,6 +167,7 @@ def optimize_for_cpu(model: nn.Module, bits: int = 4, group_size: int = 128) -> 
         for part in parts[:-1]:
             parent = getattr(parent, part)
 
+        qlayer: Any
         if bits == 8:
             qlayer = CPUInt8Linear(
                 module.in_features,

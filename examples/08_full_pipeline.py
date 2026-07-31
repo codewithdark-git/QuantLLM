@@ -29,8 +29,7 @@ print(f"   quant={model.config.quant_type}, group={model.config.group_size}")
 # 2. Generate
 # ------------------------------------------------------------------
 print("\n2. Generating text...")
-resp = model.generate("What is the difference between AI and ML?",
-                       max_new_tokens=100, temperature=0.7)
+resp = model.generate("What is the difference between AI and ML?", max_new_tokens=100, temperature=0.7)
 print(f"   {resp[:120]}...")
 
 # ------------------------------------------------------------------
@@ -53,8 +52,7 @@ print(f"   {path}")
 
 # Also export ONNX for cross-format comparison
 print("\n   Exporting ONNX...")
-model2 = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-               config={"format": "onnx", "quantization": "Q4_K_M"})
+model2 = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", config={"format": "onnx", "quantization": "Q4_K_M"})
 path2 = model2.export()
 print(f"   {path2}")
 

@@ -33,9 +33,18 @@ class BenchmarkRunner:
         self.verbose = verbose
         self.results: List[BenchmarkResult] = []
 
-    def benchmark_model(self, model, tokenizer, config, prompt: str = "The meaning of life is",
-                        max_new_tokens: int = 128, num_warmup: int = 3, num_runs: int = 5) -> BenchmarkResult:
+    def benchmark_model(
+        self,
+        model,
+        tokenizer,
+        config,
+        prompt: str = "The meaning of life is",
+        max_new_tokens: int = 128,
+        num_warmup: int = 3,
+        num_runs: int = 5,
+    ) -> BenchmarkResult:
         from ..utils import print_info, print_success
+
         r = BenchmarkResult(
             model=getattr(getattr(model, "config", None), "_name_or_path", "unknown"),
             bits=getattr(config, "bits", 16),
@@ -52,21 +61,36 @@ class BenchmarkRunner:
 
         for _ in range(num_warmup):
             with torch.inference_mode():
-                model.generate(input_ids, max_new_tokens=16, do_sample=False,
-                               pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+                model.generate(
+                    input_ids,
+                    max_new_tokens=16,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
 
         start = time.time()
         with torch.inference_mode():
-            model.generate(input_ids, max_new_tokens=1, do_sample=False,
-                           pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+            model.generate(
+                input_ids,
+                max_new_tokens=1,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
         r.prefill_tokens_per_sec = prefill_len / (time.time() - start) if (time.time() - start) > 0 else 0
 
         decode_times = []
         for _ in range(num_runs):
             start = time.time()
             with torch.inference_mode():
-                model.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False,
-                               pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+                model.generate(
+                    input_ids,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
             elapsed = time.time() - start
             decode_times.append(max_new_tokens / elapsed if elapsed > 0 else 0)
         r.decode_tokens_per_sec = sum(decode_times) / len(decode_times)
@@ -91,7 +115,8 @@ class BenchmarkRunner:
         lines = ["=" * 70, "  QuantLLM Benchmark Report", "=" * 70]
         for i, r in enumerate(self.results):
             lines += [
-                f"\n  Run {i+1}: {r.model}", f"  {'='*50}",
+                f"\n  Run {i + 1}: {r.model}",
+                f"  {'=' * 50}",
                 f"    Params:       {r.num_params_billion:.2f}B",
                 f"    Bits:         {r.bits}",
                 f"    Prefill:      {r.prefill_tokens_per_sec:.1f} tok/s",
@@ -103,9 +128,16 @@ class BenchmarkRunner:
         return "\n".join(lines)
 
 
-def run_benchmark_cli(model_name: str, bits: int = 4, prompt: str = "The meaning of life is",
-                      max_new_tokens: int = 128, save: bool = True, verbose: bool = True) -> BenchmarkResult:
+def run_benchmark_cli(
+    model_name: str,
+    bits: int = 4,
+    prompt: str = "The meaning of life is",
+    max_new_tokens: int = 128,
+    save: bool = True,
+    verbose: bool = True,
+) -> BenchmarkResult:
     from .. import turbo
+
     m = turbo(model_name, bits=bits, verbose=verbose)
     runner = BenchmarkRunner(verbose=verbose)
     result = runner.benchmark_model(m.model, m.tokenizer, m.config, prompt=prompt, max_new_tokens=max_new_tokens)

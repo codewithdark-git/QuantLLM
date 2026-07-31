@@ -100,7 +100,15 @@ class _TextProgress:
         self._tasks[tid] = {"description": description, "total": total, "completed": 0.0}
         return tid
 
-    def update(self, task_id: int, *, completed: Optional[float] = None, advance: Optional[float] = None, description: Optional[str] = None, **kwargs: Any) -> None:
+    def update(
+        self,
+        task_id: int,
+        *,
+        completed: Optional[float] = None,
+        advance: Optional[float] = None,
+        description: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
         task = self._tasks.get(task_id)
         if task is None:
             return
@@ -137,6 +145,7 @@ def _check_rich() -> bool:
     if not _RICH_CHECKED:
         try:
             import rich  # noqa: F401
+
             _HAS_RICH = True
         except ImportError:
             _HAS_RICH = False
@@ -153,6 +162,7 @@ def _best_progress(style: str = "default", transient: bool = True) -> Any:
         return _rich_progress(style, transient)
     try:
         from tqdm.auto import tqdm  # noqa: F401
+
         return _tqdm_progress(style, transient)
     except ImportError:
         pass
@@ -236,7 +246,15 @@ def _tqdm_progress(style: str, transient: bool) -> Any:
             self._bar = tqdm(total=total, desc=desc_clean, unit="step", leave=not transient)
             return 0
 
-        def update(self, task_id: int, *, completed: Optional[float] = None, advance: Optional[float] = None, description: Optional[str] = None, **kwargs: Any) -> None:
+        def update(
+            self,
+            task_id: int,
+            *,
+            completed: Optional[float] = None,
+            advance: Optional[float] = None,
+            description: Optional[str] = None,
+            **kwargs: Any,
+        ) -> None:
             if self._bar is None:
                 return
             if advance is not None:
@@ -322,7 +340,9 @@ class StepProgress:
         print(msg, file=sys.stderr)
 
 
-def track_progress(sequence: Iterator[_T], description: str = "Processing...", total: Optional[int] = None) -> Generator[_T, None, None]:
+def track_progress(
+    sequence: Iterator[_T], description: str = "Processing...", total: Optional[int] = None
+) -> Generator[_T, None, None]:
     """Iterate over *sequence* with a progress indicator."""
     seq = list(sequence)
     n = total if total is not None else len(seq)
@@ -333,7 +353,9 @@ def track_progress(sequence: Iterator[_T], description: str = "Processing...", t
             p.update(task, advance=1)
 
 
-def stream_subprocess_output(process: Any, description: str = "Processing...", parse_progress: Optional[Callable[[str], Optional[float]]] = None) -> tuple[list[str], list[str]]:
+def stream_subprocess_output(
+    process: Any, description: str = "Processing...", parse_progress: Optional[Callable[[str], Optional[float]]] = None
+) -> tuple[list[str], list[str]]:
     """Stream subprocess stdout/stderr with optional progress parsing."""
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
