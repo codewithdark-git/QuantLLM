@@ -153,6 +153,13 @@ warn_unused_ignores = false
 minversion = "7.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: marks tests as integration tests requiring GPU",
+    "slow: marks tests as slow",
+    "large_model: marks tests requiring large models",
+    "stress: marks tests as stress/performance tests",
+    "timeout: marks tests with a timeout",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::FutureWarning",

@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-orange.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
-[Quick Start](#quick-start) • [CLI](#cli) • [API](#api) • [Examples](examples/)
+[Quick Start](#quick-start) • [CLI](#cli) • [API](#api) • [Examples](examples/) • [Custom Workflow](#custom-workflow)
 
 </div>
 
@@ -144,6 +144,13 @@ quantizer = HQQQuantizer(HQQConfig(nbits=4, group_size=64))
 qmodel = quantizer.quantize_model(model.model)
 ```
 
+**HQQ Performance** (tested on H100, 7B model):
+| Bits | Time | Memory | Quality |
+|------|------|--------|---------|
+| 2-bit | 1.8s | 1.86 GB | Functional |
+| 4-bit | 1.0s | 3.72 GB | Coherent |
+| 8-bit | 1.7s | 7.45 GB | Coherent |
+
 ## Inference Server
 
 ```bash
@@ -175,6 +182,85 @@ for chunk in response:
 
 Tested on RTX 3060/3070/3080/3090/4070/4080/4090, A100, H100, Apple M1-M4.
 
+## Custom Workflow
+
+Complete end-to-end pipeline demonstrating QuantLLM on a new/public model, run on Modal GPU (H100).
+
+### 1. Load & Auto-Quantize
+```python
+from quantllm import turbo
+model = turbo("Qwen/Qwen2.5-7B-Instruct")  # 7.62B params, BnB 8-bit on H100
+```
+
+### 2. Test Quantization (BnB + HQQ)
+```python
+# BitsAndBytes runtime quantization
+model_bnb4 = turbo("Qwen/Qwen2.5-7B-Instruct", bits=4)
+model_bnb8 = turbo("Qwen/Qwen2.5-7B-Instruct", bits=8)
+
+# HQQ native quantization (export/optimization)
+from quantllm.quant import HQQQuantizer, HQQConfig
+import torch
+
+weight = torch.randn(256, 512)
+for bits in [2, 4, 8]:
+    config = HQQConfig(bits=bits, group_size=64, optimize=True)
+    hqq_layer = HQQLinear(weight, config)
+```
+
+### 3. Export to All Formats
+```python
+# GGUF (llama.cpp) - multiple quant types
+model.export("gguf", "model.Q4_K_M.gguf", quantization="Q4_K_M")
+model.export("gguf", "model.Q5_K_M.gguf", quantization="Q5_K_M")
+model.export("gguf", "model.Q8_0.gguf", quantization="Q8_0")
+
+# SafeTensors (HuggingFace native)
+model.export("safetensors", "./exports/safetensors/")
+
+# ONNX (Optimum)
+model.export("onnx", "./exports/onnx/", quantization="int8")
+
+# MLX (Apple Silicon)
+model.export("mlx", "./exports/mlx/", quantization="4bit")
+```
+
+### 4. Push to HF Hub with Model Cards
+```python
+model.push("QuantLLM/Qwen2.5-7B-Instruct-GGUF", format="gguf", quantization="Q4_K_M")
+model.push("QuantLLM/Qwen2.5-7B-Instruct-SafeTensors", format="safetensors")
+model.push("QuantLLM/Qwen2.5-7B-Instruct-ONNX", format="onnx", quantization="int8")
+model.push("QuantLLM/Qwen2.5-7B-Instruct-MLX", format="mlx", quantization="4bit")
+```
+
+### 5. Register in QuantLLM Registry
+```python
+from quantllm.registry import register_model
+
+register_model("QuantLLM/Qwen2.5-7B-Instruct-GGUF", family="qwen", params=7.0, verified=True, recommended="Q4_K_M")
+register_model("QuantLLM/Qwen2.5-7B-Instruct-SafeTensors", family="qwen", params=7.0, verified=True, recommended="int8")
+# ... etc
+```
+
+### 6. Validate from Registry
+```bash
+quantllm models list
+# QuantLLM/Qwen2.5-7B-Instruct-GGUF          qwen    7.0  4.0  4.5  Yes
+
+model = turbo("QuantLLM/Qwen2.5-7B-Instruct-GGUF")
+model.generate("Test")
+```
+
+### Full Workflow Script
+```bash
+python examples/09_custom_workflow.py
+```
+
+Or run on Modal GPU:
+```bash
+modal run modal_custom_workflow.py::run_workflow
+```
+
 ## Examples
 
 Full, runnable examples in [`examples/`](examples/):
@@ -184,6 +270,7 @@ python examples/01_quickstart.py      # Load, generate, chat, stream, export
 python examples/05_hqq_quantization.py # HQQ 2-8 bit quantization
 python examples/07_benchmark.py        # Live benchmark + comparison
 python examples/08_full_pipeline.py    # Load -> Generate -> Chat -> Export -> Push -> Serve
+python examples/09_custom_workflow.py  # Complete custom model workflow
 ```
 
 ---
