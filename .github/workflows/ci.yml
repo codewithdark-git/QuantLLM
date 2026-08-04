@@ -76,6 +76,7 @@ jobs:
             "tqdm>=4.65.0" \
             "rich>=13.0.0" \
             "huggingface_hub>=0.20.0" \
+            "bitsandbytes>=0.41.0" \
             "psutil" \
             "gguf" \
             "py-cpuinfo" \
