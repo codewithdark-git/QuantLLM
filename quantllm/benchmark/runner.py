@@ -27,6 +27,27 @@ class BenchmarkResult:
     num_params_billion: float = 0.0
     model_size_gb: float = 0.0
 
+    def __contains__(self, key: str) -> bool:
+        return hasattr(self, key)
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
+
+    def __iter__(self):
+        return iter(self.__dict__)
+
+    def keys(self):
+        return self.__dict__.keys()
+
+    def values(self):
+        return self.__dict__.values()
+
+    def items(self):
+        return self.__dict__.items()
+
+    def get(self, key: str, default=None):
+        return getattr(self, key, default)
+
 
 class BenchmarkRunner:
     def __init__(self, verbose: bool = True):
@@ -129,18 +150,53 @@ class BenchmarkRunner:
 
 
 def run_benchmark_cli(
-    model_name: str,
+    model=None,
+    model_name: str = None,
+    tokenizer=None,
+    config=None,
     bits: int = 4,
     prompt: str = "The meaning of life is",
     max_new_tokens: int = 128,
+    num_runs: int = 5,
+    warmup_runs: int = 3,
     save: bool = True,
     verbose: bool = True,
 ) -> BenchmarkResult:
+    """Run benchmark on a model. Can pass either model_name (str) or pre-loaded model/tokenizer/config, or a TurboModel object."""
     from .. import turbo
 
-    m = turbo(model_name, bits=bits, verbose=verbose)
+    # Handle TurboModel object passed directly as first argument
+    if model is not None and not isinstance(model, str):
+        if hasattr(model, 'model') and hasattr(model, 'tokenizer') and hasattr(model, 'config'):
+            tokenizer = model.tokenizer if tokenizer is None else tokenizer
+            config = model.config if config is None else config
+            model = model.model
+        elif model_name is None and tokenizer is None and config is None:
+            raise ValueError("If passing a model object, tokenizer and config must also be provided, or pass a TurboModel")
+
+    if isinstance(model, str):
+        if model_name is None:
+            model_name = model
+        model = None
+
+    if model is None:
+        if model_name is None:
+            raise ValueError("Either model_name or model must be provided")
+        m = turbo(model_name, bits=bits, verbose=verbose)
+        model = m.model
+        tokenizer = m.tokenizer
+        config = m.config
+
     runner = BenchmarkRunner(verbose=verbose)
-    result = runner.benchmark_model(m.model, m.tokenizer, m.config, prompt=prompt, max_new_tokens=max_new_tokens)
+    result = runner.benchmark_model(
+        model,
+        tokenizer,
+        config,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        num_runs=num_runs,
+        num_warmup=warmup_runs,
+    )
     if save:
         runner.save_results()
     if verbose:
