@@ -76,3 +76,4 @@ class TestRegistryModuleFunctions:
 
         output = model_info("QuantLLM/TinyLlama-1.1B-GGUF")
         assert "Params:" in output
+        assert "1.1" in output  # 1.1B params
