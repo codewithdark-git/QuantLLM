@@ -81,6 +81,9 @@ class HQQLinear(nn.Module):
 
         if self.group_size < self.in_features:
             w = w.reshape(self.out_features, self.num_groups, self.group_size)
+        else:
+            # One group per output feature
+            w = w.unsqueeze(1)  # (out_features, 1, in_features)
 
         w_max = w.amax(dim=-1, keepdim=True)
         w_min = w.amin(dim=-1, keepdim=True)
@@ -89,7 +92,10 @@ class HQQLinear(nn.Module):
 
         wq = torch.round((w - zero) / scale).clamp(0, 2**self.bits - 1)
 
-        self.qweight = self._pack_4bit(wq.to(torch.uint8)) if self.bits == 4 else wq.to(torch.uint8)
+        if self.bits == 4:
+            self.qweight = self._pack_4bit(wq.to(torch.uint8))
+        else:
+            self.qweight = wq.to(torch.uint8)
         self.scales = scale.to(torch.float16)
         self.zeros = zero.to(torch.float16)
 
@@ -100,7 +106,9 @@ class HQQLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w = self.dequantize()
-        return torch.nn.functional.linear(x.to(w.dtype), w, self.bias)
+        # Preserve input dtype (e.g., bfloat16) for compatibility with unquantized layers like lm_head
+        target_dtype = x.dtype
+        return torch.nn.functional.linear(x.to(w.dtype), w, self.bias).to(target_dtype)
 
 
 class HQQQuantizer:
