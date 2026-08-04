@@ -38,7 +38,7 @@ class GenerationMixin:
         repetition_penalty: float = 1.1,
         stop_strings: Optional[List[str]] = None,
         **kwargs,
-    ) -> str:
+    ):
         """Generate text from a prompt.
 
         Args:
@@ -48,7 +48,7 @@ class GenerationMixin:
             top_p: Nucleus sampling parameter.
             top_k: Top-k sampling parameter.
             do_sample: Whether to sample (False = greedy).
-            stream: Whether to stream output token by token.
+            stream: Whether to stream output token by token (returns generator).
             repetition_penalty: Penalty for repeating tokens.
             stop_strings: List of strings that stop generation.
         """
@@ -111,11 +111,12 @@ class GenerationMixin:
         repetition_penalty: float,
         stop_strings: List[str],
         **kwargs,
-    ) -> str:
-        """Generate with streaming output."""
+    ):
+        """Generate with streaming output (yields token strings)."""
         try:
             from transformers import TextIteratorStreamer
             from threading import Thread
+            import sys
 
             streamer = TextIteratorStreamer(
                 self.tokenizer,
@@ -142,33 +143,26 @@ class GenerationMixin:
 
             generated_text = []
             for new_text in streamer:
-                sys.stdout.write(new_text)
-                sys.stdout.flush()
-                generated_text.append(new_text)
+                if new_text:
+                    yield new_text
+                    generated_text.append(new_text)
 
-                full_text = "".join(generated_text)
-                should_stop = any(stop in full_text for stop in stop_strings)
-                if should_stop:
-                    break
+                    full_text = "".join(generated_text)
+                    should_stop = any(stop in full_text for stop in stop_strings)
+                    if should_stop:
+                        break
 
             thread.join()
-            print()
-
-            response = "".join(generated_text)
-            for stop in stop_strings:
-                if stop in response:
-                    response = response.split(stop)[0]
-
-            return response.strip()
 
         except ImportError:
             print("(Streaming not available, using batch generation)")
-            return self.generate(
+            response = self.generate(
                 self.tokenizer.decode(inputs["input_ids"][0]),
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 stream=False,
             )
+            yield response
 
     def chat(
         self,

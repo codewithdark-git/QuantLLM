@@ -227,23 +227,23 @@ class HardwareProfiler:
         print(" HARDWARE PROFILE ".center(60, "="))
         print("=" * 60)
 
-        print(f"\n💻 CPU: {profile.cpu_name}")
+        print(f"\n[CPU] CPU: {profile.cpu_name}")
         print(f"   Cores: {profile.cpu_count}")
         print(f"   System RAM: {profile.system_memory_gb:.1f} GB")
 
         if profile.cuda_available:
-            print(f"\n🎮 CUDA: {profile.cuda_version}")
+            print(f"\n[GPU] CUDA: {profile.cuda_version}")
             print(f"   GPUs: {profile.num_gpus}")
 
             for gpu in profile.gpus:
-                marker = "★" if gpu.index == profile.best_gpu_index else " "
+                marker = "*" if gpu.index == profile.best_gpu_index else " "
                 print(f"\n   {marker} GPU {gpu.index}: {gpu.name}")
                 print(f"     Memory: {gpu.memory_total_gb:.1f} GB")
                 print(f"     Compute: SM{gpu.compute_capability[0]}{gpu.compute_capability[1]}")
-                print(f"     BF16: {'✓' if gpu.supports_bf16 else '✗'}")
-                print(f"     Flash Attn: {'✓' if gpu.supports_flash_attention else '✗'}")
+                print(f"     BF16: {'OK' if gpu.supports_bf16 else 'NO'}")
+                print(f"     Flash Attn: {'OK' if gpu.supports_flash_attention else 'NO'}")
         else:
-            print("\n⚠️  No CUDA GPUs detected - will use CPU")
+            print("\n[!] No CUDA GPUs detected - will use CPU")
 
         print("\n" + "=" * 60)
 

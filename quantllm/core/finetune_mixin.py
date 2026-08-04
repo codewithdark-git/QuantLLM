@@ -130,6 +130,10 @@ class FinetuneMixin:
                 }
             )
 
+        # torch_compile is not supported with quantized models + PEFT
+        # Check effective_loading_bits from SmartConfig (4 or 8 bit = quantized)
+        torch_compile = self.config.compile_model and self.config.effective_loading_bits >= 16
+
         try:
             training_args = TrainingArguments(
                 output_dir=output_dir,
@@ -145,7 +149,7 @@ class FinetuneMixin:
                 lr_scheduler_type="cosine",
                 gradient_checkpointing=self.config.gradient_checkpointing,
                 optim=("paged_adamw_32bit" if self.config.bits <= 4 else "adamw_torch"),
-                torch_compile=self.config.compile_model,
+                torch_compile=torch_compile,
                 **kwargs,
             )
 

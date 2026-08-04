@@ -36,6 +36,7 @@ class ModelGGUFMixin:
         *,
         device: Optional[str] = None,
         verbose: bool = True,
+        token: Optional[str] = None,
         **kwargs,
     ) -> "TurboModel":  # type: ignore[name-defined]  # noqa: F821
         """Load a GGUF model directly from HuggingFace Hub or local path.
@@ -44,6 +45,10 @@ class ModelGGUFMixin:
         """
         if verbose:
             print_header(f"Loading GGUF: {model_id}")
+
+        # Add token to kwargs if provided
+        if token is not None:
+            kwargs["token"] = token
 
         try:
             import gguf
@@ -102,10 +107,10 @@ class ModelGGUFMixin:
                 raise
 
             try:
-                tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=filename)
+                tokenizer = AutoTokenizer.from_pretrained(model_id, gguf_file=filename, token=token)
             except Exception:
                 try:
-                    tokenizer = AutoTokenizer.from_pretrained(model_id)
+                    tokenizer = AutoTokenizer.from_pretrained(model_id, token=token)
                 except Exception:
                     if verbose:
                         print_warning("Could not load tokenizer from GGUF repo, using default")
