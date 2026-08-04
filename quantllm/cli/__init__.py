@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+__version__ = "2.2.0.dev"
+
 
 def _add_verbose(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
@@ -41,6 +43,7 @@ def main() -> None:
     _add_model_arg(cp)
     cp.add_argument("-o", "--output", required=True, help="Output GGUF file")
     cp.add_argument("-q", "--quant", default="q4_k_m", help="Quantization type")
+    _add_verbose(cp)
 
     fp = sub.add_parser("finetune", help="Fine-tune a model")
     _add_model_arg(fp)
@@ -96,16 +99,12 @@ def main() -> None:
 def _route(args: argparse.Namespace) -> None:
     cmd = args.command
     if cmd == "version":
-        from quantllm import __version__
-
         print(f"QuantLLM v{__version__}")
         sys.exit(0)
     elif cmd == "info":
         import torch
 
         print("\n" + "=" * 50 + "\n QuantLLM System Info ".center(50, "=") + "\n" + "=" * 50)
-        from quantllm import __version__
-
         print(f"\n  QuantLLM: {__version__}\n  PyTorch:  {torch.__version__}")
         if torch.cuda.is_available():
             print(
@@ -116,18 +115,18 @@ def _route(args: argparse.Namespace) -> None:
         print("\n" + "=" * 50)
         sys.exit(0)
     elif cmd == "convert":
-        from quantllm import turbo
+        from quantllm.core import turbo
 
         m = turbo(args.model, verbose=args.verbose)
         m.export("gguf", output_path=args.output, quantization=args.quant)
         print(f"Done: {args.output}")
     elif cmd == "finetune":
-        from quantllm import turbo
+        from quantllm.core import turbo
 
         m = turbo(args.model, verbose=args.verbose)
         m.finetune(args.dataset, epochs=args.epochs, learning_rate=args.lr, output_dir=args.output_dir)
     elif cmd == "export":
-        from quantllm import turbo
+        from quantllm.core import turbo
 
         m = turbo(args.model, verbose=args.verbose)
         print(m.export(args.format, output_path=args.output, quantization=args.quant))

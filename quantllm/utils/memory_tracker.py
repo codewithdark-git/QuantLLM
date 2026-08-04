@@ -137,7 +137,7 @@ class MemoryTracker:
         print("=" * 60)
 
         for tag, data in self.memory_logs.items():
-            print(f"\n📍 {tag} (t={data['timestamp_s']:.2f}s)")
+            print(f"\n[*] {tag} (t={data['timestamp_s']:.2f}s)")
             print("-" * 40)
 
             if data.get("gpu_memory"):
