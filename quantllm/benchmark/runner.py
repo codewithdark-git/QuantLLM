@@ -151,7 +151,7 @@ class BenchmarkRunner:
 
 def run_benchmark_cli(
     model=None,
-    model_name: str = None,
+    model_name: str | None = None,
     tokenizer=None,
     config=None,
     bits: int = 4,
@@ -167,12 +167,14 @@ def run_benchmark_cli(
 
     # Handle TurboModel object passed directly as first argument
     if model is not None and not isinstance(model, str):
-        if hasattr(model, 'model') and hasattr(model, 'tokenizer') and hasattr(model, 'config'):
+        if hasattr(model, "model") and hasattr(model, "tokenizer") and hasattr(model, "config"):
             tokenizer = model.tokenizer if tokenizer is None else tokenizer
             config = model.config if config is None else config
             model = model.model
         elif model_name is None and tokenizer is None and config is None:
-            raise ValueError("If passing a model object, tokenizer and config must also be provided, or pass a TurboModel")
+            raise ValueError(
+                "If passing a model object, tokenizer and config must also be provided, or pass a TurboModel"
+            )
 
     if isinstance(model, str):
         if model_name is None:

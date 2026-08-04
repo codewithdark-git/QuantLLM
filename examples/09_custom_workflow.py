@@ -22,7 +22,7 @@ import sys
 # Suppress banner for clean output
 os.environ["QUANTLLM_BANNER"] = "0"
 
-from quantllm import turbo, TurboModel, register_architecture
+from quantllm import turbo, TurboModel, register_architecture, register_model
 from quantllm.quant import HQQLinear, HQQQuantizer, HQQConfig
 from quantllm.registry import list_models, search_models
 
@@ -38,7 +38,7 @@ def phase1_load_model():
 
     print(f"Loaded: {model.config.bits}-bit {model.config.quant_type}")
     print(f"Device: {model.config.device}, dtype: {model.config.dtype}")
-    print(f"Params: {model.config.stats.get('params', 0)/1e9:.2f}B")
+    print(f"Params: {model.config.stats.get('params', 0) / 1e9:.2f}B")
     print(f"Quantized: {model.is_quantized}")
 
     # Test generation
@@ -59,7 +59,9 @@ def phase2_quantization():
     print("\nBitsAndBytes quantization:")
     for bits in [4, 8]:
         model = turbo("Qwen/Qwen2.5-7B-Instruct", bits=bits)
-        print(f"  BnB {bits}-bit: bits={model.config.bits}, quant={model.config.quant_type}, quantized={model.is_quantized}")
+        print(
+            f"  BnB {bits}-bit: bits={model.config.bits}, quant={model.config.quant_type}, quantized={model.is_quantized}"
+        )
         del model
 
     # Test HQQ native quantization (no calibration, for export/optimization)
@@ -71,7 +73,9 @@ def phase2_quantization():
     for bits in [2, 4, 8]:
         config = HQQConfig(bits=bits, group_size=64, optimize=True)
         hqq_layer = HQQLinear(weight, config)  # Quantize linear layer
-        print(f"  HQQ {bits}-bit: Original={weight.numel()*2/1e6:.2f}MB, Quantized={hqq_layer.quantized_weight.numel()/1e6:.2f}MB")
+        print(
+            f"  HQQ {bits}-bit: Original={weight.numel() * 2 / 1e6:.2f}MB, Quantized={hqq_layer.quantized_weight.numel() / 1e6:.2f}MB"
+        )
         del hqq_layer
 
     torch.cuda.empty_cache()
@@ -102,7 +106,9 @@ def phase3_export(model):
         for fmt, quant, desc in formats:
             print(f"\nExporting {desc}...")
             try:
-                output = tmp_path / f"model_{fmt}_{quant or 'default'}.gguf" if fmt == "gguf" else tmp_path / f"model_{fmt}"
+                output = (
+                    tmp_path / f"model_{fmt}_{quant or 'default'}.gguf" if fmt == "gguf" else tmp_path / f"model_{fmt}"
+                )
                 result = model.export(fmt, str(output), quantization=quant or "auto", chunked_conversion=True)
                 size_gb = Path(result).stat().st_size / (1024**3) if Path(result).exists() else 0
                 exports[f"{fmt}_{quant or 'default'}"] = {"path": result, "size_gb": size_gb}

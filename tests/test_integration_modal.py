@@ -26,6 +26,7 @@ class TestCoreAPISmoke:
     @pytest.fixture
     def turbo_model(self, model_name):
         from quantllm import turbo
+
         model = turbo(model_name, verbose=True)
         yield model
         # Cleanup
@@ -87,9 +88,16 @@ class TestCoreAPISmoke:
         """Test model.report() returns expected keys"""
         report = turbo_model.report()
         expected_keys = [
-            "model_id", "params_billion", "requested_bits",
-            "effective_loading_bits", "is_quantized", "quant_method",
-            "device", "dtype", "finetuned", "lora_applied"
+            "model_id",
+            "params_billion",
+            "requested_bits",
+            "effective_loading_bits",
+            "is_quantized",
+            "quant_method",
+            "device",
+            "dtype",
+            "finetuned",
+            "lora_applied",
         ]
         for key in expected_keys:
             assert key in report, f"Missing key: {key}"
@@ -110,6 +118,7 @@ class TestCoreAPIConfig:
 
     def test_bits_override_8bit(self):
         from quantllm import turbo
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=8)
         assert model.config.bits == 8
         assert model.config.quant_type == "Q8_0"
@@ -119,6 +128,7 @@ class TestCoreAPIConfig:
 
     def test_bits_override_2bit(self):
         from quantllm import turbo
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=2)
         assert model.config.bits == 2
         assert model.config.quant_type == "Q2_K"
@@ -127,6 +137,7 @@ class TestCoreAPIConfig:
 
     def test_quantize_false(self):
         from quantllm import turbo
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", quantize=False)
         assert model.config.bits == 16
         assert model.is_quantized is False
@@ -135,6 +146,7 @@ class TestCoreAPIConfig:
 
     def test_device_cpu(self):
         from quantllm import turbo
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", device="cpu")
         assert model.config.device.type == "cpu"
         assert model.config.dtype == torch.float32
@@ -142,6 +154,7 @@ class TestCoreAPIConfig:
 
     def test_dtype_bf16(self):
         from quantllm import turbo
+
         if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
             model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", dtype="bfloat16")
             assert model.config.dtype == torch.bfloat16
@@ -150,9 +163,10 @@ class TestCoreAPIConfig:
 
     def test_config_dict(self):
         from quantllm import turbo
+
         model = turbo(
             "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-            config={"format": "gguf", "quantization": "Q5_K_M", "push_format": "gguf"}
+            config={"format": "gguf", "quantization": "Q5_K_M", "push_format": "gguf"},
         )
         assert model.export_push_config["format"] == "gguf"
         assert model.export_push_config["quantization"] == "Q5_K_M"
@@ -165,6 +179,7 @@ class TestSmartConfig:
 
     def test_smartconfig_detect(self):
         from quantllm.core import SmartConfig
+
         config = SmartConfig.detect("microsoft/Phi-3.5-mini-instruct")
         assert config.bits in [4, 8]
         assert config.quant_type in ["Q4_K_M", "Q8_0"]
@@ -173,6 +188,7 @@ class TestSmartConfig:
 
     def test_smartconfig_training_mode(self):
         from quantllm.core import SmartConfig
+
         config = SmartConfig.detect("microsoft/Phi-3.5-mini-instruct", training=True)
         # gradient_checkpointing is enabled conditionally based on model size vs available memory
         # On T4 (16GB), small models may not trigger it
@@ -181,6 +197,7 @@ class TestSmartConfig:
 
     def test_smartconfig_print_summary(self, capsys):
         from quantllm.core import SmartConfig
+
         config = SmartConfig.detect("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         config.print_summary()
         captured = capsys.readouterr()
@@ -192,6 +209,7 @@ class TestSmartConfig:
 
     def test_effective_loading_bits(self):
         from quantllm.core import SmartConfig
+
         for bits, expected in [(2, 4), (3, 4), (4, 4), (5, 8), (6, 8), (7, 8), (8, 8), (16, 16)]:
             config = SmartConfig(bits=bits)
             assert config.effective_loading_bits == expected, f"bits={bits}"
@@ -203,6 +221,7 @@ class TestGGUFExport:
     @pytest.fixture(scope="class")
     def model(self):
         from quantllm import turbo
+
         m = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", verbose=True)
         yield m
         del m
@@ -222,12 +241,14 @@ class TestGGUFExport:
         assert output_path.stat().st_size > 0
         # Verify it's a valid GGUF file
         import gguf
+
         reader = gguf.GGUFReader(str(output_path))
         assert reader is not None
 
     def test_export_gguf_from_bnb_model(self, temp_dir):
         """Test exporting a BnB-quantized model to GGUF"""
         from quantllm import turbo
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0", bits=4)
         output_path = temp_dir / "bnb_to_gguf.gguf"
         result = model.export("gguf", str(output_path), quantization="Q4_K_M")
@@ -240,6 +261,7 @@ class TestGGUFExport:
         output_path = temp_dir / "model_meta.gguf"
         model.export("gguf", str(output_path), quantization="Q4_K_M")
         import gguf
+
         reader = gguf.GGUFReader(str(output_path))
         # Check for key metadata fields
         fields = {field.name: field for field in reader.fields.values()}
@@ -252,6 +274,7 @@ class TestHQQQuantization:
 
     def test_hqq_config(self):
         from quantllm.quant import HQQConfig
+
         config = HQQConfig(bits=4, group_size=64)
         assert config.bits == 4
         assert config.group_size == 64
@@ -259,6 +282,7 @@ class TestHQQQuantization:
     def test_hqq_linear_quantize(self):
         from quantllm.quant import HQQLinear, HQQConfig
         import torch
+
         weight = torch.randn(256, 512)
         config = HQQConfig(bits=4, group_size=64)
         layer = HQQLinear(512, 256, bits=config.bits, group_size=config.group_size)
@@ -276,6 +300,7 @@ class TestHQQQuantization:
     def test_hqq_bit_widths(self, bits):
         from quantllm.quant import HQQLinear
         import torch
+
         weight = torch.randn(128, 256)
         layer = HQQLinear(256, 128, bits=bits, group_size=64)
         layer.quantize(weight)
@@ -308,6 +333,7 @@ class TestHQQQuantization:
     def test_hqq_group_size(self):
         from quantllm.quant import HQQLinear
         import torch
+
         weight = torch.randn(256, 512)
         for gs in [32, 64, 128]:
             layer = HQQLinear(512, 256, bits=4, group_size=gs)
@@ -317,6 +343,7 @@ class TestHQQQuantization:
     def test_hqq_estimate_size(self):
         from quantllm.quant import HQQQuantizer, HQQConfig
         import torch
+
         weight = torch.randn(1024, 1024)
         config = HQQConfig(bits=4, group_size=64)
         size = HQQQuantizer.estimate_size(weight.numel(), 4)
@@ -330,6 +357,7 @@ class TestSafeTensorsExport:
     def test_export_safetensors(self):
         from quantllm import turbo
         import tempfile
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         with tempfile.TemporaryDirectory() as tmp:
             result = model.export("safetensors", tmp)
@@ -356,6 +384,7 @@ class TestFineTuning:
     def test_finetune_list_dict(self, sample_data):
         from quantllm import turbo
         import tempfile
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         with tempfile.TemporaryDirectory() as tmp:
             model.finetune(sample_data, epochs=1, output_dir=tmp, batch_size=2)
@@ -368,7 +397,7 @@ class TestFineTuning:
     def test_finetune_json_file(self, sample_data):
         from quantllm import turbo
         import tempfile
-        import json
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         with tempfile.TemporaryDirectory() as tmp:
             data_file = Path(tmp) / "data.json"
@@ -385,6 +414,7 @@ class TestFineTuning:
     def test_finetune_lora_params(self, sample_data):
         from quantllm import turbo
         import tempfile
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         with tempfile.TemporaryDirectory() as tmp:
             model.finetune(
@@ -405,12 +435,16 @@ class TestFineTuning:
 class TestModelArchitectures:
     """Test various model architectures"""
 
-    @pytest.mark.parametrize("model_name,arch", [
-        ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "llama"),
-        ("microsoft/Phi-3.5-mini-instruct", "phi3"),
-    ])
+    @pytest.mark.parametrize(
+        "model_name,arch",
+        [
+            ("TinyLlama/TinyLlama-1.1B-Chat-v1.0", "llama"),
+            ("microsoft/Phi-3.5-mini-instruct", "phi3"),
+        ],
+    )
     def test_architecture_load(self, model_name, arch):
         from quantllm import turbo
+
         model = turbo(model_name)
         assert model is not None
         assert model.is_quantized is True
@@ -420,6 +454,7 @@ class TestModelArchitectures:
     def test_register_architecture(self):
         from quantllm import register_architecture
         from quantllm.core.architecture import DEFAULT_ARCHITECTURE_FALLBACKS
+
         # Test that registration works
         register_architecture("test-custom-arch", base_model_type="llama")
         # Should be in fallbacks
@@ -431,19 +466,15 @@ class TestCLICommands:
 
     def test_cli_version(self):
         import subprocess
-        result = subprocess.run(
-            ["quantllm", "version"],
-            capture_output=True, text=True
-        )
+
+        result = subprocess.run(["quantllm", "version"], capture_output=True, text=True)
         assert result.returncode == 0
         assert "QuantLLM" in result.stdout
 
     def test_cli_info(self):
         import subprocess
-        result = subprocess.run(
-            ["quantllm", "info"],
-            capture_output=True, text=True
-        )
+
+        result = subprocess.run(["quantllm", "info"], capture_output=True, text=True)
         assert result.returncode == 0
         assert "PyTorch" in result.stdout
         assert "CUDA" in result.stdout
@@ -451,39 +482,35 @@ class TestCLICommands:
     def test_cli_convert(self):
         import subprocess
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "test.gguf"
             result = subprocess.run(
-                ["quantllm", "convert", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-                 "-o", str(output), "-q", "q4_k_m"],
-                capture_output=True, text=True, timeout=300
+                ["quantllm", "convert", "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "-o", str(output), "-q", "q4_k_m"],
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
             assert result.returncode == 0
             assert output.exists()
 
     def test_cli_models_list(self):
         import subprocess
-        result = subprocess.run(
-            ["quantllm", "models", "list"],
-            capture_output=True, text=True
-        )
+
+        result = subprocess.run(["quantllm", "models", "list"], capture_output=True, text=True)
         assert result.returncode == 0
         assert len(result.stdout) > 0
 
     def test_cli_models_search(self):
         import subprocess
-        result = subprocess.run(
-            ["quantllm", "models", "search", "llama"],
-            capture_output=True, text=True
-        )
+
+        result = subprocess.run(["quantllm", "models", "search", "llama"], capture_output=True, text=True)
         assert result.returncode == 0
 
     def test_cli_compare(self):
         import subprocess
-        result = subprocess.run(
-            ["quantllm", "compare"],
-            capture_output=True, text=True, timeout=120
-        )
+
+        result = subprocess.run(["quantllm", "compare"], capture_output=True, text=True, timeout=120)
         assert result.returncode == 0
         assert "Hardware" in result.stdout or "CPU" in result.stdout
 
@@ -494,6 +521,7 @@ class TestBenchmarking:
     def test_benchmark_runner(self):
         from quantllm.benchmark import run_benchmark
         from quantllm import turbo
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         result = run_benchmark(
             model,
@@ -512,6 +540,7 @@ class TestBenchmarking:
 
     def test_auto_bench(self):
         from quantllm.benchmark import HardwareAutoBench
+
         bench = HardwareAutoBench()
         # Just test detection
         assert bench.hw is not None
@@ -526,17 +555,20 @@ class TestModelRegistry:
 
     def test_registry_list(self):
         from quantllm.registry import list_models
+
         result = list_models()
         assert len(result) > 0
         assert "llama" in result.lower() or "mistral" in result.lower()
 
     def test_registry_search(self):
         from quantllm.registry import search_models
+
         result = search_models("llama")
         assert len(result) > 0
 
     def test_registry_info(self):
         from quantllm.registry import model_info
+
         result = model_info("Llama-3.2-3B")
         assert len(result) > 0
 
@@ -546,6 +578,7 @@ class TestTritonOptimization:
 
     def test_triton_available(self):
         from quantllm.kernels.triton import is_triton_available
+
         # Should be True on GPU
         available = is_triton_available()
         assert isinstance(available, bool)
@@ -554,6 +587,7 @@ class TestTritonOptimization:
     def test_optimize_inference(self):
         from quantllm import turbo
         from quantllm.kernels.triton import is_triton_available
+
         if not is_triton_available():
             pytest.skip("Triton not available")
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
@@ -570,13 +604,15 @@ class TestEdgeCases:
 
     def test_invalid_model_id(self):
         from quantllm import turbo
-        with pytest.raises(Exception):
+
+        with pytest.raises(RuntimeError):
             turbo("nonexistent/invalid-model-xyz")
 
     def test_gguf_export_without_tokenizer(self):
         """Test GGUF export works even if tokenizer issues"""
         from quantllm import turbo
         import tempfile
+
         model = turbo("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "test.gguf"
@@ -594,6 +630,7 @@ class TestLargeModels:
     @pytest.mark.xfail(reason="Phi-3 DynamicCache compatibility issue with transformers 4.57+ - upstream bug")
     def test_phi_3b_load(self):
         from quantllm import turbo
+
         model = turbo("microsoft/Phi-3.5-mini-instruct")
         assert model.is_quantized is True
         response = model.generate("Hello", max_new_tokens=20)
@@ -604,6 +641,7 @@ class TestLargeModels:
     @pytest.mark.large_model
     def test_mistral_7b_load(self):
         from quantllm import turbo
+
         model = turbo("mistralai/Mistral-7B-Instruct-v0.3")
         assert model.is_quantized is True
         response = model.generate("Hello", max_new_tokens=20)
@@ -614,6 +652,7 @@ class TestLargeModels:
     @pytest.mark.large_model
     def test_qwen_7b_load(self):
         from quantllm import turbo
+
         model = turbo("Qwen/Qwen2.5-7B-Instruct")
         assert model.is_quantized is True
         response = model.generate("Hello", max_new_tokens=20)
@@ -627,6 +666,7 @@ class TestLargeModels:
     def test_large_model_gguf_export(self, quant_type):
         from quantllm import turbo
         import tempfile
+
         model = turbo("microsoft/Phi-3.5-mini-instruct")
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / f"model_{quant_type}.gguf"

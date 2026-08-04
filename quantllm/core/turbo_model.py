@@ -240,7 +240,12 @@ class TurboModel(
                             if hasattr(weight, "dequantize"):
                                 dequant_weight = weight.dequantize()
                             else:
-                                dequant_weight = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)
+                                # Linear4bit weight may have quant_state or quant_state attribute
+                                quant_state = getattr(weight, "quant_state", None)
+                                if quant_state is not None:
+                                    dequant_weight = bnb.functional.dequantize_4bit(weight.data, quant_state)
+                                else:
+                                    dequant_weight = weight.data.to(target_dtype)
                             target_module.weight.data.copy_(dequant_weight.to(target_dtype))
                             if module.bias is not None:
                                 target_module.bias.data.copy_(module.bias.data.to(target_dtype))

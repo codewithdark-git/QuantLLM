@@ -189,6 +189,7 @@ class ModelRegistry:
         except Exception as e:
             try:
                 from quantllm.utils import print_warning
+
                 print_warning(f"Failed to register model: {e}")
             except ImportError:
                 print(f"Warning: Failed to register model: {e}")
