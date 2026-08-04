@@ -136,12 +136,12 @@ class ModelCardGenerator:
 
         # Format-specific emoji
         format_emoji = {
-            "gguf": "🦙",
-            "onnx": "⚡",
-            "mlx": "🍎",
-            "safetensors": "🤗",
+            "gguf": "[LLAMA]",
+            "onnx": "[ONNX]",
+            "mlx": "[MLX]",
+            "safetensors": "[HF]",
         }
-        emoji = format_emoji.get(self.format, "📦")
+        emoji = format_emoji.get(self.format, "[MODEL]")
 
         return f"""
 <div align="center">
@@ -150,11 +150,11 @@ class ModelCardGenerator:
 
 **{self.base_model}** converted to **{format_upper}** format
 
-[![QuantLLM](https://img.shields.io/badge/🚀_Made_with-QuantLLM-orange?style=for-the-badge)](https://github.com/codewithdark-git/QuantLLM)
+[![QuantLLM](https://img.shields.io/badge/MADE_WITH-QuantLLM-orange?style=for-the-badge)](https://github.com/codewithdark-git/QuantLLM)
 [![Format](https://img.shields.io/badge/Format-{format_upper}-blue?style=for-the-badge)]()
 {f"[![Quantization](https://img.shields.io/badge/Quant-{self.quantization}-green?style=for-the-badge)]()" if self.quantization else ""}
 
-<a href="https://github.com/codewithdark-git/QuantLLM">⭐ Star QuantLLM on GitHub</a>
+<a href="https://github.com/codewithdark-git/QuantLLM">[STAR] Star QuantLLM on GitHub</a>
 
 </div>
 
@@ -171,7 +171,7 @@ class ModelCardGenerator:
         }
 
         return f"""
-## 📖 About This Model
+## [ABOUT] About This Model
 
 This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** converted to {format_desc.get(self.format, self.format.upper() + " format")}.
 
@@ -202,7 +202,7 @@ This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** 
         filename = f"{model_name}.{quant}.gguf"
 
         return f'''
-## 🚀 Quick Start
+## [START] Quick Start
 
 ### Option 1: Python (llama-cpp-python)
 
@@ -261,7 +261,7 @@ huggingface-cli download {self.repo_id} {filename} --local-dir .
     def _generate_onnx_usage(self) -> str:
         """Generate ONNX usage examples."""
         return f'''
-## 🚀 Quick Start
+## [START] Quick Start
 
 ### Option 1: Optimum (Recommended)
 
@@ -305,7 +305,7 @@ pip install optimum[onnxruntime] transformers
     def _generate_mlx_usage(self) -> str:
         """Generate MLX usage examples for Apple Silicon."""
         return f'''
-## 🚀 Quick Start
+## [START] Quick Start
 
 ### Generate Text with mlx-lm
 
@@ -378,7 +378,7 @@ pip install mlx-lm
     def _generate_transformers_usage(self) -> str:
         """Generate Transformers usage examples."""
         return f'''
-## 🚀 Quick Start
+## [START] Quick Start
 
 ### With Transformers
 
@@ -418,7 +418,7 @@ pip install transformers torch
     def _generate_details_section(self) -> str:
         """Generate model details section."""
         return f"""
-## 📊 Model Details
+## [DETAILS] Model Details
 
 | Property | Value |
 |----------|-------|
@@ -436,24 +436,24 @@ pip install transformers torch
             return ""
 
         quant_info = {
-            "Q2_K": ("2-bit", "Smallest file size, experimental quality", "🔴"),
-            "Q3_K_S": ("3-bit", "Very small, reduced quality", "🟠"),
-            "Q3_K_M": ("3-bit", "Small size, acceptable quality", "🟠"),
-            "Q3_K_L": ("3-bit", "Slightly larger, better quality", "🟠"),
-            "Q4_K_S": ("4-bit", "Good balance, slightly smaller", "🟡"),
-            "Q4_K_M": ("4-bit", "⭐ Recommended - Best quality/size balance", "🟢"),
-            "Q5_K_S": ("5-bit", "Higher quality, moderate size", "🟢"),
-            "Q5_K_M": ("5-bit", "High quality, good performance", "🟢"),
-            "Q6_K": ("6-bit", "Very high quality, larger size", "🔵"),
-            "Q8_0": ("8-bit", "Near-original quality, largest size", "🔵"),
-            "F16": ("16-bit", "Full precision, reference quality", "⚪"),
+            "Q2_K": ("2-bit", "Smallest file size, experimental quality", "[RED]"),
+            "Q3_K_S": ("3-bit", "Very small, reduced quality", "[ORANGE]"),
+            "Q3_K_M": ("3-bit", "Small size, acceptable quality", "[ORANGE]"),
+            "Q3_K_L": ("3-bit", "Slightly larger, better quality", "[ORANGE]"),
+            "Q4_K_S": ("4-bit", "Good balance, slightly smaller", "[YELLOW]"),
+            "Q4_K_M": ("4-bit", "[STAR] Recommended - Best quality/size balance", "[GREEN]"),
+            "Q5_K_S": ("5-bit", "Higher quality, moderate size", "[GREEN]"),
+            "Q5_K_M": ("5-bit", "High quality, good performance", "[GREEN]"),
+            "Q6_K": ("6-bit", "Very high quality, larger size", "[BLUE]"),
+            "Q8_0": ("8-bit", "Near-original quality, largest size", "[BLUE]"),
+            "F16": ("16-bit", "Full precision, reference quality", "[WHITE]"),
         }
 
         quant = self.quantization.upper()
-        info = quant_info.get(quant, ("N/A", "Custom quantization", "⚪"))
+        info = quant_info.get(quant, ("N/A", "Custom quantization", "[WHITE]"))
 
         return f"""
-## 📦 Quantization Details
+## [QUANT] Quantization Details
 
 This model uses **{quant}** quantization:
 
@@ -467,12 +467,12 @@ This model uses **{quant}** quantization:
 
 | Type | Bits | Quality | Best For |
 |------|------|---------|----------|
-| Q2_K | 2-bit | 🔴 Lowest | Extreme size constraints |
-| Q3_K_M | 3-bit | 🟠 Low | Very limited memory |
-| Q4_K_M | 4-bit | 🟢 Good | **Most users** ⭐ |
-| Q5_K_M | 5-bit | 🟢 High | Quality-focused |
-| Q6_K | 6-bit | 🔵 Very High | Near-original |
-| Q8_0 | 8-bit | 🔵 Excellent | Maximum quality |
+| Q2_K | 2-bit | [RED] Lowest | Extreme size constraints |
+| Q3_K_M | 3-bit | [ORANGE] Low | Very limited memory |
+| Q4_K_M | 4-bit | [GREEN] Good | **Most users** [STAR] |
+| Q5_K_M | 5-bit | [GREEN] High | Quality-focused |
+| Q6_K | 6-bit | [BLUE] Very High | Near-original |
+| Q8_0 | 8-bit | [BLUE] Excellent | Maximum quality |
 """
 
     def _generate_footer(self) -> str:
@@ -480,11 +480,11 @@ This model uses **{quant}** quantization:
         return f'''
 ---
 
-## 🚀 Created with QuantLLM
+## [START] Created with QuantLLM
 
 <div align="center">
 
-[![QuantLLM](https://img.shields.io/badge/🚀_QuantLLM-Ultra--fast_LLM_Quantization-orange?style=for-the-badge)](https://github.com/codewithdark-git/QuantLLM)
+[![QuantLLM](https://img.shields.io/badge/QuantLLM-Ultra_fast_LLM_Quantization-orange?style=for-the-badge)](https://github.com/codewithdark-git/QuantLLM)
 
 **Convert any model to GGUF, ONNX, or MLX in one line!**
 
@@ -505,9 +505,9 @@ model.push("your-repo", format="{self.format}")
   <img src="https://img.shields.io/github/stars/codewithdark-git/QuantLLM?style=social" alt="GitHub Stars">
 </a>
 
-**[📚 Documentation](https://github.com/codewithdark-git/QuantLLM#readme)** · 
-**[🐛 Report Issue](https://github.com/codewithdark-git/QuantLLM/issues)** · 
-**[💡 Request Feature](https://github.com/codewithdark-git/QuantLLM/issues)**
+**[DOCS](https://github.com/codewithdark-git/QuantLLM#readme)** ·
+**[ISSUE](https://github.com/codewithdark-git/QuantLLM/issues)** ·
+**[FEATURE](https://github.com/codewithdark-git/QuantLLM/issues)**
 
 </div>
 '''

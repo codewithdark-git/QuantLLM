@@ -72,7 +72,7 @@ class QuantLLMHubManager:
             tokenizer: The tokenizer object
             format: 'safetensors' or 'pytorch'
         """
-        print_header("Saving Model for Hub", icon="💾")
+        print_header("Saving Model for Hub", icon="[SAVE]")
 
         save_path = self.staging_dir
 
@@ -141,7 +141,7 @@ class QuantLLMHubManager:
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
         try:
-            print_header(f"Pushing to {self.repo_id}", icon="📤")
+            print_header(f"Pushing to {self.repo_id}", icon="[PUSH]")
 
             # Ensure repo exists
             if not self.api.repo_exists(self.repo_id):
