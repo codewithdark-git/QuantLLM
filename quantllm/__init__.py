@@ -130,6 +130,11 @@ __all__ = [
     "SmartConfig",
     "HardwareProfiler",
     "ModelAnalyzer",
+    # Metadata
+    "__version__",
+    "__title__",
+    "__description__",
+    "__author__",
     # Quantization (GGUF)
     "convert_to_gguf",
     "quantize_gguf",

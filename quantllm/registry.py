@@ -34,10 +34,15 @@ class ModelRegistry:
             from huggingface_hub import HfApi
 
             api = HfApi()
-            models = api.list_models(author=self.org, sort="downloads", direction=-1, limit=50)
+            models = api.list_models(author=self.org, sort="downloads", limit=50)
             result = []
             for m in models:
-                card_data = getattr(m, "card_data", None) or {}
+                # Get full model info to access card_data (metadata from model card frontmatter)
+                try:
+                    model_info = api.model_info(m.modelId)
+                    card_data = getattr(model_info, "card_data", None) or {}
+                except Exception:
+                    card_data = {}
                 result.append(
                     {
                         "name": m.modelId,
@@ -119,7 +124,17 @@ class ModelRegistry:
     def models(self) -> List[Dict[str, Any]]:
         if self._models is None:
             hub_models = self._fetch_from_hub()
-            self._models = hub_models if hub_models else self._load_builtin()
+            builtin = self._load_builtin()
+            if hub_models:
+                # Merge hub models with built-in, preferring hub versions but keeping
+                # built-in as fallback for models not on hub
+                hub_names = {m["name"].lower() for m in hub_models}
+                for bm in builtin:
+                    if bm["name"].lower() not in hub_names:
+                        hub_models.append(bm)
+                self._models = hub_models
+            else:
+                self._models = builtin
         return self._models
 
     def list_models(self, family: Optional[str] = None, min_quality: float = 0.0) -> List[Dict[str, Any]]:
@@ -172,9 +187,11 @@ class ModelRegistry:
             self._models = None
             return True
         except Exception as e:
-            from ..utils import print_warning
-
-            print_warning(f"Failed to register model: {e}")
+            try:
+                from quantllm.utils import print_warning
+                print_warning(f"Failed to register model: {e}")
+            except ImportError:
+                print(f"Warning: Failed to register model: {e}")
             return False
 
     def format_list(self, models: Optional[List[Dict[str, Any]]] = None) -> str:
