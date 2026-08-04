@@ -101,14 +101,16 @@ class TurboModel(
                 if getattr(quant_config, "load_in_8bit", False):
                     return True
 
-        try:
-            import bitsandbytes as bnb
+        # Check for bnb modules (handle from_config_only mock models)
+        if hasattr(self.model, "modules"):
+            try:
+                import bitsandbytes as bnb
 
-            for module in self.model.modules():
-                if isinstance(module, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)):
-                    return True
-        except ImportError:
-            pass
+                for module in self.model.modules():
+                    if isinstance(module, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)):
+                        return True
+            except ImportError:
+                pass
 
         return False
 

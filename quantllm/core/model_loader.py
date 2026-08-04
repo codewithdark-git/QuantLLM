@@ -73,6 +73,7 @@ class ModelLoaderMixin:
         config_override: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
+        token: Optional[str] = None,
     ) -> "TurboModel":  # type: ignore[name-defined]  # noqa: F821
         """Load a model with automatic optimization.
 
@@ -109,9 +110,12 @@ class ModelLoaderMixin:
         if verbose:
             logger.info("Detecting hardware and configuration...")
 
+        # When quantize=False, force full precision (bits=16)
+        effective_bits = 16 if not quantize else bits
+
         smart_config = SmartConfig.detect(
             model_name,
-            bits=bits,
+            bits=effective_bits,
             max_seq_length=max_length,
             device=device,
             dtype=dtype,
@@ -135,6 +139,7 @@ class ModelLoaderMixin:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=trust_remote_code,
+            token=token,
         )
 
         if tokenizer.pad_token is None:
@@ -156,10 +161,13 @@ class ModelLoaderMixin:
             "torch_dtype": smart_config.dtype,
         }
 
+        if token is not None:
+            model_kwargs["token"] = token
+
         hf_config = None
 
         try:
-            hf_config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+            hf_config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code, token=token)
 
             existing_quant = getattr(hf_config, "quantization_config", None)
             if existing_quant:
@@ -219,7 +227,9 @@ class ModelLoaderMixin:
         if smart_config.use_flash_attention:
             cls._enable_flash_attention(model, verbose)
 
-        if smart_config.compile_model:
+        # Only compile if model is NOT quantized (effective_loading_bits >= 16)
+        # torch.compile is not supported with quantized models + PEFT
+        if smart_config.compile_model and smart_config.effective_loading_bits >= 16:
             try:
                 model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
                 if verbose:
@@ -227,6 +237,9 @@ class ModelLoaderMixin:
             except Exception as e:
                 if verbose:
                     print_warning(f"torch.compile failed: {e}")
+        elif smart_config.compile_model and smart_config.effective_loading_bits < 16:
+            if verbose:
+                logger.info("  torch.compile skipped (quantized model)")
 
         if verbose:
             print_success("Model loaded successfully!")

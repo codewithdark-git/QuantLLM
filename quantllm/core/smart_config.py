@@ -109,12 +109,14 @@ class SmartConfig:
         else:
             config.device = hw.device
 
-        # Dtype
+        # Dtype - infer from device if not explicitly set
         if dtype is not None:
             config.dtype = getattr(torch, dtype)
-        elif hw.supports_bf16:
+        elif config.device.type == "cpu":
+            config.dtype = torch.float32
+        elif hw.supports_bf16 and config.device.type != "cpu":
             config.dtype = torch.bfloat16
-        elif hw.cuda_available:
+        elif hw.cuda_available and config.device.type != "cpu":
             config.dtype = torch.float16
         else:
             config.dtype = torch.float32
@@ -290,39 +292,40 @@ class SmartConfig:
         }
 
     def print_summary(self) -> None:
-        """Print a plain-text summary of the configuration."""
+        """Print a plain-text summary of the configuration to stderr."""
         from quantllm.utils import format_size, print_header, print_info, print_warning
+        import sys
 
-        print("")
-        print("  QuantLLM Configuration")
-        print("  " + "-" * 40)
+        print("", file=sys.stderr)
+        print("  QuantLLM Configuration", file=sys.stderr)
+        print("  " + "-" * 40, file=sys.stderr)
 
         bits_info = f"Bits: {self.bits}"
         if self.bits != self.effective_loading_bits and self.bits < 16:
             bits_info += f" (loads as {self.effective_loading_bits}-bit)"
-        print(f"    Quantization:  {bits_info}  Type: {self.quant_type}  Group: {self.group_size}")
+        print(f"    Quantization:  {bits_info}  Type: {self.quant_type}  Group: {self.group_size}", file=sys.stderr)
 
         mem_status = []
         mem_status.append(f"Offload: {'Yes' if self.cpu_offload else 'No'}")
         mem_status.append(f"Checkpoint: {'Yes' if self.gradient_checkpointing else 'No'}")
-        print(f"    Memory:        {'  '.join(mem_status)}")
+        print(f"    Memory:        {'  '.join(mem_status)}", file=sys.stderr)
 
         speed_status = []
         speed_status.append(f"FlashAttn: {'Yes' if self.use_flash_attention else 'No'}")
         speed_status.append(f"Fused: {'Yes' if self.use_fused_kernels else 'No'}")
         speed_status.append(f"Compile: {'Yes' if self.compile_model else 'No'}")
-        print(f"    Speed:         {'  '.join(speed_status)}")
+        print(f"    Speed:         {'  '.join(speed_status)}", file=sys.stderr)
 
         train_stats = f"Batch: {self.batch_size}  Accum: {self.gradient_accumulation_steps}  Eff: {self.batch_size * self.gradient_accumulation_steps}"
-        print(f"    Training:      {train_stats}")
+        print(f"    Training:      {train_stats}", file=sys.stderr)
 
         hw_info = f"{str(self.device).upper()} ({str(self.dtype).split('.')[-1]})  Seq: {self.max_seq_length}"
-        print(f"    Hardware:      {hw_info}")
+        print(f"    Hardware:      {hw_info}", file=sys.stderr)
 
         params = self.stats.get("params", 0) / 1e9
         fp16_size = self.stats.get("fp16_size", 0)
         quant_size = self.stats.get("quant_size", 0)
         savings = (1 - quant_size / fp16_size) * 100 if fp16_size > 0 else 0
         size_str = f"Params: {params:.2f}B  Size: {fp16_size:.2f}GB -> {quant_size:.2f}GB  (Saved: {savings:.0f}%)"
-        print(f"    Model Stats:   {size_str}")
-        print("")
+        print(f"    Model Stats:   {size_str}", file=sys.stderr)
+        print("", file=sys.stderr)
