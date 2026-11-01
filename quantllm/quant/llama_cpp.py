@@ -51,6 +51,45 @@ def get_llama_cpp_dir() -> str:
     return os.path.join(cache_dir, "llama.cpp")
 
 
+# Quantization types that llama-quantize refuses to produce without an importance matrix
+IMATRIX_REQUIRED_TYPES = {"IQ1_S", "IQ1_M", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS"}
+
+# Full-precision GGUF types the converter can emit directly via --outtype
+GGUF_PASSTHROUGH_OUTTYPES = {
+    "f16": "f16",
+    "fp16": "f16",
+    "float16": "f16",
+    "torch.float16": "f16",
+    "bf16": "bf16",
+    "bfloat16": "bf16",
+    "torch.bfloat16": "bf16",
+    "f32": "f32",
+    "fp32": "f32",
+    "float32": "f32",
+    "torch.float32": "f32",
+}
+
+
+def gguf_outtype(dtype: str) -> Optional[str]:
+    """Map a dtype / passthrough quant name to a converter ``--outtype`` (``None`` if not full precision)."""
+    return GGUF_PASSTHROUGH_OUTTYPES.get(str(dtype).lower())
+
+
+def _exe_name(name: str) -> str:
+    """Return the platform-specific executable file name."""
+    return f"{name}.exe" if os.name == "nt" else name
+
+
+def _binary_candidates(llama_dir: str, name: str) -> List[str]:
+    """Candidate locations for a llama.cpp binary: copied to root, MSVC multi-config, single-config."""
+    exe = _exe_name(name)
+    return [
+        os.path.join(llama_dir, exe),
+        os.path.join(llama_dir, "build", "bin", "Release", exe),
+        os.path.join(llama_dir, "build", "bin", exe),
+    ]
+
+
 def check_llama_cpp() -> Tuple[Optional[str], Optional[str]]:
     """
     Check if llama.cpp is installed and return paths to executables.
@@ -64,17 +103,10 @@ def check_llama_cpp() -> Tuple[Optional[str], Optional[str]]:
     llama_dir = get_llama_cpp_dir()
 
     # Check for quantizer executable
-    quantizer_candidates = [
-        os.path.join(llama_dir, "llama-quantize"),
-        os.path.join(llama_dir, "llama-quantize.exe"),
-        os.path.join(llama_dir, "quantize"),
-        os.path.join(llama_dir, "quantize.exe"),
-        os.path.join(llama_dir, "build", "bin", "llama-quantize"),
-        os.path.join(llama_dir, "build", "bin", "quantize"),
+    quantizer_candidates = _binary_candidates(llama_dir, "llama-quantize") + _binary_candidates(llama_dir, "quantize")
+    if os.name != "nt":
         # Common linux install locations if system-wide
-        "/usr/local/bin/llama-quantize",
-        "/usr/bin/llama-quantize",
-    ]
+        quantizer_candidates += ["/usr/local/bin/llama-quantize", "/usr/bin/llama-quantize"]
 
     quantizer_path = None
     for candidate in quantizer_candidates:
@@ -184,24 +216,14 @@ def install_llama_cpp(
     if gpu_support:
         print_info("CUDA support enabled")
 
-    # Try CMAKE first (newer method)
+    # llama.cpp only supports CMake builds (its Makefile was removed upstream)
     try:
         with QuantLLMProgress(style="spinner") as progress:
             task = progress.add_task("Compiling with CMAKE...", total=None)
             _compile_with_cmake(llama_dir, n_jobs, gpu_support, print_output)
         print_success("llama.cpp compiled successfully with CMAKE")
-    except Exception as e:
-        print_warning(f"CMAKE compilation failed: {e}")
-        print_info("Trying MAKE compilation...")
-
-        # Fallback to MAKE (older method)
-        try:
-            with QuantLLMProgress(style="spinner") as progress:
-                task = progress.add_task("Compiling with MAKE...", total=None)
-                _compile_with_make(llama_dir, n_jobs, gpu_support, print_output)
-            print_success("llama.cpp compiled successfully with MAKE")
-        except Exception as e2:
-            raise RuntimeError(f"Both CMAKE and MAKE compilation failed. CMAKE: {e}, MAKE: {e2}")
+    except FileNotFoundError as e:
+        raise RuntimeError(f"CMake not found. Install CMake and a C++ compiler to build llama.cpp: {e}") from e
 
     # Step 4: Verify installation
     print_step(4, total_steps, "Verifying installation...")
@@ -225,17 +247,15 @@ def _compile_with_cmake(llama_dir: str, n_jobs: int, gpu_support: bool, print_ou
     - Parallelizes with maximum CPU cores
     """
     # Check if already compiled
-    quantizer_path = os.path.join(llama_dir, "llama-quantize")
+    quantizer_path = os.path.join(llama_dir, _exe_name("llama-quantize"))
     if os.path.exists(quantizer_path) and os.access(quantizer_path, os.X_OK):
         return True  # Already compiled
 
     build_dir = os.path.join(llama_dir, "build")
 
-    # Only clean if build exists but is broken
+    # Only clean if build exists but is broken (MSVC puts binaries in build/bin/Release)
     if os.path.exists(build_dir):
-        # Check if build is valid
-        bin_path = os.path.join(build_dir, "bin", "llama-quantize")
-        if not os.path.exists(bin_path):
+        if not any(os.path.exists(p) for p in _binary_candidates(llama_dir, "llama-quantize")[1:]):
             shutil.rmtree(build_dir, ignore_errors=True)
 
     # Configure CMAKE with speed optimizations
@@ -254,12 +274,7 @@ def _compile_with_cmake(llama_dir: str, n_jobs: int, gpu_support: bool, print_ou
         "-DLLAMA_BUILD_EXAMPLES=OFF",  # Skip examples (we only need quantize)
     ]
 
-    subprocess.run(
-        configure_cmd,
-        check=True,
-        stdout=subprocess.DEVNULL if not print_output else None,
-        stderr=subprocess.DEVNULL if not print_output else None,
-    )
+    _run_build_step(configure_cmd, print_output, "CMake configure")
 
     # Build only the quantize target (faster than building everything)
     build_cmd = [
@@ -273,45 +288,35 @@ def _compile_with_cmake(llama_dir: str, n_jobs: int, gpu_support: bool, print_ou
         "llama-quantize",  # Only build what we need
     ]
 
-    subprocess.run(
-        build_cmd,
-        check=True,
-        stdout=subprocess.DEVNULL if not print_output else None,
-        stderr=subprocess.DEVNULL if not print_output else None,
-    )
+    _run_build_step(build_cmd, print_output, "CMake build")
 
     # Copy executable to main directory
-    bin_dir = os.path.join(build_dir, "bin")
-    if os.path.exists(bin_dir):
-        for target in LLAMA_CPP_TARGETS:
-            src = os.path.join(bin_dir, target)
+    for target in LLAMA_CPP_TARGETS:
+        for src in _binary_candidates(llama_dir, target)[1:]:
             if os.path.exists(src):
                 shutil.copy2(src, llama_dir)
+                break
 
     return True
 
 
-def _compile_with_make(llama_dir: str, n_jobs: int, gpu_support: bool, print_output: bool):
-    """Compile llama.cpp using MAKE (fallback)."""
-    # Clean
-    subprocess.run(
-        ["make", "clean", "-C", llama_dir],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+def _run_build_step(cmd: List[str], print_output: bool, step: str, tail_lines: int = 40) -> None:
+    """Run a build command. When quiet, capture its output and include the tail in the error on failure."""
+    if print_output:
+        subprocess.run(cmd, check=True)
+        return
 
-    # Build
-    env = os.environ.copy()
-    if gpu_support:
-        env["LLAMA_CUDA"] = "1"
-
-    subprocess.run(
-        ["make", "all", f"-j{n_jobs}", "-C", llama_dir],
-        env=env,
-        check=True,
-        stdout=subprocess.DEVNULL if not print_output else None,
-        stderr=subprocess.STDOUT if not print_output else None,
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
     )
+    if result.returncode != 0:
+        tail = "\n".join((result.stdout or "").strip().splitlines()[-tail_lines:])
+        raise RuntimeError(
+            f"{step} failed with exit code {result.returncode}\nOutput (last {tail_lines} lines):\n{tail}"
+        )
 
 
 def quantize_gguf(
@@ -320,6 +325,7 @@ def quantize_gguf(
     quant_type: str,
     quantizer_location: Optional[str] = None,
     print_output: bool = True,
+    imatrix: Optional[str] = None,
 ) -> str:
     """
     Quantize a GGUF file using llama-quantize.
@@ -330,6 +336,8 @@ def quantize_gguf(
         quant_type: Quantization type (e.g., "q4_k_m", "q8_0")
         quantizer_location: Path to llama-quantize executable (auto-detect if None)
         print_output: Whether to print quantization progress
+        imatrix: Path to an importance-matrix file (``llama-imatrix`` output). Required for
+            the very low-bit IQ types (e.g. ``iq3_xxs``, ``iq2_xxs``, ``iq1_s``).
 
     Returns:
         Path to output GGUF file
@@ -344,15 +352,24 @@ def quantize_gguf(
     from ..utils import QuantLLMProgress, print_info
     import re
 
+    # Normalize quant type
+    quant_type = quant_type.upper()
+
+    if quant_type in IMATRIX_REQUIRED_TYPES and not imatrix:
+        raise ValueError(
+            f"{quant_type} quantization requires an importance matrix. Generate one with "
+            "llama-imatrix (e.g. `llama-imatrix -m model.F16.gguf -f calibration.txt -o imatrix.dat`) "
+            "and pass imatrix='imatrix.dat'."
+        )
+    if imatrix and not os.path.exists(imatrix):
+        raise FileNotFoundError(f"imatrix file not found: {imatrix}")
+
     # Get quantizer
     if quantizer_location is None:
         quantizer_location, _ = check_llama_cpp()
 
     if not os.path.exists(input_gguf):
         raise FileNotFoundError(f"Input GGUF file not found: {input_gguf}")
-
-    # Normalize quant type
-    quant_type = quant_type.upper()
 
     # Get CPU count for threading
     n_threads = psutil.cpu_count() or 1
@@ -361,8 +378,10 @@ def quantize_gguf(
     input_size_mb = os.path.getsize(input_gguf) / (1024 * 1024)
 
     # Build command
-    cmd = [
-        quantizer_location,
+    cmd = [quantizer_location]
+    if imatrix:
+        cmd += ["--imatrix", imatrix]
+    cmd += [
         input_gguf,
         output_gguf,
         quant_type,
@@ -454,6 +473,7 @@ def convert_to_gguf(
     is_gpt_oss: bool = False,
     max_shard_size: str = "50GB",
     print_output: bool = True,
+    output_dir: Optional[str] = None,
 ) -> Tuple[List[str], bool]:
     """
     Convert HuggingFace model to GGUF using llama.cpp converter.
@@ -470,6 +490,7 @@ def convert_to_gguf(
         is_gpt_oss: Whether this is a GPT-OSS model
         max_shard_size: Maximum shard size
         print_output: Whether to print conversion progress
+        output_dir: Directory to write the GGUF file to (defaults to ``input_folder``)
 
     Returns:
         Tuple of (list of output files, is_vlm_updated)
@@ -516,22 +537,15 @@ def convert_to_gguf(
                 "2. Or use a pre-trained model without BitsAndBytes quantization."
             )
 
-    # Determine output filename
-    if quantization_type and quantization_type.lower() != "none":
-        output_file = f"{model_name}.{quantization_type.upper()}.gguf"
-    else:
-        output_file = f"{model_name}.{model_dtype.upper()}.gguf"
+    # Normalize model_dtype for llama.cpp's --outtype (f32/f16/bf16/q8_0/...)
+    model_dtype = gguf_outtype(model_dtype) or str(model_dtype).lower()
 
-    # Normalize model_dtype for llama.cpp
-    dtype_map = {
-        "float16": "f16",
-        "bfloat16": "bf16",
-        "float32": "f32",
-        "torch.float16": "f16",
-        "torch.bfloat16": "bf16",
-        "torch.float32": "f32",
-    }
-    model_dtype = dtype_map.get(str(model_dtype).lower(), model_dtype)
+    # Determine output file (absolute, so the converter never writes into the CWD)
+    if quantization_type and quantization_type.lower() != "none":
+        output_name = f"{model_name}.{quantization_type.upper()}.gguf"
+    else:
+        output_name = f"{model_name}.{model_dtype.upper()}.gguf"
+    output_file = os.path.abspath(os.path.join(output_dir or input_folder, output_name))
 
     # Build conversion command
     cmd = [
@@ -557,13 +571,14 @@ def convert_to_gguf(
         process = subprocess.Popen(
             cmd,  # type: ignore[arg-type]
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # convert_hf_to_gguf logs to stderr: merge it into stdout so one reader drains
+            # everything and a full stderr pipe can never deadlock the converter.
+            stderr=subprocess.STDOUT,
             universal_newlines=True,
             bufsize=1,
         )
 
-        stdout_lines = []
-        stderr_lines = []
+        output_lines: List[str] = []
 
         # Progress patterns for convert_hf_to_gguf.py output
         # Typically shows: "Loading model..." "Writing tensor [X/Y]..."
@@ -579,7 +594,7 @@ def convert_to_gguf(
                     if not line:
                         break
                     line = line.strip()
-                    stdout_lines.append(line)
+                    output_lines.append(line)
 
                     # Try to find total tensors
                     if total_tensors is None:
@@ -599,31 +614,24 @@ def convert_to_gguf(
                         progress.update(task, description="Writing GGUF...")
 
                 progress.update(task, completed=100, description="Conversion complete!")
-
-                # Read any remaining stderr
-                stderr_output = process.stderr.read()  # type: ignore[union-attr]
-                if stderr_output:
-                    stderr_lines = stderr_output.strip().split("\n")
         else:
-            stdout, stderr = process.communicate()
+            stdout, _ = process.communicate()
             if stdout:
-                stdout_lines = stdout.strip().split("\n")
-            if stderr:
-                stderr_lines = stderr.strip().split("\n")
+                output_lines = stdout.strip().split("\n")
 
         process.wait()
 
         if process.returncode != 0:
-            # Collect all error information
-            error_details = []
-            if stdout_lines:
-                error_details.append("STDOUT:\n" + "\n".join(stdout_lines[-20:]))
-            if stderr_lines:
-                error_details.append("STDERR:\n" + "\n".join(stderr_lines[-20:]))
+            # Don't leave a partial/corrupt GGUF behind
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except OSError:
+                    pass
 
             error_msg = f"GGUF conversion failed with exit code {process.returncode}\n"
-            if error_details:
-                error_msg += "\n--- Conversion Output ---\n" + "\n".join(error_details)
+            if output_lines:
+                error_msg += "\n--- Conversion Output ---\n" + "\n".join(output_lines[-40:])
             else:
                 error_msg += "\nNo error output captured. Try running with print_output=True for more details."
 

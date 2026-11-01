@@ -5,7 +5,9 @@ the ``from_pretrained`` entry point.
 """
 
 import copy
+import importlib.util
 import os
+import tempfile
 from dataclasses import asdict
 from typing import Any, Dict, Optional, Type
 
@@ -17,6 +19,7 @@ from transformers import (
     PreTrainedModel,
 )
 
+from ..utils.hf_compat import dtype_kwargs
 from .architecture import (
     DEFAULT_ARCHITECTURE_FALLBACKS,
     GGUF_NAME_MARKERS,
@@ -45,7 +48,6 @@ DEFAULT_EXPORT_PUSH_CONFIG: Dict[str, Any] = {
 class ModelLoaderMixin:
     """Model-loading methods mixed into :class:`TurboModel`."""
 
-    _enable_flash_attention: Any
     _architecture_registry: Any
     _model_class_registry: Any
     resolve_model_type: Any
@@ -74,6 +76,7 @@ class ModelLoaderMixin:
         config: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
         token: Optional[str] = None,
+        attn_implementation: Optional[str] = None,
     ) -> "TurboModel":  # type: ignore[name-defined]  # noqa: F821
         """Load a model with automatic optimization.
 
@@ -82,6 +85,9 @@ class ModelLoaderMixin:
         - Chooses optimal quantization settings
         - Configures memory management
         - Enables speed optimizations
+
+        ``attn_implementation`` overrides the automatic choice
+        (``"flash_attention_2"`` when usable, otherwise ``"sdpa"``).
         """
         disable_hf_progress_bar()
         disable_ds_progress_bar()
@@ -119,6 +125,8 @@ class ModelLoaderMixin:
             max_seq_length=max_length,
             device=device,
             dtype=dtype,
+            trust_remote_code=trust_remote_code,
+            token=token,
         )
 
         if config_override:
@@ -158,7 +166,7 @@ class ModelLoaderMixin:
 
         model_kwargs: Dict[str, Any] = {
             "trust_remote_code": trust_remote_code,
-            "torch_dtype": smart_config.dtype,
+            **dtype_kwargs(smart_config.dtype),
         }
 
         if token is not None:
@@ -171,35 +179,33 @@ class ModelLoaderMixin:
 
             existing_quant = getattr(hf_config, "quantization_config", None)
             if existing_quant:
-                allow_requantize = False
+                if verbose:
+                    logger.warning(
+                        "Model is already quantized (%s). Disabling dynamic quantization.",
+                        existing_quant.__class__.__name__,
+                    )
+                quantize = False
 
-                is_bnb = "BitsAndBytesConfig" in existing_quant.__class__.__name__
-                is_8bit = getattr(existing_quant, "load_in_8bit", False)
+        except Exception as config_error:
+            logger.warning("Could not load config for '%s': %s", model_name, config_error)
 
-                if is_bnb and is_8bit and smart_config.bits == 4:
-                    allow_requantize = True
-                    if verbose:
-                        logger.info("  Re-quantizing 8-bit model to 4-bit")
-
-                if not allow_requantize:
-                    if verbose:
-                        logger.warning(
-                            "Model is already quantized (%s). Disabling dynamic quantization.",
-                            existing_quant.__class__.__name__,
-                        )
-                    quantize = False
-
-        except Exception:
-            pass
-
+        quantization_applied = False
         if cls._should_apply_quantization(quantize, smart_config.bits, from_config_only):
-            model_kwargs.update(cls._get_quantization_kwargs(smart_config))
+            quant_kwargs = cls._get_quantization_kwargs(smart_config)
+            quantization_applied = bool(quant_kwargs)
+            model_kwargs.update(quant_kwargs)
 
         if smart_config.cpu_offload:
             model_kwargs["device_map"] = "auto"
-            model_kwargs["offload_folder"] = "offload"
+            model_kwargs["offload_folder"] = tempfile.mkdtemp(prefix="quantllm_offload_")
+            max_memory = cls._offload_max_memory(smart_config.device)
+            if max_memory:
+                model_kwargs["max_memory"] = max_memory
         elif torch.cuda.is_available():
             model_kwargs["device_map"] = {"": smart_config.device}
+
+        auto_attn = attn_implementation is None
+        model_kwargs["attn_implementation"] = attn_implementation or cls._choose_attn_implementation(smart_config)
 
         with QuantLLMProgress() as p:
             if verbose:
@@ -213,6 +219,7 @@ class ModelLoaderMixin:
                 model_type_override=model_type_override,
                 base_model_fallback=base_model_fallback,
                 from_config_only=from_config_only,
+                auto_attn_implementation=auto_attn,
             )
 
             if verbose:
@@ -224,21 +231,19 @@ class ModelLoaderMixin:
                 if verbose:
                     logger.info("  Gradient checkpointing enabled")
 
-        if smart_config.use_flash_attention:
-            cls._enable_flash_attention(model, verbose)
-
-        # Only compile if model is NOT quantized (effective_loading_bits >= 16)
-        # torch.compile is not supported with quantized models + PEFT
-        if smart_config.compile_model and smart_config.effective_loading_bits >= 16:
-            try:
-                model = torch.compile(model, mode="reduce-overhead")  # type: ignore[assignment]
-                if verbose:
-                    logger.info("  torch.compile enabled")
-            except Exception as e:
-                if verbose:
-                    print_warning(f"torch.compile failed: {e}")
-        elif smart_config.compile_model and smart_config.effective_loading_bits < 16:
-            if verbose:
+        # torch.compile is opt-in (compile_model=True via config_override) and
+        # never applied to quantized models. Only ``forward`` is compiled so the
+        # model stays a PreTrainedModel (PEFT / isinstance checks keep working).
+        if smart_config.compile_model:
+            if smart_config.effective_loading_bits >= 16 and not quantization_applied and not from_config_only:
+                try:
+                    model.forward = torch.compile(model.forward)  # type: ignore[method-assign]
+                    if verbose:
+                        logger.info("  torch.compile enabled (model.forward)")
+                except Exception as e:
+                    if verbose:
+                        print_warning(f"torch.compile failed: {e}")
+            elif verbose:
                 logger.info("  torch.compile skipped (quantized model)")
 
         if verbose:
@@ -282,6 +287,71 @@ class ModelLoaderMixin:
         return quantize and bits < 16 and not from_config_only
 
     @staticmethod
+    def _choose_attn_implementation(smart_config: Any) -> str:
+        """Pick ``flash_attention_2`` when installed and supported, else ``sdpa``."""
+        dtype = getattr(smart_config, "dtype", None)
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype, None)
+        device = getattr(smart_config, "device", None)
+        device_type = device.type if isinstance(device, torch.device) else str(device or "").split(":")[0]
+        if (
+            getattr(smart_config, "use_flash_attention", False)
+            and device_type == "cuda"
+            and dtype in (torch.float16, torch.bfloat16)
+            and importlib.util.find_spec("flash_attn") is not None
+        ):
+            return "flash_attention_2"
+        return "sdpa"
+
+    @staticmethod
+    def _offload_max_memory(device: Any) -> Optional[Dict[Any, str]]:
+        """Build a ``max_memory`` map for CPU offload (~10% GPU headroom)."""
+        if not torch.cuda.is_available():
+            return None
+        try:
+            index = torch.device(device).index if device is not None else None
+            if index is None:
+                index = torch.cuda.current_device()
+            free_bytes, _ = torch.cuda.mem_get_info(index)
+        except Exception as e:
+            logger.warning("Could not query free GPU memory for offloading: %s", e)
+            return None
+        max_memory: Dict[Any, str] = {index: f"{max(int(free_bytes * 0.9 / (1024**2)), 1)}MiB"}
+        try:
+            import psutil
+
+            max_memory["cpu"] = f"{int(psutil.virtual_memory().available * 0.9 / (1024**2))}MiB"
+        except ImportError:
+            pass
+        return max_memory
+
+    @staticmethod
+    def _is_architecture_error(error: BaseException) -> bool:
+        """True when ``error`` means transformers did not recognise the architecture."""
+        if not isinstance(error, (ValueError, KeyError)):
+            return False
+        message = str(error).lower()
+        markers = (
+            "model type",
+            "model_type",
+            "configuration class",
+            "unrecognized",
+            "does not recognize",
+        )
+        return any(marker in message for marker in markers)
+
+    @staticmethod
+    def _is_attn_implementation_error(error: BaseException) -> bool:
+        """True when ``error`` is about an unsupported attention implementation."""
+        message = str(error).lower()
+        return isinstance(error, (ValueError, ImportError)) and (
+            "attn_implementation" in message
+            or "scaled_dot_product_attention" in message
+            or "flash attention" in message
+            or "flashattention" in message
+        )
+
+    @staticmethod
     def _looks_prequantized(model_name: str) -> Optional[str]:
         """Return a marker when the repo name suggests pre-quantization."""
         lowered = model_name.lower()
@@ -307,8 +377,14 @@ class ModelLoaderMixin:
         model_type_override: Optional[str],
         base_model_fallback: bool,
         from_config_only: bool,
+        auto_attn_implementation: bool = False,
     ) -> PreTrainedModel:
-        """Load model with architecture fallback and optional config-only mode."""
+        """Load model with architecture fallback and optional config-only mode.
+
+        Only unrecognised-architecture errors trigger the fallback chain;
+        everything else (missing/gated repos, missing deps, OOM, ...) is
+        re-raised immediately.
+        """
         config_model_type = (getattr(hf_config, "model_type", None) or "").lower().strip()
         is_registered_architecture = config_model_type in cls._architecture_registry if config_model_type else False
         resolved_model_type = cls.resolve_model_type(
@@ -346,15 +422,38 @@ class ModelLoaderMixin:
             return AutoModelForCausalLM.from_config(
                 resolved_config,
                 trust_remote_code=trust_remote_code,
-                torch_dtype=model_kwargs.get("torch_dtype"),
+                **{k: v for k, v in model_kwargs.items() if k in ("dtype", "torch_dtype")},
             )
 
         try:
-            return AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            try:
+                return AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            except (ValueError, ImportError) as attn_error:
+                # The auto-selected attention backend is not supported by this
+                # architecture: retry once with the transformers default.
+                if not (
+                    auto_attn_implementation
+                    and "attn_implementation" in model_kwargs
+                    and cls._is_attn_implementation_error(attn_error)
+                ):
+                    raise
+                logger.warning(
+                    "attn_implementation=%r not supported (%s); retrying with the transformers default.",
+                    model_kwargs["attn_implementation"],
+                    attn_error,
+                )
+                model_kwargs = dict(model_kwargs)
+                model_kwargs.pop("attn_implementation")
+                return AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
         except Exception as primary_error:
-            if not base_model_fallback:
+            oom_error = getattr(torch.cuda, "OutOfMemoryError", None)
+            if isinstance(primary_error, (OSError, ImportError)) or (
+                oom_error is not None and isinstance(primary_error, oom_error)
+            ):
                 raise
-            fallback_error = None
+            if not base_model_fallback or not cls._is_architecture_error(primary_error):
+                raise
+            fallback_error: Optional[BaseException] = None
 
             if resolved_config is not None:
                 fallback_kwargs = dict(model_kwargs)
@@ -378,7 +477,9 @@ class ModelLoaderMixin:
                 except Exception as fallback_registered_error:
                     fallback_error = fallback_registered_error
 
-            error_details = f" Last fallback error: {fallback_error}" if fallback_error else ""
+            error_details = f"\nPrimary error: {type(primary_error).__name__}: {primary_error}"
+            if fallback_error:
+                error_details += f"\nLast fallback error: {type(fallback_error).__name__}: {fallback_error}"
             architecture_label = config_model_type or "<unknown>"
             resolved_label = resolved_model_type or "<none>"
 
@@ -390,7 +491,7 @@ class ModelLoaderMixin:
                 "2) Use model_type_override='llama' (or your compatible base family).\n"
                 "3) Use from_config_only=True with a loadable config "
                 "(usually trust_remote_code=True)." + error_details
-            ) from (fallback_error or primary_error)
+            ) from primary_error
 
     @staticmethod
     def _get_quantization_kwargs(config: SmartConfig) -> Dict[str, Any]:
@@ -398,7 +499,28 @@ class ModelLoaderMixin:
 
         BitsAndBytes only supports 4-bit and 8-bit for model loading.
         Other bit widths (2, 3, 5, 6) are available during GGUF export.
+        Returns ``{}`` (full precision) when bitsandbytes or a CUDA/XPU
+        device is unavailable.
         """
+        if importlib.util.find_spec("bitsandbytes") is None:
+            logger.warning(
+                "bitsandbytes is not installed; falling back to full "
+                "precision. Install with pip install bitsandbytes to "
+                "enable 4-bit / 8-bit quantization on CUDA."
+            )
+            return {}
+
+        xpu = getattr(torch, "xpu", None)
+        has_accelerator = torch.cuda.is_available() or bool(xpu is not None and xpu.is_available())
+        if not has_accelerator:
+            logger.warning(
+                "BitsAndBytes quantization requires a CUDA (or XPU) device; "
+                "none was found, so the model is loaded in full precision."
+            )
+            return {}
+
+        cpu_offload = bool(getattr(config, "cpu_offload", False))
+
         try:
             from transformers import BitsAndBytesConfig
 
@@ -408,6 +530,7 @@ class ModelLoaderMixin:
                     bnb_4bit_compute_dtype=config.dtype,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
+                    llm_int8_enable_fp32_cpu_offload=cpu_offload,
                 )
                 if config.bits < 4:
                     logger.info(
@@ -416,7 +539,10 @@ class ModelLoaderMixin:
                     )
                     logger.info("     Tip: Export to GGUF for Q%s_K quantization!", config.bits)
             else:
-                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+                quantization_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                    llm_int8_enable_fp32_cpu_offload=cpu_offload,
+                )
                 if config.bits != 8:
                     logger.info(
                         "  BitsAndBytes supports 4/8-bit only. Using 8-bit for requested %s-bit.",

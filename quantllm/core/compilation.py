@@ -67,13 +67,8 @@ def compile_model(
         return model
 
     try:
-        # Suppress compilation errors for robustness
-        import torch._dynamo as dynamo
-
-        dynamo.config.suppress_errors = True
-        dynamo.config.automatic_dynamic_shapes = dynamic  # type: ignore[attr-defined]
-
-        # Compile the model
+        # Compile the model (``dynamic`` is passed per call; global dynamo
+        # config such as suppress_errors is intentionally left untouched)
         compiled = torch.compile(
             model,
             mode=mode,
@@ -96,7 +91,6 @@ def compile_for_inference(model: nn.Module) -> nn.Module:
     Uses settings optimized for inference rather than training:
     - reduce-overhead mode for faster warmup
     - Dynamic shapes for variable sequence lengths
-    - Suppressed errors for robustness
 
     Args:
         model: Model to compile

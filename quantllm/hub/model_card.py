@@ -5,8 +5,31 @@ Generates professional HuggingFace model cards with format-specific metadata,
 usage examples, and "Use this model" button compatibility.
 """
 
+import os
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+
+_HUB_REPO_ID_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
+
+
+def sanitize_base_model(base_model: Optional[str]) -> Optional[str]:
+    """Return *base_model* if it is a HuggingFace repo id, else ``None``.
+
+    Local filesystem paths must never be written into ``base_model`` metadata.
+    """
+    if not base_model or not isinstance(base_model, str):
+        return None
+    if _HUB_REPO_ID_RE.match(base_model) and not os.path.isdir(base_model):
+        return base_model
+    return None
+
+
+def base_model_display_name(base_model: Optional[str]) -> str:
+    """Human-readable name: the repo id, or the last path component of a local path."""
+    if not base_model:
+        return "unknown"
+    return sanitize_base_model(base_model) or os.path.basename(os.path.normpath(base_model)) or "unknown"
 
 
 class ModelCardGenerator:
@@ -62,7 +85,9 @@ class ModelCardGenerator:
             tags: Additional tags
         """
         self.repo_id = repo_id
-        self.base_model = base_model
+        # Only a real Hub repo id may appear in metadata / links.
+        self.base_model_id = sanitize_base_model(base_model)
+        self.base_model = base_model_display_name(base_model)
         self.format = format.lower()
         self.quantization = quantization
         self.license = license
@@ -106,9 +131,14 @@ class ModelCardGenerator:
         yaml_lines = [
             "---",
             f"license: {self.license}",
-            f"base_model: {self.base_model}",
-            f"library_name: {library_name}",
         ]
+        if self.base_model_id:
+            yaml_lines.append(f"base_model: {self.base_model_id}")
+        yaml_lines.append(f"library_name: {library_name}")
+        # Registry family lives in a dedicated key (not inferred from tags[0]).
+        family = self.extra_params.get("family")
+        if family:
+            yaml_lines.append(f"quantllm_family: {str(family).lower()}")
 
         # Add language
         if self.language:
@@ -128,6 +158,11 @@ class ModelCardGenerator:
         yaml_lines.append("---")
 
         return "\n".join(yaml_lines)
+
+    def _base_model_link(self) -> str:
+        if self.base_model_id:
+            return f"[{self.base_model_id}](https://huggingface.co/{self.base_model_id})"
+        return self.base_model
 
     def _generate_header_banner(self) -> str:
         """Generate prominent header with QuantLLM branding."""
@@ -173,11 +208,11 @@ class ModelCardGenerator:
         return f"""
 ## [ABOUT] About This Model
 
-This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** converted to {format_desc.get(self.format, self.format.upper() + " format")}.
+This model is **{self._base_model_link()}** converted to {format_desc.get(self.format, self.format.upper() + " format")}.
 
 | Property | Value |
 |----------|-------|
-| **Base Model** | [{self.base_model}](https://huggingface.co/{self.base_model}) |
+| **Base Model** | {self._base_model_link()} |
 | **Format** | {self.format.upper()} |
 | **Quantization** | {self.quantization or "None (Full Precision)"} |
 | **License** | {self.license} |
@@ -199,7 +234,8 @@ This model is **[{self.base_model}](https://huggingface.co/{self.base_model})** 
         """Generate GGUF usage examples."""
         model_name = self.repo_id.split("/")[-1]
         quant = self.quantization or "Q4_K_M"
-        filename = f"{model_name}.{quant}.gguf"
+        # Prefer the actual uploaded filename when the caller knows it.
+        filename = self.extra_params.get("gguf_filename") or f"{model_name}.{quant}.gguf"
 
         return f'''
 ## [START] Quick Start
@@ -422,7 +458,7 @@ pip install transformers torch
 
 | Property | Value |
 |----------|-------|
-| **Original Model** | [{self.base_model}](https://huggingface.co/{self.base_model}) |
+| **Original Model** | {self._base_model_link()} |
 | **Format** | {self.format.upper()} |
 | **Quantization** | {self.quantization or "Full Precision"} |
 | **License** | `{self.license}` |

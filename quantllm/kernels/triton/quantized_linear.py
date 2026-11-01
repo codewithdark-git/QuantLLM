@@ -24,8 +24,8 @@ except ImportError:
 
 
 def is_triton_available() -> bool:
-    """Check if Triton is available for use."""
-    return _TRITON_AVAILABLE
+    """Check if Triton is importable and a CUDA device is available to run its kernels."""
+    return _TRITON_AVAILABLE and torch.cuda.is_available()
 
 
 def triton_q8_0_quantize(weight: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -67,6 +67,7 @@ def int4_matmul(
     qweight: torch.Tensor,
     scales: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
+    group_size: Optional[int] = None,
 ) -> torch.Tensor:
     """
     INT4 matmul path backed by fused dequant+matmul on CUDA/Triton when available.
@@ -76,11 +77,14 @@ def int4_matmul(
         qweight: Quantized int4 values stored in int8, shape [in_features, out_features]
         scales: Per-column scales, shape [1, out_features] or [in_features/group, out_features]
         bias: Optional bias [out_features]
+        group_size: Quantization group size. Inferred from shapes when omitted, which is
+            only exact when ``group_size`` divides ``in_features``.
     """
     # Per-column case uses [1, N] zeros; grouped quantization uses zeros shaped like scales.
     is_per_column = scales.shape[0] == 1
     zeros = scales.new_zeros((1, scales.shape[1])) if is_per_column else scales.new_zeros(scales.shape)
-    group_size = qweight.shape[0] if is_per_column else max(qweight.shape[0] // scales.shape[0], 1)
+    if group_size is None:
+        group_size = qweight.shape[0] if is_per_column else max(-(-qweight.shape[0] // scales.shape[0]), 1)
     return fused_dequant_matmul(
         x=x,
         qweight=qweight,
@@ -308,14 +312,15 @@ def fused_dequant_matmul(
         >>> zeros = torch.zeros(4, 256, device='cuda', dtype=torch.float16)
         >>> out = fused_dequant_matmul(x, qw, scales, zeros, group_size=128)
     """
-    if not _TRITON_AVAILABLE:
+    if not _TRITON_AVAILABLE or not x.is_cuda:
         # Fallback to PyTorch implementation
         return _pytorch_dequant_matmul(x, qweight, scales, zeros, bias, group_size)
 
     # Reshape input for 2D matmul
     original_shape = x.shape
     if x.dim() > 2:
-        x = x.view(-1, x.shape[-1])
+        x = x.reshape(-1, x.shape[-1])
+    x = x.contiguous()
 
     M, K = x.shape
     K_w, N = qweight.shape
@@ -329,7 +334,6 @@ def fused_dequant_matmul(
         return (triton.cdiv(M, meta["BLOCK_M"]) * triton.cdiv(N, meta["BLOCK_N"]),)
 
     # Ensure contiguous tensors
-    x = x.contiguous()
     qweight = qweight.contiguous()
     scales = scales.contiguous()
     zeros = zeros.contiguous()
@@ -395,14 +399,14 @@ def _pytorch_dequant_matmul(
         scale_expanded = scales.repeat_interleave(group_size, dim=0)[:K]
         zero_expanded = zeros.repeat_interleave(group_size, dim=0)[:K]
 
-    # Dequantize weights
-    weight_fp = (qweight.to(x.dtype) - zero_expanded) * scale_expanded
+    # Dequantize weights (in the input dtype so mixed-precision buffers don't break the matmul)
+    weight_fp = (qweight.to(x.dtype) - zero_expanded.to(x.dtype)) * scale_expanded.to(x.dtype)
 
     # Matmul
     output = torch.nn.functional.linear(x, weight_fp.t())
 
     if bias is not None:
-        output = output + bias
+        output = output + bias.to(x.dtype)
 
     return output
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 import torch
 
-from .hardware import HardwareProfiler, HardwareProfile
+from .hardware import GPUInfo, HardwareProfiler, HardwareProfile
 from .model_analyzer import ModelAnalyzer, ModelInfo
 
 
@@ -79,6 +79,8 @@ class SmartConfig:
         device: Optional[str] = None,
         dtype: Optional[str] = None,
         training: bool = False,
+        trust_remote_code: bool = False,
+        token: Optional[str] = None,
     ) -> "SmartConfig":
         """
         Auto-detect optimal configuration for a model.
@@ -90,6 +92,8 @@ class SmartConfig:
             device: Override device (auto-detect if None)
             dtype: Override dtype (auto-detect if None)
             training: Whether config is for training (uses more memory)
+            trust_remote_code: Forwarded to the config lookup (default False)
+            token: Optional HuggingFace token for gated/private repos
 
         Returns:
             SmartConfig with optimal settings
@@ -98,7 +102,7 @@ class SmartConfig:
         hw = HardwareProfiler.detect()
 
         # Analyze model
-        model_info = ModelAnalyzer.analyze(model_name)
+        model_info = ModelAnalyzer.analyze(model_name, trust_remote_code=trust_remote_code, token=token)
 
         # Determine optimal settings
         config = cls()
@@ -109,14 +113,17 @@ class SmartConfig:
         else:
             config.device = hw.device
 
+        # Capabilities must come from the GPU we will actually run on
+        selected_gpu = cls._selected_gpu(hw, config.device)
+
         # Dtype - infer from device if not explicitly set
         if dtype is not None:
             config.dtype = getattr(torch, dtype)
         elif config.device.type == "cpu":
             config.dtype = torch.float32
-        elif hw.supports_bf16 and config.device.type != "cpu":
+        elif selected_gpu is not None and selected_gpu.supports_bf16:
             config.dtype = torch.bfloat16
-        elif hw.cuda_available and config.device.type != "cpu":
+        elif selected_gpu is not None:
             config.dtype = torch.float16
         else:
             config.dtype = torch.float32
@@ -125,7 +132,7 @@ class SmartConfig:
         if bits is not None:
             config.bits = bits
         else:
-            config.bits = cls._choose_bits(hw, model_info, training)
+            config.bits = cls._choose_bits(hw, model_info, training, selected_gpu)
 
         # Quant type - maps to GGUF quantization types
         config.quant_type = cls._choose_quant_type(config.bits, hw)
@@ -139,9 +146,9 @@ class SmartConfig:
         config.group_size = cls._choose_group_size(hw, model_info)
 
         # Memory settings
-        if hw.gpus:
-            available_memory = hw.best_gpu.memory_free_gb if hw.best_gpu else 8.0
-            estimated_size = model_info.estimated_size_at_bits(config.bits)
+        if selected_gpu is not None:
+            available_memory = selected_gpu.memory_free_gb
+            estimated_size = model_info.estimated_size_at_bits(config.effective_loading_bits)
 
             # Need more headroom for training
             headroom_factor = 3.0 if training else 1.5
@@ -153,15 +160,17 @@ class SmartConfig:
                 config.gradient_checkpointing = True
 
         # Speed optimizations
-        config.use_flash_attention = hw.supports_flash_attention
-        config.use_fused_kernels = hw.supports_bf16  # Requires Ampere+
+        config.use_flash_attention = bool(selected_gpu and selected_gpu.supports_flash_attention)
+        config.use_fused_kernels = bool(selected_gpu and selected_gpu.supports_bf16)  # Requires Ampere+
 
-        # Only compile for larger GPUs (compilation overhead)
-        if hw.gpus and hw.total_gpu_memory_gb >= 16:
-            config.compile_model = True
+        # torch.compile is opt-in only (set compile_model=True via config_override);
+        # auto-enabling it breaks PEFT wrapping and does not speed up generate().
+        config.compile_model = False
 
         # Batch size
-        config.batch_size = cls._optimal_batch_size(hw, model_info, config.bits, training)
+        config.batch_size = cls._optimal_batch_size(
+            hw, model_info, config.effective_loading_bits, training, selected_gpu
+        )
 
         # Gradient accumulation to reach effective batch of 32
         target_effective_batch = 32
@@ -177,13 +186,29 @@ class SmartConfig:
         config.stats = {
             "params": model_info.num_params,
             "fp16_size": model_info.size_gb / 2.0,  # Approximate FP16 size
-            "quant_size": model_info.estimated_size_at_bits(config.bits),
+            "quant_size": model_info.estimated_size_at_bits(config.effective_loading_bits),
         }
 
         return config
 
     @staticmethod
-    def _choose_bits(hw: HardwareProfile, model_info: ModelInfo, training: bool) -> int:
+    def _selected_gpu(hw: HardwareProfile, device: torch.device) -> Optional[GPUInfo]:
+        """Return the GPUInfo for the CUDA device that will be used, if any."""
+        if device.type != "cuda" or not hw.gpus:
+            return None
+        index = device.index if device.index is not None else hw.best_gpu_index
+        for gpu in hw.gpus:
+            if gpu.index == index:
+                return gpu
+        return hw.best_gpu
+
+    @staticmethod
+    def _choose_bits(
+        hw: HardwareProfile,
+        model_info: ModelInfo,
+        training: bool,
+        selected_gpu: Optional[GPUInfo] = None,
+    ) -> int:
         """
         Intelligently choose bit-width based on constraints.
 
@@ -193,10 +218,12 @@ class SmartConfig:
         This function returns the optimal LOADING bits (4 or 8), but also
         sets the quant_type for GGUF export which can be any bit width.
         """
-        if not hw.gpus:
-            return 4  # Default for CPU (4-bit NF4)
+        if not hw.gpus or not hw.cuda_available:
+            # BitsAndBytes does not work reliably on CPU / MPS: load in full precision
+            return 16
 
-        available_memory = hw.best_gpu.memory_free_gb if hw.best_gpu else 8.0
+        gpu = selected_gpu or hw.best_gpu
+        available_memory = gpu.memory_free_gb if gpu else 8.0
 
         # Reserve memory for activations
         reserve_factor = 3.0 if training else 1.5
@@ -245,12 +272,19 @@ class SmartConfig:
             return 128  # Standard
 
     @staticmethod
-    def _optimal_batch_size(hw: HardwareProfile, model_info: ModelInfo, bits: int, training: bool) -> int:
+    def _optimal_batch_size(
+        hw: HardwareProfile,
+        model_info: ModelInfo,
+        bits: int,
+        training: bool,
+        selected_gpu: Optional[GPUInfo] = None,
+    ) -> int:
         """Determine optimal batch size for available memory."""
         if not hw.gpus:
             return 1  # CPU is memory-limited
 
-        available_memory = hw.best_gpu.memory_free_gb if hw.best_gpu else 8.0
+        gpu = selected_gpu or hw.best_gpu
+        available_memory = gpu.memory_free_gb if gpu else 8.0
         model_size = model_info.estimated_size_at_bits(bits)
 
         # Rough estimation:

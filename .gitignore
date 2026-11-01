@@ -190,3 +190,7 @@ venv
 upcoming.md
 post.md
 modal_custom_workflow.py
+hub_staging/
+gpu-test-results/
+gpu-probe-*/
+gpu-test-results-*/

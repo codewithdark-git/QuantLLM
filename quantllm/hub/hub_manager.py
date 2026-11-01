@@ -12,10 +12,18 @@ from ..utils import (
 )
 from .model_card import ModelCardGenerator, generate_model_card
 import os
+import shutil
+import tempfile
 
 
 class QuantLLMHubManager:
-    def __init__(self, repo_id: str, hf_token: Optional[str] = None, organization: Optional[str] = None):
+    def __init__(
+        self,
+        repo_id: str,
+        hf_token: Optional[str] = None,
+        organization: Optional[str] = None,
+        private: bool = False,
+    ):
         """
         Initialize HubManager for lifecycle management.
 
@@ -23,15 +31,19 @@ class QuantLLMHubManager:
            repo_id: HuggingFace repository ID (e.g., "username/model")
            hf_token: HuggingFace API token
            organization: Optional organization name
+           private: Create the repository as private if it does not exist
         """
         self.repo_id = repo_id
         self.organization = organization
         self.token = hf_token
+        self.private = private
         self.api = HfApi(token=hf_token)
 
         # State
         self.hyperparameters: dict[str, Any] = {}
-        self.staging_dir = f"./hub_staging/{repo_id.split('/')[-1]}"
+        # Fresh, unique staging dir per manager so stale files from earlier
+        # pushes are never re-uploaded. Owner is kept in the prefix.
+        self.staging_dir = ""
         self._ensure_staging_dir()
 
         # Login if token provided
@@ -39,8 +51,14 @@ class QuantLLMHubManager:
             self.login()
 
     def _ensure_staging_dir(self):
-        if not os.path.exists(self.staging_dir):
-            os.makedirs(self.staging_dir)
+        if not self.staging_dir or not os.path.isdir(self.staging_dir):
+            prefix = "quantllm_" + self.repo_id.replace("/", "__") + "_"
+            self.staging_dir = tempfile.mkdtemp(prefix=prefix)
+
+    def cleanup(self):
+        """Remove the staging directory and everything in it."""
+        if self.staging_dir and os.path.isdir(self.staging_dir):
+            shutil.rmtree(self.staging_dir, ignore_errors=True)
 
     def login(self):
         """Login to Hugging Face Hub."""
@@ -83,7 +101,7 @@ class QuantLLMHubManager:
             # Get base model name
             if hasattr(model_obj, "config") and hasattr(model_obj.config, "_name_or_path"):
                 base_model = model_obj.config._name_or_path
-                self.hyperparameters["base_model"] = base_model
+                self.hyperparameters.setdefault("base_model", base_model)
         else:
             model_obj = model
             tokenizer_obj = tokenizer
@@ -128,6 +146,8 @@ class QuantLLMHubManager:
             quantization=quantization,
             license=license_type,
             tags=extra_tags,
+            gguf_filename=self.hyperparameters.get("gguf_filename"),
+            family=self.hyperparameters.get("family"),
         )
 
         with open(readme_path, "w", encoding="utf-8") as f:
@@ -135,10 +155,24 @@ class QuantLLMHubManager:
 
         print_info(f"Generated model card for {format.upper()} format")
 
-    def push(self, commit_message: str = "Upload model via QuantLLM"):
-        """Push the staged model to HuggingFace Hub."""
-        # Disable HF bars
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    def push(
+        self,
+        commit_message: str = "Upload model via QuantLLM",
+        private: Optional[bool] = None,
+        cleanup: bool = True,
+    ):
+        """Push the staged model to HuggingFace Hub.
+
+        Args:
+            commit_message: Commit message.
+            private: Create the repo as private (defaults to the value given at init).
+            cleanup: Remove the staging directory after a successful upload.
+        """
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+        if private is None:
+            private = self.private
 
         try:
             print_header(f"Pushing to {self.repo_id}", icon="[PUSH]")
@@ -146,7 +180,7 @@ class QuantLLMHubManager:
             # Ensure repo exists
             if not self.api.repo_exists(self.repo_id):
                 print_info(f"Creating repository {self.repo_id}")
-                self.api.create_repo(repo_id=self.repo_id, token=self.token, exist_ok=True)
+                self.api.create_repo(repo_id=self.repo_id, token=self.token, private=private, exist_ok=True)
 
             # Calculate total size
             total_size = 0
@@ -169,10 +203,14 @@ class QuantLLMHubManager:
 
         except Exception as e:
             print_error(f"Error pushing to Hub: {str(e)}")
+            print_info(f"Staged files kept at {self.staging_dir} (call cleanup() to remove)")
             raise
+
+        if cleanup:
+            self.cleanup()
 
     # Legacy compatibility
     def push_model(self, *args, **kwargs):
-        """Legacy method alias — delegates to push()."""
+        """Legacy method alias -- delegates to push()."""
         print_warning("push_model() is deprecated. Use push() instead.")
         return self.push(*args, **kwargs)

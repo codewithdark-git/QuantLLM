@@ -4,6 +4,8 @@ Provides the :class:`FinetuneMixin` used by :class:`TurboModel` for
 the ``finetune`` method.
 """
 
+import inspect
+import math
 import os
 import warnings
 from typing import Any, Dict, List, Optional, Union
@@ -29,6 +31,7 @@ class FinetuneMixin:
     _is_quantized: bool
     _is_finetuned: bool
     _lora_applied: bool
+    _is_bnb_quantized: Any  # method on TurboModel
 
     def finetune(
         self,
@@ -82,8 +85,21 @@ class FinetuneMixin:
         except ImportError:
             raise ImportError("peft is required for fine-tuning. Install with: pip install peft")
 
-        if self._is_quantized:
-            self.model = prepare_model_for_kbit_training(self.model)
+        self._ensure_distinct_pad_token()
+
+        if not self._lora_applied:
+            if self._is_quantized:
+                self.model = prepare_model_for_kbit_training(
+                    self.model,
+                    use_gradient_checkpointing=bool(self.config.gradient_checkpointing),
+                )
+        else:
+            # Second finetune(): the model is already a PeftModel. Don't re-run
+            # prepare_model_for_kbit_training (it would freeze the adapters);
+            # just make sure the LoRA weights are trainable again.
+            for name, param in self.model.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad_(True)
 
         if self.config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
@@ -135,7 +151,8 @@ class FinetuneMixin:
         torch_compile = self.config.compile_model and self.config.effective_loading_bits >= 16
 
         try:
-            training_args = TrainingArguments(
+            # Defaults first; user kwargs override them instead of raising "multiple values".
+            args_dict: Dict[str, Any] = dict(
                 output_dir=output_dir,
                 num_train_epochs=epochs,
                 per_device_train_batch_size=batch_size,
@@ -145,34 +162,58 @@ class FinetuneMixin:
                 bf16=self.config.dtype == torch.bfloat16,
                 logging_steps=10,
                 save_strategy="epoch",
-                warmup_ratio=0.03,
+                # warmup_ratio was removed in transformers 5.x; warmup_steps works everywhere.
+                warmup_steps=max(
+                    1,
+                    int(
+                        0.03
+                        * epochs
+                        * math.ceil(len(train_dataset) / (batch_size * self.config.gradient_accumulation_steps))
+                    ),
+                ),
                 lr_scheduler_type="cosine",
                 gradient_checkpointing=self.config.gradient_checkpointing,
-                optim=("paged_adamw_32bit" if self.config.bits <= 4 else "adamw_torch"),
+                optim=("paged_adamw_32bit" if self._is_bnb_quantized() else "adamw_torch"),
                 torch_compile=torch_compile,
-                **kwargs,
             )
+            args_dict.update(kwargs)
+            training_args = TrainingArguments(**args_dict)
 
-            trainer = Trainer(
-                model=self.model,
-                args=training_args,
-                train_dataset=train_dataset,
-                processing_class=self.tokenizer,
-                data_collator=DataCollatorForLanguageModeling(self.tokenizer, mlm=False),
-            )
+            trainer_kwargs: Dict[str, Any] = {
+                "model": self.model,
+                "args": training_args,
+                "train_dataset": train_dataset,
+                "data_collator": DataCollatorForLanguageModeling(self.tokenizer, mlm=False),
+            }
+            # ``processing_class`` replaced ``tokenizer`` in transformers 4.46.
+            if "processing_class" in inspect.signature(Trainer.__init__).parameters:
+                trainer_kwargs["processing_class"] = self.tokenizer
+            else:
+                trainer_kwargs["tokenizer"] = self.tokenizer
+
+            trainer = Trainer(**trainer_kwargs)
 
             result = trainer.train()
             self._is_finetuned = True
 
+            trainer.save_model(output_dir)
+            if hasattr(self.tokenizer, "save_pretrained"):
+                self.tokenizer.save_pretrained(output_dir)
+
             print_success(f"Training complete! Model saved to {output_dir}")
 
+            step_losses = [h["loss"] for h in (getattr(trainer.state, "log_history", None) or []) if "loss" in h]
             return {
+                # train_loss is the mean over all steps, so it is inflated by early steps that
+                # fp16 loss scaling skips; final_loss is the last logged step.
                 "train_loss": result.training_loss,
+                "final_loss": step_losses[-1] if step_losses else result.training_loss,
                 "epochs": epochs,
                 "output_dir": output_dir,
                 "learning_rate": learning_rate,
                 "batch_size": batch_size,
                 "lora_r": r,
+                "log_history": list(getattr(trainer.state, "log_history", None) or []),
             }
 
         except Exception as e:
@@ -180,52 +221,65 @@ class FinetuneMixin:
             if "out of memory" in str(e).lower():
                 print_info("Tip: Try reducing batch_size or enabling gradient_checkpointing in config.")
             raise
+        finally:
+            self._restore_inference_mode()
 
-    def _get_lora_target_modules(self) -> List[str]:
-        """Get appropriate LoRA target modules for the model."""
-        model_type = getattr(self.model.config, "model_type", "").lower()
+    def _restore_inference_mode(self) -> None:
+        """Switch the model back to inference mode after training."""
+        model = self.model
+        try:
+            if getattr(model, "is_gradient_checkpointing", False) is True:
+                model.gradient_checkpointing_disable()
+            if callable(getattr(model, "eval", None)):
+                model.eval()
+            cfg = getattr(model, "config", None)
+            if cfg is not None and hasattr(cfg, "use_cache"):
+                cfg.use_cache = True
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"Could not restore inference mode: {e}")
 
-        target_patterns = {
-            "llama": [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
-            "mistral": [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
-            "qwen2": [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
-            "phi": ["q_proj", "k_proj", "v_proj", "dense", "fc1", "fc2"],
-            "gemma": [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
-        }
+    def _ensure_distinct_pad_token(self) -> None:
+        """Make pad != eos so the LM collator doesn't mask EOS labels."""
+        tok = self.tokenizer
+        eos = getattr(tok, "eos_token", None)
+        pad = getattr(tok, "pad_token", None)
+        if pad is not None and pad != eos:
+            return
+        unk = getattr(tok, "unk_token", None)
+        if unk is not None and unk != eos:
+            # Prefer unk: avoids resizing embeddings (problematic on quantized models).
+            tok.pad_token = unk
+            return
+        tok.add_special_tokens({"pad_token": "<|pad|>"})
+        try:
+            self.model.resize_token_embeddings(len(tok))
+        except Exception as e:
+            logger.warning(f"Could not resize token embeddings for new pad token: {e}")
 
-        return target_patterns.get(model_type, ["q_proj", "v_proj"])
+    def _get_lora_target_modules(self) -> Union[List[str], str]:
+        """Get appropriate LoRA target modules for the model.
+
+        Uses the architecture table in :class:`LoRAAutoConfig`; falls back to
+        peft's ``"all-linear"`` for unknown architectures.
+        """
+        from .training import LoRAAutoConfig
+
+        try:
+            model_type = LoRAAutoConfig._detect_model_type(self.model)
+        except Exception:
+            model_type = (getattr(getattr(self.model, "config", None), "model_type", "") or "").lower()
+
+        modules = LoRAAutoConfig.TARGET_MODULES.get(model_type) if model_type != "default" else None
+        if not modules:
+            return "all-linear"
+
+        try:
+            present = {name.split(".")[-1] for name, _ in self.model.named_modules()}
+        except Exception:
+            return list(modules)
+
+        valid = [m for m in modules if m in present]
+        return valid if valid else "all-linear"
 
     def _prepare_dataset(self, data: Union[str, List[Dict], Any]) -> Any:
         """Prepare dataset for training."""
@@ -241,23 +295,19 @@ class FinetuneMixin:
         else:
             dataset = data
 
-        def tokenize_function(examples):
-            if "text" in examples:
-                texts = examples["text"]
-            elif "instruction" in examples and "output" in examples:
-                texts = [
-                    f"### Instruction:\n{inst}\n\n### Response:\n{out}"
-                    for inst, out in zip(examples["instruction"], examples["output"])
-                ]
-            else:
-                keys = [k for k in examples.keys() if isinstance(examples[k][0], str)]
-                texts = [" ".join([examples[k][i] for k in keys]) for i in range(len(examples[keys[0]]))]
+        from .training import format_training_texts
 
-            return self.tokenizer(
+        tokenizer = self.tokenizer
+
+        def tokenize_function(examples):
+            texts, templated = format_training_texts(examples, tokenizer)
+
+            return tokenizer(
                 texts,
                 truncation=True,
                 max_length=self.config.max_seq_length,
                 padding=False,
+                add_special_tokens=not templated,
             )
 
         tokenized = dataset.map(

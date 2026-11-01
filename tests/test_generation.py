@@ -234,3 +234,180 @@ def test_generate_handles_stop_strings(monkeypatch):
 
     result = instance.generate("Hello", stop_strings=["END"])
     assert "END" not in result
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for generation fixes
+# ---------------------------------------------------------------------------
+
+
+def _instance(monkeypatch, model=None, tok=None, config=None):
+    monkeypatch.setattr(TurboModel, "_architecture_registry", {})
+    monkeypatch.setattr(TurboModel, "_model_class_registry", {})
+    instance = TurboModel.__new__(TurboModel)
+    instance.model = model or _fake_model()
+    instance.tokenizer = tok or _tokenizer()
+    instance.config = config or _smart_config()
+    instance._is_quantized_override = False
+    instance._is_finetuned = False
+    instance._lora_applied = False
+    instance.verbose = False
+    return instance
+
+
+class _BosTokenizer:
+    """Tokenizer that maps the literal "<s>" to BOS and prepends BOS when asked."""
+
+    bos_token = "<s>"
+    eos_token = "</s>"
+    bos_token_id = 1
+    eos_token_id = 2
+    pad_token_id = 0
+    chat_template = "{{ bos_token }}..."
+    truncation_side = "right"
+
+    def __init__(self):
+        self.calls = []
+
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False):
+        assert tokenize is False
+        return "<s>[INST] " + messages[-1]["content"] + " [/INST]"
+
+    def __call__(self, text, return_tensors="pt", add_special_tokens=True, **kwargs):
+        self.calls.append({"add_special_tokens": add_special_tokens, "truncation_side": self.truncation_side, **kwargs})
+        ids = []
+        if add_special_tokens:
+            ids.append(self.bos_token_id)
+        rest = text
+        if rest.startswith("<s>"):
+            ids.append(self.bos_token_id)
+            rest = rest[3:]
+        ids.extend(10 + (ord(c) % 50) for c in rest)
+        input_ids = torch.tensor([ids], dtype=torch.long)
+        return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
+
+    def decode(self, token_ids, skip_special_tokens=False):
+        return "ok"
+
+
+def test_chat_does_not_double_bos(monkeypatch):
+    tok = _BosTokenizer()
+    instance = _instance(monkeypatch, tok=tok)
+    instance.chat([{"role": "user", "content": "Hi"}])
+    input_ids = instance.model.generate.call_args[1]["input_ids"][0].tolist()
+    assert input_ids.count(tok.bos_token_id) == 1
+    assert tok.calls[-1]["add_special_tokens"] is False
+
+
+def test_generate_does_not_override_eos_token_id(monkeypatch):
+    instance = _instance(monkeypatch)
+    instance.generate("Hello")
+    call_kwargs = instance.model.generate.call_args[1]
+    assert "eos_token_id" not in call_kwargs
+    # generation_config has no pad -> tokenizer pad is filled in
+    assert call_kwargs["pad_token_id"] == 0
+    assert "attention_mask" in call_kwargs
+
+
+def test_generate_keeps_generation_config_pad(monkeypatch):
+    model = _fake_model()
+    model.generation_config = SimpleNamespace(pad_token_id=5, eos_token_id=[2, 107])
+    instance = _instance(monkeypatch, model=model)
+    instance.generate("Hello")
+    call_kwargs = instance.model.generate.call_args[1]
+    assert "pad_token_id" not in call_kwargs
+    assert "eos_token_id" not in call_kwargs
+
+
+def test_generate_clamps_max_length_and_truncates_left(monkeypatch):
+    tok = _BosTokenizer()
+    config = _smart_config()
+    config.max_seq_length = 10
+    instance = _instance(monkeypatch, tok=tok, config=config)
+    instance.generate("Hello", max_new_tokens=50)
+    call = tok.calls[-1]
+    assert call["max_length"] == 1
+    assert call["truncation"] is True
+    assert call["truncation_side"] == "left"
+    assert tok.truncation_side == "right"  # restored
+
+
+def test_generate_uses_input_embedding_device_and_eval(monkeypatch):
+    model = _fake_model()
+    model.eval = Mock()
+    model.get_input_embeddings = Mock(return_value=SimpleNamespace(weight=torch.zeros(1, device="cpu")))
+    instance = _instance(monkeypatch, model=model)
+    instance.generate("Hello")
+    model.eval.assert_called_once()
+    model.get_input_embeddings.assert_called()
+
+
+def test_generate_trims_at_earliest_stop_string(monkeypatch):
+    tok = _tokenizer()
+    tok.decode = lambda ids, skip_special_tokens=False: "answer B-STOP more A-STOP tail"
+    instance = _instance(monkeypatch, tok=tok)
+    result = instance.generate("Hello", stop_strings=["A-STOP", "B-STOP"])
+    assert result == "answer"
+    call_kwargs = instance.model.generate.call_args[1]
+    assert call_kwargs["stop_strings"] == ["A-STOP", "B-STOP"]
+    assert call_kwargs["tokenizer"] is tok
+
+
+class _StreamTokenizer:
+    eos_token_id = 2
+    pad_token_id = 0
+    VOCAB = {5: "Hello ", 6: "world ", 7: "ST", 8: "OP ", 9: "leak "}
+
+    def __call__(self, text, return_tensors="pt", **kwargs):
+        input_ids = torch.tensor([[1, 3]], dtype=torch.long)
+        return {"input_ids": input_ids, "attention_mask": torch.ones_like(input_ids)}
+
+    def decode(self, token_ids, skip_special_tokens=False, **kwargs):
+        if isinstance(token_ids, torch.Tensor):
+            token_ids = token_ids.tolist()
+        return "".join(self.VOCAB.get(int(t), "") for t in token_ids)
+
+
+def test_streaming_does_not_leak_stop_string(monkeypatch):
+    model = _fake_model()
+
+    def streaming_generate(**kwargs):
+        streamer = kwargs["streamer"]
+        criteria = kwargs["stopping_criteria"]
+        ids = kwargs["input_ids"]
+        streamer.put(ids)  # prompt (skipped)
+        for t in [5, 6, 7, 8, 9, 9]:
+            ids = torch.cat([ids, torch.tensor([[t]])], dim=1)
+            streamer.put(torch.tensor([t]))
+            if bool(criteria(ids, None).all()):
+                break
+        streamer.end()
+
+    model.generate = Mock(side_effect=streaming_generate)
+    instance = _instance(monkeypatch, model=model, tok=_StreamTokenizer())
+    chunks = list(instance.generate("Hi", stream=True, stop_strings=["STOP"]))
+    text = "".join(chunks)
+    assert text == "Hello world "
+
+
+def test_streaming_propagates_thread_exception(monkeypatch):
+    import pytest
+
+    model = _fake_model()
+    model.generate = Mock(side_effect=RuntimeError("CUDA exploded"))
+    instance = _instance(monkeypatch, model=model, tok=_StreamTokenizer())
+    gen = instance.generate("Hi", stream=True, stream_timeout=5)
+    with pytest.raises(RuntimeError, match="CUDA exploded"):
+        list(gen)
+
+
+def test_enable_flash_attention_noop_without_setter():
+    from quantllm.core.generation import GenerationMixin
+
+    cfg = SimpleNamespace(_attn_implementation="eager")
+    GenerationMixin._enable_flash_attention(SimpleNamespace(config=cfg), verbose=False)
+    assert cfg._attn_implementation == "eager"
+
+    model = SimpleNamespace(set_attn_implementation=Mock(side_effect=ValueError("nope")))
+    GenerationMixin._enable_flash_attention(model, verbose=False)  # must not raise
+    model.set_attn_implementation.assert_called_once()

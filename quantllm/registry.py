@@ -11,10 +11,58 @@ Supports:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
 QUANTLLM_ORG = "QuantLLM"
+FAMILY_KEY = "quantllm_family"
+
+logger = logging.getLogger("quantllm.registry")
+
+# Process-wide cache of Hub results, keyed by organization.
+_HUB_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _hub_offline() -> bool:
+    """Return True when HF_HUB_OFFLINE is set."""
+    try:
+        from huggingface_hub import constants
+
+        if getattr(constants, "HF_HUB_OFFLINE", False):
+            return True
+    except ImportError:
+        pass
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _model_id(m: Any) -> Optional[str]:
+    """Return the repo id of a ModelInfo (``id`` in hub>=1.0, ``modelId`` before)."""
+    return getattr(m, "id", None) or getattr(m, "modelId", None)
+
+
+def _card_data_dict(m: Any) -> Dict[str, Any]:
+    card_data = getattr(m, "card_data", None) or getattr(m, "cardData", None) or {}
+    if hasattr(card_data, "to_dict"):
+        card_data = card_data.to_dict()
+    return card_data if isinstance(card_data, dict) else {}
+
+
+def _parse_family(card_data: Dict[str, Any]) -> str:
+    """Read the model family from card data.
+
+    Prefers the dedicated ``quantllm_family`` key, then falls back to the
+    first card tag that is not the generic ``quantllm`` tag.
+    """
+    family = card_data.get(FAMILY_KEY)
+    if isinstance(family, str) and family:
+        return family.lower()
+    tags = card_data.get("tags")
+    if isinstance(tags, list):
+        for tag in tags:
+            if isinstance(tag, str) and tag and tag.lower() != "quantllm":
+                return tag.lower()
+    return "unknown"
 
 
 class ModelRegistry:
@@ -29,39 +77,46 @@ class ModelRegistry:
         self._models: Optional[List[Dict[str, Any]]] = None
 
     def _fetch_from_hub(self) -> List[Dict[str, Any]]:
-        """Fetch model list from the QuantLLM HF organization."""
+        """Fetch model list from the QuantLLM HF organization.
+
+        Uses a single ``list_models`` call with card data, honours
+        ``HF_HUB_OFFLINE`` and caches results in memory for the process.
+        """
+        if self.org in _HUB_CACHE:
+            return [dict(m) for m in _HUB_CACHE[self.org]]
+        if _hub_offline():
+            return []
         try:
             from huggingface_hub import HfApi
+        except ImportError:
+            return []
 
+        try:
             api = HfApi()
-            models = api.list_models(author=self.org, sort="downloads", limit=50)
+            models = api.list_models(author=self.org, sort="downloads", limit=50, cardData=True)
             result = []
             for m in models:
-                # Get full model info to access card_data (metadata from model card frontmatter)
-                try:
-                    model_info = api.model_info(m.modelId)
-                    card_data = getattr(model_info, "card_data", None) or {}
-                except Exception:
-                    card_data = {}
+                model_id = _model_id(m)
+                if not model_id:
+                    continue
+                card_data = _card_data_dict(m)
                 result.append(
                     {
-                        "name": m.modelId,
-                        "family": (
-                            card_data.get("tags", ["unknown"])[0]
-                            if isinstance(card_data.get("tags"), list)
-                            else "unknown"
-                        ),
+                        "name": model_id,
+                        "family": _parse_family(card_data),
                         "params": card_data.get("params", 0) or 0,
-                        "formats": self._detect_formats(m.modelId),
+                        "formats": self._detect_formats(model_id),
                         "quality_score": card_data.get("quality_score", 3.0) or 3.0,
                         "speed_score": card_data.get("speed_score", 3.0) or 3.0,
                         "verified": card_data.get("verified", False) or False,
                         "recommended": card_data.get("recommended_quant", "Q4_K_M") or "Q4_K_M",
                     }
                 )
-            return result
-        except Exception:
+        except Exception as e:  # network / auth / API errors -> fall back to built-in list
+            logger.debug("Failed to fetch QuantLLM registry from Hub: %s", e)
             return []
+        _HUB_CACHE[self.org] = [dict(m) for m in result]
+        return result
 
     def _detect_formats(self, model_id: str) -> List[str]:
         mid = model_id.lower()
@@ -167,14 +222,18 @@ class ModelRegistry:
         return None
 
     def register_model(self, model_id: str, metadata: Dict[str, Any]) -> bool:
-        """Register a model by creating/updating its HF model card."""
+        """Register a model by creating/updating its HF model card.
+
+        If the repo already has a README, only its YAML metadata is updated
+        (the card body is preserved).
+        """
         try:
-            from huggingface_hub import HfApi
+            from huggingface_hub import HfApi, ModelCard, metadata_update
 
             api = HfApi()
-            tags = [metadata.get("family", "llama")]
-            card_data = {
-                "tags": tags,
+            family = str(metadata.get("family", "llama")).lower()
+            card_data: Dict[str, Any] = {
+                FAMILY_KEY: family,
                 "params": metadata.get("params", 0),
                 "quality_score": metadata.get("quality_score", 3.0),
                 "speed_score": metadata.get("speed_score", 3.0),
@@ -182,9 +241,21 @@ class ModelRegistry:
                 "recommended_quant": metadata.get("recommended", "Q4_K_M"),
             }
             api.create_repo(model_id, exist_ok=True, private=False)
-            card = f"---\n{json.dumps(card_data, indent=2)}\n---\n# {model_id}\n\nQuantLLM-registered model."
-            api.upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md", repo_id=model_id)
+
+            if api.file_exists(model_id, "README.md"):
+                existing = ModelCard.load(model_id)
+                tags = list(getattr(existing.data, "tags", None) or [])
+                for tag in ("quantllm", family):
+                    if tag not in tags:
+                        tags.append(tag)
+                card_data["tags"] = tags
+                metadata_update(model_id, card_data, overwrite=True)
+            else:
+                card_data["tags"] = ["quantllm", family]
+                card = f"---\n{json.dumps(card_data, indent=2)}\n---\n# {model_id}\n\nQuantLLM-registered model."
+                api.upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md", repo_id=model_id)
             self._models = None
+            _HUB_CACHE.pop(self.org, None)
             return True
         except Exception as e:
             try:

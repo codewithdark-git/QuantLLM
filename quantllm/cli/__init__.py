@@ -19,11 +19,26 @@ from __future__ import annotations
 import argparse
 import sys
 
-__version__ = "2.2.0.dev"
+from quantllm import __version__
 
 
 def _add_verbose(p: argparse.ArgumentParser) -> None:
     p.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
+
+
+def _add_trust_remote_code(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        default=False,
+        help="Allow executing custom model code from the Hub (only for repos you trust)",
+    )
+
+
+def _load_model(args: argparse.Namespace):
+    from quantllm.core import turbo
+
+    return turbo(args.model, verbose=args.verbose, trust_remote_code=args.trust_remote_code)
 
 
 def _add_model_arg(p: argparse.ArgumentParser) -> None:
@@ -43,6 +58,7 @@ def main() -> None:
     _add_model_arg(cp)
     cp.add_argument("-o", "--output", required=True, help="Output GGUF file")
     cp.add_argument("-q", "--quant", default="q4_k_m", help="Quantization type")
+    _add_trust_remote_code(cp)
     _add_verbose(cp)
 
     fp = sub.add_parser("finetune", help="Fine-tune a model")
@@ -51,6 +67,7 @@ def main() -> None:
     fp.add_argument("--output-dir", default="./fine-tuned")
     fp.add_argument("--epochs", type=int, default=3)
     fp.add_argument("--lr", type=float, default=2e-4)
+    _add_trust_remote_code(fp)
     _add_verbose(fp)
 
     ep = sub.add_parser("export", help="Export model to any format")
@@ -58,6 +75,7 @@ def main() -> None:
     ep.add_argument("-f", "--format", default="safetensors", choices=["gguf", "safetensors", "onnx", "mlx"])
     ep.add_argument("-o", "--output")
     ep.add_argument("-q", "--quant")
+    _add_trust_remote_code(ep)
     _add_verbose(ep)
 
     sp = sub.add_parser("serve", help="Start inference server")
@@ -66,6 +84,7 @@ def main() -> None:
     sp.add_argument("--port", type=int, default=8080)
     sp.add_argument("--max-seq-length", type=int, default=4096)
     sp.add_argument("--dtype", default="auto", choices=["auto", "float16", "bfloat16"])
+    _add_trust_remote_code(sp)
 
     bp = sub.add_parser("bench", help="Run benchmarks")
     _add_model_arg(bp)
@@ -93,6 +112,9 @@ def main() -> None:
     if args.command is None:
         parser.print_help()
         sys.exit(0)
+    if args.command == "models" and args.models_command is None:
+        mp.print_help(sys.stderr)
+        sys.exit(2)
     _route(args)
 
 
@@ -115,20 +137,14 @@ def _route(args: argparse.Namespace) -> None:
         print("\n" + "=" * 50)
         sys.exit(0)
     elif cmd == "convert":
-        from quantllm.core import turbo
-
-        m = turbo(args.model, verbose=args.verbose)
+        m = _load_model(args)
         m.export("gguf", output_path=args.output, quantization=args.quant)
         print(f"Done: {args.output}")
     elif cmd == "finetune":
-        from quantllm.core import turbo
-
-        m = turbo(args.model, verbose=args.verbose)
+        m = _load_model(args)
         m.finetune(args.dataset, epochs=args.epochs, learning_rate=args.lr, output_dir=args.output_dir)
     elif cmd == "export":
-        from quantllm.core import turbo
-
-        m = turbo(args.model, verbose=args.verbose)
+        m = _load_model(args)
         print(m.export(args.format, output_path=args.output, quantization=args.quant))
     elif cmd == "serve":
         from quantllm.server import ServerConfig
@@ -136,7 +152,12 @@ def _route(args: argparse.Namespace) -> None:
 
         run_server(
             ServerConfig.from_cli(
-                model=args.model, host=args.host, port=args.port, max_seq_length=args.max_seq_length, dtype=args.dtype
+                model=args.model,
+                host=args.host,
+                port=args.port,
+                max_seq_length=args.max_seq_length,
+                dtype=args.dtype,
+                trust_remote_code=args.trust_remote_code,
             )
         )
     elif cmd == "bench":
@@ -152,8 +173,8 @@ def _route(args: argparse.Namespace) -> None:
     elif cmd == "models":
         sub = args.models_command
         if sub is None:
-            print("Usage: quantllm models {list,search,info}")
-            return
+            print("Usage: quantllm models {list,search,info}", file=sys.stderr)
+            sys.exit(2)
         from quantllm.registry import list_models, search_models, model_info
 
         print(
@@ -170,6 +191,8 @@ def _route(args: argparse.Namespace) -> None:
             args.model_id, family=args.family, params=args.params, quality_score=args.quality, speed_score=args.speed
         )
         print(f"Model {'registered' if ok else 'registration failed'}: {args.model_id}")
+        if not ok:
+            sys.exit(1)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

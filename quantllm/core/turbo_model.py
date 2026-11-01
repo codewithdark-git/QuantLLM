@@ -19,6 +19,7 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
+from ..utils.hf_compat import dtype_kwargs
 from .architecture import ArchitectureMixin
 from .export_router import ExportRouterMixin
 from .finetune_mixin import FinetuneMixin
@@ -196,90 +197,156 @@ class TurboModel(
         }
 
     def _dequantize_model(self) -> nn.Module:
-        """Dequantize a BitsAndBytes model to full precision for GGUF export."""
+        """Dequantize a BitsAndBytes model to full precision for GGUF export.
+
+        Works on the in-memory model so fine-tuned weights are preserved:
+        LoRA adapters are merged first, then ``model.dequantize()``
+        (transformers) is used, then a manual bnb dequantization. Reloading
+        the base weights from the Hub is only a last resort and only when the
+        model was never fine-tuned.
+        """
         import gc
 
-        model_name = getattr(self.model.config, "_name_or_path", None)
+        target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
+        finetuned = bool(self._is_finetuned or self._lora_applied)
 
-        if model_name:
-            if self.verbose:
-                print_info(f"Reloading {model_name} in full precision...")
-
-            target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
-
+        # 1. Merge LoRA adapters into the (quantized) base weights.
+        if self._lora_applied or hasattr(self.model, "merge_and_unload"):
             try:
-                dequant_model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype=target_dtype,
-                    trust_remote_code=True,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    low_cpu_mem_usage=True,
-                )
+                if self.verbose:
+                    print_info("Merging LoRA weights before dequantization...")
+                self.model = self.model.merge_and_unload()
+                self._lora_applied = False
+            except Exception as e:
+                raise RuntimeError(f"Failed to merge LoRA adapters before dequantization: {e}") from e
+
+        model = self.model
+        errors: List[str] = []
+
+        # 2. Native transformers dequantization (in place).
+        if hasattr(model, "dequantize"):
+            try:
+                try:
+                    dequant_model = model.dequantize(dtype=target_dtype)  # transformers >= 5
+                except TypeError:
+                    dequant_model = model.dequantize()  # transformers 4.x
+                if dequant_model is None:
+                    dequant_model = model
+                dequant_model = dequant_model.to(target_dtype)
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 return dequant_model
             except Exception as e:
+                errors.append(f"model.dequantize(): {e}")
                 if self.verbose:
-                    print_warning(f"Failed to reload model: {e}")
-                    print_info("Attempting in-place dequantization...")
+                    print_warning(f"model.dequantize() failed: {e}")
+                    print_info("Attempting manual in-place dequantization...")
 
+        # 3. Manual dequantization of bnb layers + copy of every other tensor.
         try:
-            import bitsandbytes as bnb
-
-            target_dtype = self.config.dtype if self.config.dtype in [torch.float16, torch.bfloat16] else torch.float16
-
-            dequant_model = AutoModelForCausalLM.from_config(
-                self.model.config,
-                torch_dtype=target_dtype,
-            )
-
-            with torch.no_grad():
-                for name, module in self.model.named_modules():
-                    if isinstance(module, bnb.nn.Linear4bit):
-                        target_module = dict(dequant_model.named_modules()).get(name)
-                        if target_module is not None and hasattr(target_module, "weight"):
-                            weight = module.weight
-                            if hasattr(weight, "dequantize"):
-                                dequant_weight = weight.dequantize()
-                            else:
-                                # Linear4bit weight may have quant_state or quant_state attribute
-                                quant_state = getattr(weight, "quant_state", None)
-                                if quant_state is not None:
-                                    dequant_weight = bnb.functional.dequantize_4bit(weight.data, quant_state)
-                                else:
-                                    dequant_weight = weight.data.to(target_dtype)
-                            target_module.weight.data.copy_(dequant_weight.to(target_dtype))
-                            if module.bias is not None:
-                                target_module.bias.data.copy_(module.bias.data.to(target_dtype))
-
-                    elif isinstance(module, bnb.nn.Linear8bitLt):
-                        target_module = dict(dequant_model.named_modules()).get(name)
-                        if target_module is not None and hasattr(target_module, "weight"):
-                            weight = module.weight
-                            if hasattr(weight, "dequantize"):
-                                dequant_weight = weight.dequantize()
-                            else:
-                                dequant_weight = weight.data.to(target_dtype)
-                            target_module.weight.data.copy_(dequant_weight.to(target_dtype))
-                            if module.bias is not None:
-                                target_module.bias.data.copy_(module.bias.data.to(target_dtype))
-
+            dequant_model = self._manual_bnb_dequantize(model, target_dtype)
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-
             return dequant_model
-
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to dequantize BitsAndBytes model: {e}\n\n"
-                "To export to GGUF, please reload your model without "
-                "quantization:\n"
-                "  model = TurboModel.from_pretrained('your-model', "
-                "quantize=False)\n"
-                "  model.export('gguf', quantization='Q4_K_M')"
+            errors.append(f"manual dequantization: {e}")
+
+        # 4. Last resort: reload base weights from the Hub (never after fine-tuning).
+        model_name = getattr(model.config, "_name_or_path", None)
+        if model_name and not finetuned:
+            print_warning(
+                f"In-memory dequantization failed ({'; '.join(errors)}). "
+                f"Reloading base weights of {model_name} in full precision."
             )
+            try:
+                return AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    **dtype_kwargs(target_dtype),
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    low_cpu_mem_usage=True,
+                )
+            except Exception as e:
+                errors.append(f"reload from {model_name}: {e}")
+
+        hint = (
+            "Fine-tuned weights cannot be recovered by reloading from the Hub; "
+            "save the adapter/model and re-export from a full-precision load."
+            if finetuned
+            else "To export to GGUF, reload your model without quantization:\n"
+            "  model = TurboModel.from_pretrained('your-model', quantize=False)\n"
+            "  model.export('gguf', quantization='Q4_K_M')"
+        )
+        raise RuntimeError(f"Failed to dequantize BitsAndBytes model: {'; '.join(errors)}\n\n{hint}")
+
+    @staticmethod
+    def _manual_bnb_dequantize(model: nn.Module, target_dtype: torch.dtype) -> nn.Module:
+        """Rebuild ``model`` in ``target_dtype`` with bnb layers dequantized."""
+        import copy
+
+        import bitsandbytes as bnb
+
+        new_state: Dict[str, torch.Tensor] = {}
+        bnb_modules = set()
+
+        with torch.no_grad():
+            for name, module in model.named_modules():
+                if isinstance(module, bnb.nn.Linear4bit):
+                    weight = module.weight
+                    dequant = bnb.functional.dequantize_4bit(weight.data, weight.quant_state)  # type: ignore[attr-defined]
+                elif isinstance(module, bnb.nn.Linear8bitLt):
+                    weight = module.weight
+                    scb = getattr(weight, "SCB", None)
+                    if scb is None:
+                        scb = getattr(getattr(module, "state", None), "SCB", None)
+                    if scb is None:
+                        if weight.dtype == torch.int8:
+                            raise RuntimeError(f"Missing SCB scales for 8-bit layer '{name}'")
+                        dequant = weight.data
+                    else:
+                        dequant = weight.data.float() * scb.float()[:, None] / 127.0
+                else:
+                    continue
+                bnb_modules.add(name)
+                new_state[f"{name}.weight"] = dequant.to("cpu", target_dtype)
+                if module.bias is not None:
+                    new_state[f"{name}.bias"] = module.bias.data.to("cpu", target_dtype)
+
+            def _owned_by_bnb(key: str) -> bool:
+                parts = key.split(".")
+                return any(".".join(parts[:i]) in bnb_modules for i in range(1, len(parts)))
+
+            for key, tensor in model.state_dict().items():
+                if key in new_state or _owned_by_bnb(key):
+                    continue
+                tensor = tensor.detach().to("cpu")
+                new_state[key] = tensor.to(target_dtype) if tensor.is_floating_point() else tensor
+
+        config = copy.deepcopy(model.config)
+        if hasattr(config, "quantization_config"):
+            delattr(config, "quantization_config")
+        dequant_model = AutoModelForCausalLM.from_config(config, **dtype_kwargs(target_dtype))
+        result = dequant_model.load_state_dict(new_state, strict=False)
+        missing = [k for k in result.missing_keys if not k.endswith("lm_head.weight")]
+        if missing:
+            raise RuntimeError(f"Dequantized state dict is missing {len(missing)} tensors (e.g. {missing[:3]})")
+        if hasattr(dequant_model, "tie_weights"):
+            dequant_model.tie_weights()
+        return dequant_model
 
     def optimize_inference(self, backend: str = "triton", bits: int = 4):
-        """Optimize model for inference using high-performance kernels."""
+        """Optimize model for inference using high-performance kernels.
+
+        No-op for BitsAndBytes-quantized models and when CUDA is unavailable.
+        """
+        if not torch.cuda.is_available():
+            print_warning("optimize_inference requires a CUDA GPU; skipping.")
+            return
+        if self._is_bnb_quantized():
+            print_warning("optimize_inference is a no-op for BitsAndBytes-quantized models; skipping.")
+            return
+
         if backend == "triton":
             from ..kernels.triton import (
                 TritonQuantizedLinear,
@@ -304,6 +371,9 @@ class TurboModel(
 
         count = 0
         for name, child in module.named_children():
+            # bnb layers subclass nn.Linear but hold packed weights; keep lm_head in full precision.
+            if name == "lm_head" or type(child).__name__ in ("Linear4bit", "Linear8bitLt"):
+                continue
             if isinstance(child, nn.Linear):
                 if self.verbose:
                     print_info(f"Quantizing {name}...")
@@ -397,6 +467,6 @@ def turbo(
         dtype=dtype,
         base_model_fallback=base_model_fallback,
         config=config,
-        trust_remote_code=True,
+        trust_remote_code=kwargs.pop("trust_remote_code", False),
         **kwargs,
     )

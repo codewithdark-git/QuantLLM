@@ -223,6 +223,7 @@ class DynamicOffloader:
         model: nn.Module,
         max_gpu_layers: Optional[int] = None,
         cpu_offload_threshold: float = 0.85,
+        device: Optional[Union[str, torch.device]] = None,
     ):
         """
         Initialize dynamic offloader.
@@ -231,7 +232,11 @@ class DynamicOffloader:
             model: Model with layers to offload
             max_gpu_layers: Maximum layers to keep on GPU
             cpu_offload_threshold: GPU memory usage threshold to trigger offload
+            device: Accelerator device for on-GPU layers (default: cuda:0 if available, else cpu)
         """
+        if device is None:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
         self.model = model
         self.cpu_offload_threshold = cpu_offload_threshold
         self._layer_locations: Dict[str, str] = {}
@@ -257,15 +262,22 @@ class DynamicOffloader:
         self._initialize_placements()
 
     def _find_offloadable_layers(self) -> List[str]:
-        """Find layers that can be offloaded."""
+        """Find the repeated transformer blocks (children of a ModuleList).
+
+        Containers (e.g. ``model.layers``) are never returned, so moving a
+        block never moves the whole stack.
+        """
         layers = []
         for name, module in self.model.named_modules():
-            # Look for transformer layers
-            if any(pattern in name.lower() for pattern in ["layer", "block", "decoder"]):
-                if hasattr(module, "parameters") and list(module.parameters()):
-                    # Only include top-level repeated layers
-                    if name.count(".") <= 2:  # Avoid nested modules
-                        layers.append(name)
+            if not isinstance(module, nn.ModuleList):
+                continue
+            if not any(pattern in name.lower() for pattern in ["layer", "block", "decoder", ".h"]):
+                continue
+            for child_name, child in module.named_children():
+                if any(True for _ in child.parameters()):
+                    layers.append(f"{name}.{child_name}" if name else child_name)
+            if layers:
+                break  # only the first (outermost) block stack
         return layers
 
     def _estimate_avg_layer_size(self) -> float:
@@ -285,7 +297,7 @@ class DynamicOffloader:
         """Initialize layer placements."""
         for i, name in enumerate(self.offloadable_layers):
             if i < self.max_gpu_layers:
-                self._layer_locations[name] = "cuda"
+                self._layer_locations[name] = "gpu"
             else:
                 self._layer_locations[name] = "cpu"
                 # Move to CPU
@@ -294,11 +306,11 @@ class DynamicOffloader:
 
     def move_layer_to_gpu(self, layer_name: str) -> None:
         """Move a layer to GPU, evicting others if needed."""
-        if self._layer_locations.get(layer_name) == "cuda":
+        if self._layer_locations.get(layer_name) == "gpu":
             return  # Already on GPU
 
         # Check if we need to evict
-        gpu_layers = [n for n, loc in self._layer_locations.items() if loc == "cuda"]
+        gpu_layers = [n for n, loc in self._layer_locations.items() if loc == "gpu"]
 
         if len(gpu_layers) >= self.max_gpu_layers:
             # Evict least recently accessed
@@ -309,8 +321,8 @@ class DynamicOffloader:
 
         # Move requested layer to GPU
         layer = dict(self.model.named_modules())[layer_name]
-        layer.to("cuda")
-        self._layer_locations[layer_name] = "cuda"
+        layer.to(self.device)
+        self._layer_locations[layer_name] = "gpu"
 
         # Update access order
         if layer_name in self._access_order:
@@ -322,7 +334,8 @@ class DynamicOffloader:
         layer = dict(self.model.named_modules())[layer_name]
         layer.to("cpu")
         self._layer_locations[layer_name] = "cpu"
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def prefetch_next_layer(self, current_layer_idx: int) -> None:
         """Prefetch the next layer to GPU asynchronously."""
@@ -371,15 +384,22 @@ class GradientCheckpointManager:
 
         checkpointed = False
         for name, module in model.named_modules():
-            if "layer" in name.lower() or "block" in name.lower():
-                if hasattr(module, "forward"):
-                    original_forward = module.forward
+            # Only wrap the repeated blocks (children of a ModuleList), never the
+            # container itself or nested sub-modules (avoids nested checkpoints).
+            if not isinstance(module, nn.ModuleList):
+                continue
+            if not ("layer" in name.lower() or "block" in name.lower()):
+                continue
+            for block in module.children():
+                original_forward = block.forward
 
-                    def checkpointed_forward(*args, _orig=original_forward, **kwargs):
-                        return checkpoint(_orig, *args, use_reentrant=False, **kwargs)
+                def checkpointed_forward(*args, _orig=original_forward, **kwargs):
+                    return checkpoint(_orig, *args, use_reentrant=False, **kwargs)
 
-                    module.forward = checkpointed_forward
-                    checkpointed = True
+                block.forward = checkpointed_forward  # type: ignore[method-assign]
+                checkpointed = True
+            if checkpointed:
+                break
 
         return checkpointed
 

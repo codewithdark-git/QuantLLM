@@ -9,7 +9,7 @@ import gc
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Union, Callable
+from typing import Optional, Dict, Any, List, Tuple, Union, Callable
 import torch
 import torch.nn as nn
 
@@ -507,12 +507,22 @@ def load_training_data(
 
     # Tokenize
     def tokenize_fn(examples):
+        templated = False
         if text_column == "__instruction_output__":
-            # Combine instruction and output fields
+            # Combine instruction (+ input when non-empty) and output fields
+            inputs = examples.get("input") or [None] * len(examples["instruction"])
             texts = [
-                f"### Instruction:\n{inst}\n\n### Response:\n{out}"
-                for inst, out in zip(examples["instruction"], examples["output"])
+                _alpaca_text(inst, inp, out)
+                for inst, inp, out in zip(examples["instruction"], inputs, examples["output"])
             ]
+        elif text_column.startswith("__messages__:"):
+            col = text_column.split(":", 1)[1]
+            templated = _has_chat_template(tokenizer)
+            try:
+                texts = [_render_messages(tokenizer, m, templated) for m in examples[col]]
+            except Exception:
+                templated = False
+                texts = [_render_messages(tokenizer, m, False) for m in examples[col]]
         else:
             texts = examples[text_column]
         result = tokenizer(
@@ -520,8 +530,16 @@ def load_training_data(
             truncation=True,
             max_length=max_length,
             padding="max_length",
+            add_special_tokens=not templated,
         )
-        result["labels"] = result["input_ids"].copy()
+        # Padding positions must not contribute to the loss.
+        if "attention_mask" in result:
+            result["labels"] = [
+                [tok if mask else -100 for tok, mask in zip(ids, attn)]
+                for ids, attn in zip(result["input_ids"], result["attention_mask"])
+            ]
+        else:
+            result["labels"] = [list(ids) for ids in result["input_ids"]]
         return result
 
     tokenized = dataset.map(
@@ -534,25 +552,135 @@ def load_training_data(
 
 
 def _find_text_column(dataset) -> str:
-    """Find the text column in a dataset."""
+    """Find the text column in a dataset.
+
+    Preference: instruction+output (Alpaca, ``input`` folded in when
+    non-empty) > messages/conversations > plain text columns.
+    """
+    columns = dataset.column_names
+
+    if "instruction" in columns and "output" in columns:
+        # Need to combine - return special marker
+        return "__instruction_output__"
+
+    for col in ("messages", "conversations"):
+        if col in columns:
+            return f"__messages__:{col}"
+
     # Common text column names
-    text_columns = ["text", "content", "input", "prompt", "question"]
+    text_columns = ["text", "content", "prompt", "question", "instruction", "input"]
 
     for col in text_columns:
-        if col in dataset.column_names:
+        if col in columns:
             return col
 
-    # Try to find instruction/output format
-    if "instruction" in dataset.column_names:
-        if "output" in dataset.column_names:
-            # Need to combine - return special marker
-            return "__instruction_output__"
-        return "instruction"
-
     # Return first string column
-    for col in dataset.column_names:
+    for col in columns:
         sample = dataset[0][col]
         if isinstance(sample, str):
             return col
 
-    raise ValueError(f"Could not find text column. Available: {dataset.column_names}")
+    raise ValueError(f"Could not find text column. Available: {columns}")
+
+
+_ROLE_MAP = {
+    "human": "user",
+    "user": "user",
+    "gpt": "assistant",
+    "assistant": "assistant",
+    "model": "assistant",
+    "bot": "assistant",
+    "system": "system",
+}
+
+
+def _has_chat_template(tokenizer: Any) -> bool:
+    return getattr(tokenizer, "chat_template", None) is not None and callable(
+        getattr(tokenizer, "apply_chat_template", None)
+    )
+
+
+def _normalize_messages(messages: Any) -> List[Dict[str, str]]:
+    """Normalize OpenAI-style or ShareGPT-style (from/value) messages."""
+    out = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or m.get("from") or "user").lower()
+        content = m.get("content")
+        if content is None:
+            content = m.get("value", "")
+        out.append({"role": _ROLE_MAP.get(role, role), "content": "" if content is None else str(content)})
+    return out
+
+
+def _render_messages(tokenizer: Any, messages: Any, use_template: bool) -> str:
+    msgs = _normalize_messages(messages)
+    if use_template:
+        return tokenizer.apply_chat_template(msgs, tokenize=False)
+    return "".join(f"{m['role'].capitalize()}: {m['content']}\n" for m in msgs)
+
+
+def _alpaca_text(instruction: Any, inp: Any, output: Any) -> str:
+    if inp is not None and str(inp).strip():
+        return f"### Instruction:\n{instruction}\n\n### Input:\n{inp}\n\n### Response:\n{output}"
+    return f"### Instruction:\n{instruction}\n\n### Response:\n{output}"
+
+
+def format_training_texts(examples: Dict[str, List[Any]], tokenizer: Any) -> Tuple[List[str], bool]:
+    """Turn a batch of raw examples into training texts.
+
+    Returns ``(texts, templated)``. ``templated`` is True when the texts were
+    rendered with the tokenizer's chat template (so they already contain BOS
+    and must be tokenized with ``add_special_tokens=False``). Every text ends
+    with ``tokenizer.eos_token`` so the model learns to stop.
+    """
+    columns = set(examples.keys())
+    use_template = _has_chat_template(tokenizer)
+    templated = False
+    texts: List[str]
+
+    if "instruction" in columns and "output" in columns:
+        instructions = examples["instruction"]
+        inputs = examples.get("input") or [None] * len(instructions)
+        rows = list(zip(instructions, inputs, examples["output"]))
+        texts = []
+        if use_template:
+            try:
+                for inst, inp, out in rows:
+                    user = f"{inst}\n\n{inp}" if inp is not None and str(inp).strip() else f"{inst}"
+                    texts.append(
+                        _render_messages(
+                            tokenizer,
+                            [{"role": "user", "content": user}, {"role": "assistant", "content": out}],
+                            True,
+                        )
+                    )
+                templated = True
+            except Exception:
+                texts = []
+        if not templated:
+            texts = [_alpaca_text(inst, inp, out) for inst, inp, out in rows]
+    elif "messages" in columns or "conversations" in columns:
+        col = "messages" if "messages" in columns else "conversations"
+        texts = []
+        if use_template:
+            try:
+                texts = [_render_messages(tokenizer, m, True) for m in examples[col]]
+                templated = True
+            except Exception:
+                texts = []
+        if not templated:
+            texts = [_render_messages(tokenizer, m, False) for m in examples[col]]
+    elif "text" in columns:
+        texts = ["" if t is None else str(t) for t in examples["text"]]
+    else:
+        keys = [k for k in examples.keys() if examples[k] and isinstance(examples[k][0], str)]
+        if not keys:
+            raise ValueError(f"Could not find text columns. Available: {list(examples.keys())}")
+        texts = [" ".join(examples[k][i] for k in keys) for i in range(len(examples[keys[0]]))]
+
+    eos = getattr(tokenizer, "eos_token", None)
+    if isinstance(eos, str) and eos:
+        texts = [t if t.rstrip().endswith(eos) else t + eos for t in texts]
+    return texts, templated

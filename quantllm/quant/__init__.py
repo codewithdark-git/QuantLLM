@@ -14,6 +14,8 @@ from .llama_cpp import (
     ensure_llama_cpp_installed,
     detect_environment,
     get_llama_cpp_dir,
+    gguf_outtype,
+    IMATRIX_REQUIRED_TYPES,
 )
 
 from .hqq import (
@@ -41,9 +43,9 @@ GGUF_QUANT_TYPES = [
     "q2_k",
     "iq4_nl",
     "iq4_xs",
-    "iq3_xxs",
-    "iq2_xxs",
-    "iq1_s",
+    "iq3_xxs",  # requires imatrix
+    "iq2_xxs",  # requires imatrix
+    "iq1_s",  # requires imatrix
 ]
 
 QUANT_RECOMMENDATIONS = {
@@ -63,6 +65,8 @@ __all__ = [
     "ensure_llama_cpp_installed",
     "get_llama_cpp_dir",
     "detect_environment",
+    "gguf_outtype",
+    "IMATRIX_REQUIRED_TYPES",
     "GGUF_QUANT_TYPES",
     "QUANT_RECOMMENDATIONS",
     "HQQLinear",

@@ -157,6 +157,7 @@ quantllm/
 
 - Tests use CPU-only PyTorch (installed via `--index-url https://download.pytorch.org/whl/cpu` in CI)
 - Test `QUANTLLM_BANNER=0` to suppress banner
+- **GPU end-to-end suite** lives in `tests/gpu/` (real model, default `Qwen/Qwen2.5-0.5B-Instruct`, override with `QUANTLLM_GPU_TEST_MODEL`). It skips itself without CUDA. Free option: `python scripts/kaggle_gpu_tests.py [--slow] [-k expr]` packs the working tree, runs it on Kaggle "GPU T4 x2", and downloads results to `gpu-test-results/` (needs `~/.kaggle/access_token` and a phone-verified account). T4 has no native bf16/FlashAttention-2, so those paths need an Ampere+ GPU. ONNX tests skip on transformers 5.x (optimum-onnx caps transformers<4.58). Paid/credit option: `modal run scripts/modal_gpu_tests.py [--gpu T4|L4|A10G|H100] [--slow] [--k Finetune]`, on any NVIDIA box/Colab/Kaggle with `bash scripts/run_gpu_tests.sh`, or in GitHub Actions via the `GPU E2E` workflow (manual or `run-gpu-tests` PR label; needs `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` secrets)
 - Test files mirror core modules: `test_hqq.py`, `test_cli.py`, `test_benchmark.py`, `test_server.py`, `test_registry.py`, `test_cpu_kernels.py`, `test_generation.py`, `test_quantization_state.py`, `test_resolve_model_type.py`, `test_export_push_config.py`, `test_architecture_fallback.py`
 
 ## Common Tasks

@@ -37,6 +37,7 @@ class GenerationMixin:
         stream: bool = False,
         repetition_penalty: float = 1.1,
         stop_strings: Optional[List[str]] = None,
+        add_special_tokens: bool = True,
         **kwargs,
     ):
         """Generate text from a prompt.
@@ -51,118 +52,173 @@ class GenerationMixin:
             stream: Whether to stream output token by token (returns generator).
             repetition_penalty: Penalty for repeating tokens.
             stop_strings: List of strings that stop generation.
+            add_special_tokens: Whether the tokenizer adds special tokens (BOS).
+                Set to False for prompts already rendered by a chat template.
         """
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=self.config.max_seq_length - max_new_tokens,
-        )
+        self._prepare_model_for_generation()
 
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = self._tokenize_prompt(prompt, max_new_tokens, add_special_tokens=add_special_tokens)
 
-        stop_strings = stop_strings or []
+        stop_strings = [s for s in (stop_strings or []) if s]
+
+        gen_kwargs: Dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature if do_sample else 1.0,
+            "top_p": top_p,
+            "top_k": top_k,
+            "do_sample": do_sample,
+            "repetition_penalty": repetition_penalty,
+        }
+        # Only fill in pad_token_id when the model's generation_config has none.
+        # eos_token_id is deliberately NOT passed: generation_config may define
+        # several EOS ids (e.g. llama-3 <|eot_id|>, gemma-2 <end_of_turn>).
+        generation_config = getattr(self.model, "generation_config", None)
+        if getattr(generation_config, "pad_token_id", None) is None:
+            pad_token_id = getattr(self.tokenizer, "pad_token_id", None)
+            if pad_token_id is None:
+                pad_token_id = getattr(self.tokenizer, "eos_token_id", None)
+            if pad_token_id is not None:
+                gen_kwargs["pad_token_id"] = pad_token_id
+        if stop_strings:
+            # Native transformers stop strings halt generation at the token level.
+            gen_kwargs["stop_strings"] = stop_strings
+            gen_kwargs["tokenizer"] = self.tokenizer
+        gen_kwargs.update(kwargs)
 
         if stream:
-            return self._generate_streaming(
-                inputs,
-                max_new_tokens,
-                temperature,
-                top_p,
-                top_k,
-                do_sample,
-                repetition_penalty,
-                stop_strings,
-                **kwargs,
-            )
+            return self._generate_streaming(inputs, gen_kwargs, stop_strings)
 
         with torch.inference_mode():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature if do_sample else 1.0,
-                top_p=top_p,
-                top_k=top_k,
-                do_sample=do_sample,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                repetition_penalty=repetition_penalty,
-                **kwargs,
-            )
+            outputs = self.model.generate(**inputs, **gen_kwargs)
 
         generated = outputs[0][inputs["input_ids"].shape[1] :]
         response = self.tokenizer.decode(generated, skip_special_tokens=True)
 
-        for stop in stop_strings:
-            if stop in response:
-                response = response.split(stop)[0]
-                break
+        idx = _find_first_stop(response, stop_strings)
+        if idx is not None:
+            response = response[:idx]
 
         return response.strip()
+
+    def _prepare_model_for_generation(self) -> None:
+        """Put the model in inference mode (e.g. after ``finetune()``)."""
+        model = self.model
+        try:
+            if getattr(model, "is_gradient_checkpointing", False) is True:
+                model.gradient_checkpointing_disable()
+            if callable(getattr(model, "eval", None)):
+                model.eval()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"Could not switch model to eval mode: {e}")
+
+    def _input_device(self) -> Any:
+        """Device of the input embeddings (robust with ``device_map="auto"``)."""
+        try:
+            return self.model.get_input_embeddings().weight.device
+        except Exception:
+            return getattr(self.model, "device", torch.device("cpu"))
+
+    def _tokenize_prompt(self, prompt: str, max_new_tokens: int, add_special_tokens: bool = True) -> Dict[str, Any]:
+        """Tokenize a prompt, truncating from the left so the generation prompt survives."""
+        tok_kwargs: Dict[str, Any] = {"return_tensors": "pt", "add_special_tokens": add_special_tokens}
+        max_seq_length = getattr(self.config, "max_seq_length", None)
+        if max_seq_length:
+            tok_kwargs["truncation"] = True
+            tok_kwargs["max_length"] = max(1, int(max_seq_length) - int(max_new_tokens))
+
+        old_side = getattr(self.tokenizer, "truncation_side", None)
+        try:
+            if old_side is not None:
+                self.tokenizer.truncation_side = "left"
+            inputs = self.tokenizer(prompt, **tok_kwargs)
+        finally:
+            if old_side is not None:
+                self.tokenizer.truncation_side = old_side
+
+        inputs = dict(inputs)
+        if "attention_mask" not in inputs:
+            inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
+        device = self._input_device()
+        return {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
     def _generate_streaming(
         self,
         inputs: Dict,
-        max_new_tokens: int,
-        temperature: float,
-        top_p: float,
-        top_k: int,
-        do_sample: bool,
-        repetition_penalty: float,
+        gen_kwargs: Dict[str, Any],
         stop_strings: List[str],
-        **kwargs,
     ):
-        """Generate with streaming output (yields token strings)."""
+        """Generate with streaming output (yields text chunks).
+
+        Stop strings are never yielded; generation is halted as soon as one is
+        seen, and exceptions raised in the generation thread are re-raised here.
+        """
+        from threading import Event, Thread
+
+        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+
+        gen_kwargs = dict(gen_kwargs)
+        timeout = gen_kwargs.pop("stream_timeout", 600.0)
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer,
+            skip_prompt=True,
+            timeout=timeout,
+            skip_special_tokens=True,
+        )
+
+        stop_event = Event()
+
+        class _EventStoppingCriteria(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kw):
+                return torch.full((input_ids.shape[0],), stop_event.is_set(), dtype=torch.bool, device=input_ids.device)
+
+        criteria = StoppingCriteriaList(list(gen_kwargs.pop("stopping_criteria", None) or []))
+        criteria.append(_EventStoppingCriteria())
+
+        generation_kwargs = {**inputs, **gen_kwargs, "streamer": streamer, "stopping_criteria": criteria}
+
+        errors: List[BaseException] = []
+
+        def _target():
+            try:
+                self.model.generate(**generation_kwargs)
+            except BaseException as e:  # noqa: BLE001 - re-raised in consumer
+                errors.append(e)
+            finally:
+                streamer.end()
+
+        thread = Thread(target=_target, daemon=True)
+        thread.start()
+
+        # Hold back enough characters to never leak a partially-generated stop string.
+        holdback = max((len(s) for s in stop_strings), default=1) - 1
+        buffer = ""
+        emitted = 0
+        stopped = False
         try:
-            from transformers import TextIteratorStreamer
-            from threading import Thread
-            import sys
-
-            streamer = TextIteratorStreamer(
-                self.tokenizer,
-                skip_prompt=True,
-                skip_special_tokens=True,
-            )
-
-            generation_kwargs = {
-                **inputs,
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature if do_sample else 1.0,
-                "top_p": top_p,
-                "top_k": top_k,
-                "do_sample": do_sample,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "repetition_penalty": repetition_penalty,
-                "streamer": streamer,
-                **kwargs,
-            }
-
-            thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
-            thread.start()
-
-            generated_text = []
             for new_text in streamer:
-                if new_text:
-                    yield new_text
-                    generated_text.append(new_text)
-
-                    full_text = "".join(generated_text)
-                    should_stop = any(stop in full_text for stop in stop_strings)
-                    if should_stop:
-                        break
-
+                if not new_text:
+                    continue
+                buffer += new_text
+                idx = _find_first_stop(buffer, stop_strings)
+                if idx is not None:
+                    if idx > emitted:
+                        yield buffer[emitted:idx]
+                    emitted = idx
+                    stopped = True
+                    break
+                safe = len(buffer) - holdback
+                if safe > emitted:
+                    yield buffer[emitted:safe]
+                    emitted = safe
+            if not stopped and not errors and len(buffer) > emitted:
+                yield buffer[emitted:]
+        finally:
+            stop_event.set()
             thread.join()
 
-        except ImportError:
-            print("(Streaming not available, using batch generation)")
-            response = self.generate(
-                self.tokenizer.decode(inputs["input_ids"][0]),
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                stream=False,
-            )
-            yield response
+        if errors:
+            raise errors[0]
 
     def chat(
         self,
@@ -176,6 +232,7 @@ class GenerationMixin:
             **kwargs: Additional generation parameters.
         """
         prompt = None
+        templated = False
 
         if hasattr(self.tokenizer, "chat_template") and self.tokenizer.chat_template is not None:
             try:
@@ -184,8 +241,11 @@ class GenerationMixin:
                     tokenize=False,
                     add_generation_prompt=True,
                 )
+                templated = isinstance(prompt, str)
+                if not templated:
+                    prompt = None
             except Exception:
-                pass
+                prompt = None
 
         if prompt is None:
             parts = []
@@ -201,24 +261,43 @@ class GenerationMixin:
             parts.append("Assistant:")
             prompt = "".join(parts)
 
+        if templated:
+            # The rendered template already contains BOS; don't add it twice.
+            kwargs.setdefault("add_special_tokens", False)
         return self.generate(prompt, **kwargs)
 
     @staticmethod
     def _enable_flash_attention(model: PreTrainedModel, verbose: bool = True) -> None:
-        """Enable Flash Attention if available."""
-        try:
-            if hasattr(model, "config"):
-                if hasattr(model.config, "_attn_implementation"):
-                    try:
-                        import flash_attn
+        """Best-effort switch of the attention implementation on a loaded model.
 
-                        model.config._attn_implementation = "flash_attention_2"
-                        if verbose:
-                            logger.info("  Flash Attention 2 configured")
-                    except ImportError:
-                        model.config._attn_implementation = "sdpa"
-                        if verbose:
-                            logger.info("  SDPA (Scaled Dot-Product Attention) configured")
-        except Exception:
+        Mutating ``config._attn_implementation`` after load is a no-op (or
+        harmful) on most transformers versions, so this only acts through
+        ``model.set_attn_implementation`` when the model provides it. The
+        preferred path is passing ``attn_implementation=`` to
+        ``from_pretrained``.
+        """
+        setter = getattr(model, "set_attn_implementation", None)
+        if not callable(setter):
+            logger.debug("  set_attn_implementation not available; leaving attention implementation unchanged")
+            return
+
+        try:
+            import flash_attn  # noqa: F401
+
+            impl = "flash_attention_2"
+        except ImportError:
+            impl = "sdpa"
+
+        try:
+            setter(impl)
             if verbose:
-                logger.warning("  Flash Attention / SDPA not available")
+                logger.info(f"  Attention implementation set to {impl}")
+        except Exception as e:
+            if verbose:
+                logger.warning(f"  Could not set attention implementation to {impl}: {e}")
+
+
+def _find_first_stop(text: str, stop_strings: List[str]) -> Optional[int]:
+    """Return the index of the earliest stop string occurrence in ``text``."""
+    positions = [i for i in (text.find(s) for s in stop_strings if s) if i != -1]
+    return min(positions) if positions else None

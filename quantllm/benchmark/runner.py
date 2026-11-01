@@ -49,6 +49,36 @@ class BenchmarkResult:
         return getattr(self, key, default)
 
 
+def _sync() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def release_memory() -> None:
+    """Free cached CUDA memory and reset the peak-memory counter (call after dropping the previous model)."""
+    import gc
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+
+def _timed_forward(model, input_ids, num_runs: int) -> float:
+    """Average wall time (s) of a synchronized forward pass, after one warmup pass."""
+    runs = max(num_runs, 1)
+    times = []
+    with torch.inference_mode():
+        model(input_ids=input_ids)
+        for _ in range(runs):
+            _sync()
+            start = time.perf_counter()
+            model(input_ids=input_ids)
+            _sync()
+            times.append(time.perf_counter() - start)
+    return sum(times) / len(times)
+
+
 class BenchmarkRunner:
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
@@ -76,9 +106,11 @@ class BenchmarkRunner:
             pass
         r.model_size_gb = r.num_params_billion * (r.bits / 8) * 1.05
 
+        release_memory()  # reset the peak counter so VRAM reflects this model only
+
         inputs = tokenizer(prompt, return_tensors="pt")
         input_ids = inputs["input_ids"].to(model.device)
-        prefill_len = input_ids.shape[1]
+        prompt_len = input_ids.shape[1]
 
         for _ in range(num_warmup):
             with torch.inference_mode():
@@ -90,31 +122,36 @@ class BenchmarkRunner:
                     eos_token_id=tokenizer.eos_token_id,
                 )
 
-        start = time.time()
-        with torch.inference_mode():
-            model.generate(
-                input_ids,
-                max_new_tokens=1,
-                do_sample=False,
-                pad_token_id=tokenizer.pad_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-            )
-        r.prefill_tokens_per_sec = prefill_len / (time.time() - start) if (time.time() - start) > 0 else 0
+        # Prefill: a plain forward pass over a ~512-token prompt (the short prompt repeated).
+        max_pos = getattr(getattr(model, "config", None), "max_position_embeddings", None) or 512
+        prefill_target = min(512, max_pos)
+        reps = prefill_target // max(prompt_len, 1) + 1
+        long_ids = tokenizer(" ".join([prompt] * reps), return_tensors="pt")["input_ids"][:, :prefill_target]
+        long_ids = long_ids.to(model.device)
+        prefill_time = _timed_forward(model, long_ids, num_runs)
+        r.prefill_tokens_per_sec = long_ids.shape[1] / prefill_time if prefill_time > 0 else 0
 
-        decode_times = []
+        # Decode: count tokens actually generated and exclude the prefill of the benchmark prompt.
+        short_prefill_time = _timed_forward(model, input_ids, num_runs)
+        decode_rates = []
         for _ in range(num_runs):
-            start = time.time()
+            _sync()
+            start = time.perf_counter()
             with torch.inference_mode():
-                model.generate(
+                out = model.generate(
                     input_ids,
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
                 )
-            elapsed = time.time() - start
-            decode_times.append(max_new_tokens / elapsed if elapsed > 0 else 0)
-        r.decode_tokens_per_sec = sum(decode_times) / len(decode_times)
+            _sync()
+            elapsed = time.perf_counter() - start
+            new_tokens = out.shape[1] - prompt_len
+            decode_time = elapsed - short_prefill_time
+            # The first new token comes from the prefill pass; the remaining ones are decode steps.
+            decode_rates.append((new_tokens - 1) / decode_time if new_tokens > 1 and decode_time > 0 else 0)
+        r.decode_tokens_per_sec = sum(decode_rates) / len(decode_rates)
         r.total_latency_ms = (1000.0 / r.decode_tokens_per_sec) if r.decode_tokens_per_sec > 0 else 0
         r.throughput_tokens_per_sec = r.decode_tokens_per_sec
 
