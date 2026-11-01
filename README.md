@@ -189,6 +189,7 @@ Complete end-to-end pipeline demonstrating QuantLLM on a new/public model, run o
 ### 1. Load & Auto-Quantize
 ```python
 from quantllm import turbo
+
 model = turbo("Qwen/Qwen2.5-7B-Instruct")  # 7.62B params, BnB 8-bit on H100
 ```
 
