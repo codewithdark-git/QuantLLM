@@ -44,15 +44,16 @@ class HardwareProfile:
     # Capabilities
     supports_bf16: bool
     supports_flash_attention: bool
-    best_gpu_index: int
+    best_gpu_index: int  # CUDA device ordinal (GPUInfo.index), not a list position
     total_gpu_memory_gb: float
 
     @property
     def best_gpu(self) -> Optional[GPUInfo]:
         """Get the best GPU available."""
-        if self.gpus:
-            return self.gpus[self.best_gpu_index]
-        return None
+        for gpu in self.gpus:
+            if gpu.index == self.best_gpu_index:
+                return gpu
+        return self.gpus[0] if self.gpus else None
 
     @property
     def device(self) -> torch.device:
@@ -111,14 +112,15 @@ class HardwareProfiler:
                 if gpu_info:
                     gpus.append(gpu_info)
 
-        # Determine best GPU (most memory)
+        # Determine best GPU (most memory); store its CUDA ordinal
         best_gpu_index = 0
-        if gpus:
-            best_gpu_index = max(range(len(gpus)), key=lambda i: gpus[i].memory_total_gb)
+        best = max(gpus, key=lambda g: g.memory_total_gb) if gpus else None
+        if best is not None:
+            best_gpu_index = best.index
 
-        # Aggregate capabilities
-        supports_bf16 = any(gpu.supports_bf16 for gpu in gpus) if gpus else False
-        supports_flash_attention = any(gpu.supports_flash_attention for gpu in gpus) if gpus else False
+        # Capabilities of the GPU that will be used by default
+        supports_bf16 = best.supports_bf16 if best is not None else False
+        supports_flash_attention = best.supports_flash_attention if best is not None else False
         total_gpu_memory = sum(gpu.memory_total_gb for gpu in gpus)
 
         profile = HardwareProfile(
@@ -190,9 +192,10 @@ class HardwareProfiler:
             memory_free = memory_total  # Approximation when not in use
 
             try:
-                # Try to get actual free memory
-                torch.cuda.set_device(index)
-                memory_free = (props.total_memory - torch.cuda.memory_allocated(index)) / (1024**3)
+                # Actual free memory on this device (includes other processes),
+                # without changing the current CUDA device.
+                free_bytes, _ = torch.cuda.mem_get_info(index)
+                memory_free = free_bytes / (1024**3)
             except Exception:
                 pass
 

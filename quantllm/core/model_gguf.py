@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .smart_config import SmartConfig
+from ..utils.hf_compat import dtype_kwargs
 from ..utils import (
     logger,
     print_header,
@@ -87,8 +88,8 @@ class ModelGGUFMixin:
                 model = AutoModelForCausalLM.from_pretrained(
                     model_id,
                     gguf_file=filename,
-                    torch_dtype=smart_config.dtype,
-                    trust_remote_code=True,
+                    **dtype_kwargs(smart_config.dtype),
+                    trust_remote_code=kwargs.pop("trust_remote_code", False),
                     **kwargs,
                 )
             except ImportError as e:

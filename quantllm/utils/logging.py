@@ -141,7 +141,9 @@ def configure_logging(
         resolved_max = int(_env("MAX_BYTES", str(max_bytes)))
         resolved_backup = int(_env("BACKUP", str(backup_count)))
         file_fmt = json_fmt if resolved_fmt == "json" else text_fmt
-        file_handler = RotatingFileHandler(resolved_file, maxBytes=resolved_max, backupCount=resolved_backup)
+        file_handler = RotatingFileHandler(
+            resolved_file, maxBytes=resolved_max, backupCount=resolved_backup, encoding="utf-8"
+        )
         file_handler.setFormatter(file_fmt)
         logger.addHandler(file_handler)
 

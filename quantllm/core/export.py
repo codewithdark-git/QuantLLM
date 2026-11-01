@@ -104,10 +104,12 @@ class UniversalExporter:
         ensure_llama_cpp_installed()
 
         model_name = getattr(self.model.config, "_name_or_path", "model").split("/")[-1]
+        model = self._merged_model()
 
+        # The intermediate F16 GGUF is written inside temp_dir, so it is removed on success and failure
         with tempfile.TemporaryDirectory() as temp_dir:
             # Save model to temp
-            self.model.save_pretrained(temp_dir, safe_serialization=True)  # type: ignore[operator]
+            model.save_pretrained(temp_dir, safe_serialization=True)  # type: ignore[operator]
             if self.tokenizer:
                 self.tokenizer.save_pretrained(temp_dir)
 
@@ -119,6 +121,7 @@ class UniversalExporter:
                 model_dtype="f16",
                 quantization_type="f16",
                 print_output=False,
+                output_dir=temp_dir,
             )
 
             if output_files:
@@ -134,6 +137,12 @@ class UniversalExporter:
 
         return output_path
 
+    def _merged_model(self) -> nn.Module:
+        """Return the model with any PEFT/LoRA adapters merged into the base weights."""
+        if hasattr(self.model, "merge_and_unload"):
+            self.model = self.model.merge_and_unload()  # type: ignore[operator]
+        return self.model
+
     def _export_safetensors(
         self,
         output_path: str,
@@ -142,8 +151,8 @@ class UniversalExporter:
         """Export to SafeTensors format."""
         os.makedirs(output_path, exist_ok=True)
 
-        # Save model
-        self.model.save_pretrained(output_path, safe_serialization=True)  # type: ignore[operator]
+        # Save model (merged, so a PeftModel doesn't save only its adapter weights)
+        self._merged_model().save_pretrained(output_path, safe_serialization=True)  # type: ignore[operator]
 
         # Save tokenizer if available
         if self.tokenizer:
@@ -177,10 +186,10 @@ class UniversalExporter:
 
         # Prepare dummy input
         if self.tokenizer:
+            # Single sequence: no padding (avoids errors for tokenizers without a pad token)
             dummy_input = self.tokenizer(
                 "Hello world",
                 return_tensors="pt",
-                padding=True,
             )
             dummy_input = {k: v.to(self.model.device) for k, v in dummy_input.items()}
         else:

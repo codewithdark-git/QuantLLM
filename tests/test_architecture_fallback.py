@@ -49,12 +49,12 @@ def test_registered_class_fallback_is_used(monkeypatch):
     monkeypatch.setattr(TurboModel, "_architecture_registry", {})
     monkeypatch.setattr(TurboModel, "_model_class_registry", {})
     monkeypatch.setattr(
-        turbo_model_module.SmartConfig,
+        model_loader_module.SmartConfig,
         "detect",
         lambda *args, **kwargs: _make_smart_config(),
     )
     monkeypatch.setattr(
-        turbo_model_module.AutoTokenizer,
+        model_loader_module.AutoTokenizer,
         "from_pretrained",
         lambda *args, **kwargs: _make_tokenizer(),
     )
@@ -86,7 +86,7 @@ def test_registered_class_fallback_is_used(monkeypatch):
         from_pretrained = classmethod(_registered_from_pretrained)
 
     monkeypatch.setattr(
-        turbo_model_module,
+        model_loader_module,
         "AutoModelForCausalLM",
         _FakeAutoModel,
     )

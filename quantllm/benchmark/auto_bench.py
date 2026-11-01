@@ -86,19 +86,25 @@ class HardwareAutoBench:
             times = []
             for n in [1024, 2048]:
                 a, b = torch.randn(n, n, device="cuda"), torch.randn(n, n, device="cuda")
-                start = time.time()
+                for _ in range(3):  # warmup (kernel selection / lazy init)
+                    a @ b
+                torch.cuda.synchronize()
+                start = time.perf_counter()
                 for _ in range(10):
                     a @ b
                 torch.cuda.synchronize()
-                times.append((time.time() - start) / 10)
+                times.append((time.perf_counter() - start) / 10)
             results["matmul_ms"] = sum(times) / len(times) * 1000
 
             x = torch.randn(1024, 1024, device="cuda")
-            start = time.time()
+            for _ in range(3):  # warmup
+                x.clone()
+            torch.cuda.synchronize()
+            start = time.perf_counter()
             for _ in range(100):
                 x.clone()
             torch.cuda.synchronize()
-            results["mem_bw_gb_s"] = (1024 * 1024 * 4 * 2 * 100) / (time.time() - start) / (1024**3)
+            results["mem_bw_gb_s"] = (1024 * 1024 * 4 * 2 * 100) / (time.perf_counter() - start) / (1024**3)
         return results
 
     def _score_quant(self, micro: Dict[str, float]) -> List[QuantScore]:

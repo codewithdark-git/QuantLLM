@@ -28,6 +28,29 @@ QUANTLLM_ACCENT = "orange3"
 _T = TypeVar("_T")
 
 
+def _make_streams_encoding_safe() -> None:
+    """Avoid UnicodeEncodeError on legacy consoles (e.g. Windows cp1252).
+
+    Our own output is ASCII, but messages can embed arbitrary text (model
+    names, exception strings, subprocess output). For non-UTF-8 streams we
+    switch the error handler to ``replace`` so printing never crashes.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not encoding or encoding.startswith("utf") or reconfigure is None:
+            continue
+        if getattr(stream, "errors", "strict") != "strict":
+            continue
+        try:
+            reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
+_make_streams_encoding_safe()
+
+
 class _SimpleConsole:
     """Stand-in for ``rich.console.Console`` that writes to stderr via print.
 

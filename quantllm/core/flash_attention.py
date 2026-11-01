@@ -209,43 +209,61 @@ def _pytorch_attention(
     dropout_p: float = 0.0,
 ) -> torch.Tensor:
     """
-    Standard PyTorch attention implementation.
+    PyTorch SDPA attention used when Flash Attention is not available.
 
-    Used as fallback when Flash Attention is not available.
+    Matches ``flash_attn_func`` semantics: inputs are
+    ``[batch, seqlen, num_heads, head_dim]``, K/V heads are repeated for
+    GQA/MQA, and the causal mask is aligned to the bottom-right corner when
+    ``seqlen_q != seqlen_k`` (e.g. decoding with a KV cache).
     """
-    batch, seqlen_q, num_heads, head_dim = q.shape
-    seqlen_k = k.shape[1]
+    import torch.nn.functional as F
 
-    if softmax_scale is None:
-        softmax_scale = 1.0 / (head_dim**0.5)
+    seqlen_q, num_heads, head_dim = q.shape[1], q.shape[2], q.shape[3]
+    seqlen_k, num_kv_heads = k.shape[1], k.shape[2]
 
-    # Reshape for batched matmul: [batch, num_heads, seqlen, head_dim]
+    # [batch, num_heads, seqlen, head_dim]
+    if softmax_scale is not None:
+        # Fold a custom scale into q (SDPA's ``scale`` kwarg needs torch>=2.1)
+        q = q * (softmax_scale * head_dim**0.5)
     q = q.transpose(1, 2)
     k = k.transpose(1, 2)
     v = v.transpose(1, 2)
 
-    # Compute attention scores
-    scores = torch.matmul(q, k.transpose(-2, -1)) * softmax_scale
+    # GQA / MQA: repeat KV heads to match query heads
+    if num_kv_heads != num_heads:
+        if num_heads % num_kv_heads != 0:
+            raise ValueError(f"num_heads ({num_heads}) must be divisible by num_kv_heads ({num_kv_heads})")
+        repeats = num_heads // num_kv_heads
+        k = k.repeat_interleave(repeats, dim=1)
+        v = v.repeat_interleave(repeats, dim=1)
 
-    # Apply causal mask
+    attn_mask = None
+    is_causal = False
     if causal:
-        mask = torch.triu(torch.ones(seqlen_q, seqlen_k, device=q.device, dtype=torch.bool), diagonal=1)
-        scores = scores.masked_fill(mask, float("-inf"))
+        if seqlen_q == seqlen_k:
+            is_causal = True
+        else:
+            # Bottom-right aligned: query i may attend keys j <= i + (seqlen_k - seqlen_q)
+            offset = seqlen_k - seqlen_q
+            q_idx = torch.arange(seqlen_q, device=q.device).unsqueeze(1)
+            k_idx = torch.arange(seqlen_k, device=q.device).unsqueeze(0)
+            attn_mask = k_idx <= q_idx + offset
 
-    # Softmax
-    attn_weights = torch.softmax(scores, dim=-1)
+    output = F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+    )
 
-    # Dropout
-    if dropout_p > 0.0 and q.requires_grad:
-        attn_weights = torch.nn.functional.dropout(attn_weights, p=dropout_p)
+    if attn_mask is not None:
+        # Rows with no visible keys (seqlen_q > seqlen_k) produce NaN; flash_attn returns 0.
+        output = torch.nan_to_num(output, nan=0.0)
 
-    # Output
-    output = torch.matmul(attn_weights, v)
-
-    # Reshape back: [batch, seqlen, num_heads, head_dim]
-    output = output.transpose(1, 2)
-
-    return output
+    # Back to [batch, seqlen, num_heads, head_dim]
+    return output.transpose(1, 2)
 
 
 class FlashAttentionWrapper(nn.Module):

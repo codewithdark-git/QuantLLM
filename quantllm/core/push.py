@@ -45,8 +45,10 @@ class PushToHubMixin:
             quantization: Quantization type (for gguf/onnx/mlx).
             commit_message: Commit message.
             license: License type (default: apache-2.0).
+            private: Create the repository as private if it does not exist.
         """
         from ..hub import QuantLLMHubManager
+        from ..hub.model_card import base_model_display_name, sanitize_base_model
 
         format_lower = (
             format
@@ -58,14 +60,17 @@ class PushToHubMixin:
             DEFAULT_EXPORT_PUSH_CONFIG["push_quantization"],
         )
 
-        base_model_full = self.model.config._name_or_path
-        model_name = base_model_full.split("/")[-1]
+        name_or_path = self.model.config._name_or_path
+        # Never leak local filesystem paths into the card's base_model.
+        base_model_full = sanitize_base_model(name_or_path) or base_model_display_name(name_or_path)
+        model_name = os.path.basename(os.path.normpath(name_or_path)) or "model"
 
         print_header(f"Pushing to {repo_id}")
         print_info(f"Format: {format_lower.upper()}")
         print_info(f"Base model: {base_model_full}")
 
         manager = QuantLLMHubManager(repo_id=repo_id, hf_token=token)
+        manager.private = private
 
         if format_lower == "gguf":
             quant_label = push_quantization or self.export_push_config.get(
@@ -87,6 +92,7 @@ class PushToHubMixin:
                     "quantization": quant_label.upper(),
                     "base_model": base_model_full,
                     "license": license,
+                    "gguf_filename": filename,
                 }
             )
             manager._generate_model_card(format="gguf")

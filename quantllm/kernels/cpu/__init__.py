@@ -69,7 +69,7 @@ class CPUInt4Linear(nn.Module):
 
         self.register_buffer(
             "qweight",
-            torch.empty(out_features, self.num_groups, in_features // (8 // bits), dtype=torch.uint8),
+            torch.empty(out_features, self.num_groups, group_size // (8 // bits), dtype=torch.uint8),
         )
         self.register_buffer("scales", torch.empty(out_features, self.num_groups, dtype=torch.float32))
         self.register_buffer("zeros", torch.empty(out_features, self.num_groups, dtype=torch.float32))
@@ -80,8 +80,12 @@ class CPUInt4Linear(nn.Module):
 
     def quantize(self, weight: torch.Tensor) -> None:
         w = weight.float().reshape(self.out_features, self.in_features)
-        if self.group_size < self.in_features:
-            w = w.reshape(self.out_features, self.num_groups, self.group_size)
+        # Pad the last group (repeating the final column, which leaves min/max unchanged)
+        # when group_size does not divide in_features or exceeds it.
+        pad = self.num_groups * self.group_size - self.in_features
+        if pad > 0:
+            w = torch.cat([w, w[:, -1:].expand(-1, pad)], dim=1)
+        w = w.reshape(self.out_features, self.num_groups, self.group_size)
 
         w_max = w.amax(dim=-1, keepdim=True)
         w_min = w.amin(dim=-1, keepdim=True)
@@ -108,11 +112,13 @@ class CPUInt4Linear(nn.Module):
             wq = self.qweight.float().reshape(self.out_features, self.num_groups, self.group_size)
 
         w = wq.float() * self.scales.unsqueeze(-1) + self.zeros.unsqueeze(-1)
-        return w.reshape(self.out_features, self.in_features).to(torch.float32)
+        w = w.reshape(self.out_features, -1)[:, : self.in_features]
+        return w.to(torch.float32)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w = self._dequantize_weights()
-        return torch.nn.functional.linear(x, w.to(x.device), self.bias)
+        w = self._dequantize_weights().to(device=x.device, dtype=x.dtype)
+        bias = self.bias.to(device=x.device, dtype=x.dtype) if self.bias is not None else None
+        return torch.nn.functional.linear(x, w, bias)
 
 
 class CPUInt8Linear(nn.Module):
@@ -137,8 +143,9 @@ class CPUInt8Linear(nn.Module):
         self.qweight = torch.round(w / self.scale).clamp(-128, 127).to(torch.int8)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w = self.qweight.float() * self.scale.to(x.device)
-        return torch.nn.functional.linear(x, w, self.bias)
+        w = (self.qweight.float() * self.scale.to(x.device)).to(device=x.device, dtype=x.dtype)
+        bias = self.bias.to(device=x.device, dtype=x.dtype) if self.bias is not None else None
+        return torch.nn.functional.linear(x, w, bias)
 
 
 def optimize_for_cpu(model: nn.Module, bits: int = 4, group_size: int = 128) -> nn.Module:

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .runner import BenchmarkRunner, BenchmarkResult
+from .runner import BenchmarkRunner, BenchmarkResult, release_memory
 
 
 class BenchmarkComparer:
@@ -27,6 +27,9 @@ class BenchmarkComparer:
         runner = BenchmarkRunner(verbose=self.verbose)
 
         for name, bits, _ in configs:
+            # Drop the previous config's model before loading the next one (otherwise VRAM/peak stats accumulate).
+            m = None
+            release_memory()
             try:
                 m = turbo(self.model_name, bits=bits, verbose=False)
                 r = runner.benchmark_model(m.model, m.tokenizer, m.config, prompt=prompt, max_new_tokens=max_new_tokens)
@@ -37,6 +40,8 @@ class BenchmarkComparer:
                     from ..utils import print_warning
 
                     print_warning(f"{name} failed: {e}")
+        m = None
+        release_memory()
         return self.results
 
     def generate_comparison_report(self) -> str:

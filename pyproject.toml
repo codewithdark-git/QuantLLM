@@ -33,11 +33,11 @@ keywords = [
 ]
 dependencies = [
     "torch>=2.0.0",
-    "transformers>=4.36.0",
+    "transformers>=4.46.0",  # Trainer(processing_class=...)
     "datasets>=2.14.0",
     "accelerate>=0.24.0",
-    "peft>=0.6.0",
-    "bitsandbytes>=0.41.0",
+    "peft>=0.12.0",
+    "bitsandbytes>=0.43.0; platform_system != 'Darwin'",
     "scipy>=1.10.0",
     "scikit-learn>=1.3.0",
     "tqdm>=4.65.0",
@@ -47,7 +47,6 @@ dependencies = [
     "einops>=0.7.0",
     "psutil>=5.9.0",
     "huggingface-hub>=0.19.0",
-    "rich>=13.0.0",
     "gguf>=0.10.0",
 ]
 
@@ -56,30 +55,35 @@ gguf = ["gguf>=0.10.0"]
 onnx = [
     "onnx>=1.14.0",
     "onnxruntime>=1.16.0",
-    "optimum[onnxruntime]>=1.14.0",
+    # ONNX Runtime export lives in optimum-onnx; it caps transformers<4.58 for now
+    "optimum-onnx[onnxruntime]>=0.1.0",
     "onnxscript>=0.1.0",
 ]
 mlx = ["mlx>=0.1.0", "mlx-lm>=0.1.0"]
 triton = ["triton>=2.1.0"]
 flash = ["flash-attn>=2.3.0"]
-hub = ["hf-lifecycle @ git+https://github.com/codewithdark-git/huggingface-lifecycle.git"]
+# NOTE: the former `hub` extra pointed at a git URL (hf-lifecycle), which PyPI
+# rejects on upload. Install it manually if needed:
+#   pip install "hf-lifecycle @ git+https://github.com/codewithdark-git/huggingface-lifecycle.git"
 full = [
     "gguf>=0.10.0",
     "onnx>=1.14.0",
     "onnxruntime>=1.16.0",
-    "optimum[onnxruntime]>=1.14.0",
+    "optimum-onnx[onnxruntime]>=0.1.0",
     "onnxscript>=0.1.0",
     "triton>=2.1.0",
     "wandb>=0.15.0",
     "tensorboard>=2.14.0",
     "evaluate>=0.4.0",
     "flash-attn>=2.3.0",
+    "rich>=13.0.0",
 ]
 server = ["fastapi>=0.100.0", "uvicorn>=0.23.0", "pydantic>=2.0.0"]
 bench = ["pandas>=1.5.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+    "httpx>=0.24.0",
     "black>=23.0.0",
     "isort>=5.12.0",
     "flake8>=6.1.0",
@@ -138,26 +142,12 @@ ignore = [
     "E741",   # ambiguous variable names
 ]
 
-[tool.myft.lint.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F401", "F811", "F841"]
 "quantllm/__init__.py" = ["F401", "E402"]
 "quantllm/core/__init__.py" = ["F401"]
 
-[tool.mypy]
-python_version = "3.12"
-ignore_missing_imports = true
-disallow_untyped_defs = false
-warn_unused_ignores = false
-
-[[tool.mypy.overrides]]
-module = "numpy"
-ignore_errors = true
-follow_imports = "skip"
-
-[[tool.mypy.overrides]]
-module = "numpy.*"
-ignore_errors = true
-follow_imports = "skip"
+# mypy is configured in mypy.ini (single source of truth).
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -165,6 +155,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "integration: marks tests as integration tests requiring GPU",
+    "gpu: end-to-end tests under tests/gpu (need CUDA; run via scripts/modal_gpu_tests.py)",
     "slow: marks tests as slow",
     "large_model: marks tests requiring large models",
     "stress: marks tests as stress/performance tests",

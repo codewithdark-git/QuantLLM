@@ -81,13 +81,19 @@ class ModelAnalyzer:
     }
 
     @classmethod
-    def analyze(cls, model_name: str, trust_remote_code: bool = True) -> ModelInfo:
+    def analyze(
+        cls,
+        model_name: str,
+        trust_remote_code: bool = False,
+        token: Optional[str] = None,
+    ) -> ModelInfo:
         """
         Analyze a model's architecture from its config.
 
         Args:
             model_name: HuggingFace model name or local path
-            trust_remote_code: Whether to trust remote code
+            trust_remote_code: Whether to trust remote code (default False)
+            token: Optional HuggingFace token for gated/private repos
 
         Returns:
             ModelInfo containing architecture details
@@ -99,13 +105,13 @@ class ModelAnalyzer:
         try:
             from transformers import AutoConfig
 
-            config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code, token=token)
 
             info = cls._extract_info_from_config(model_name, config)
             cls._cache[model_name] = info
             return info
 
-        except Exception as e:
+        except Exception:
             # Fallback to estimation from model name
             return cls._estimate_from_name(model_name)
 
@@ -134,6 +140,11 @@ class ModelAnalyzer:
         )
         model_type = getattr(config, "model_type", "unknown")
 
+        # Mixture-of-Experts: every expert holds its own MLP weights
+        num_experts = cls._get_config_attr(config, ["num_local_experts", "num_experts", "n_routed_experts"], None)
+        moe_intermediate_size = getattr(config, "moe_intermediate_size", None)
+        n_shared_experts = getattr(config, "n_shared_experts", None)
+
         # Calculate total parameters
         num_params = cls._calculate_params(
             hidden_size=hidden_size,
@@ -142,6 +153,9 @@ class ModelAnalyzer:
             num_kv_heads=num_kv_heads,
             intermediate_size=intermediate_size,
             vocab_size=vocab_size,
+            num_experts=num_experts,
+            moe_intermediate_size=moe_intermediate_size,
+            n_shared_experts=n_shared_experts,
         )
 
         # Size in GB at FP32 (4 bytes per param)
@@ -169,8 +183,16 @@ class ModelAnalyzer:
         num_kv_heads: int,
         intermediate_size: int,
         vocab_size: int,
+        num_experts: Optional[int] = None,
+        moe_intermediate_size: Optional[int] = None,
+        n_shared_experts: Optional[int] = None,
     ) -> int:
-        """Calculate total parameters in a transformer model."""
+        """Calculate total parameters in a transformer model.
+
+        For MoE models (``num_experts`` > 1) the MLP is counted once per
+        routed expert (using ``moe_intermediate_size`` when given), plus any
+        shared experts and the router.
+        """
         head_dim = hidden_size // num_attention_heads
 
         # Embedding layer
@@ -194,7 +216,13 @@ class ModelAnalyzer:
             + hidden_size * hidden_size  # O
         )
 
-        mlp_params = hidden_size * intermediate_size * 3  # up, gate, down
+        if num_experts and num_experts > 1:
+            expert_size = moe_intermediate_size or intermediate_size
+            mlp_params = hidden_size * expert_size * 3 * num_experts  # routed experts
+            mlp_params += hidden_size * expert_size * 3 * (n_shared_experts or 0)  # shared experts
+            mlp_params += hidden_size * num_experts  # router
+        else:
+            mlp_params = hidden_size * intermediate_size * 3  # up, gate, down
         norm_params = hidden_size * 4  # 2 norms with weight and bias
 
         layer_params = attention_params + mlp_params + norm_params
@@ -221,11 +249,11 @@ class ModelAnalyzer:
                 num_params = params
                 break
 
-        # Try to extract size from name (e.g., "7b", "70b")
+        # Try to extract size from name (e.g., "7b", "70b", "0.5b")
         if num_params is None:
-            match = re.search(r"(\d+)b", name_lower)
+            match = re.search(r"(\d+(?:\.\d+)?)[bB]\b", name_lower)
             if match:
-                num_params = int(match.group(1)) * 1_000_000_000
+                num_params = int(float(match.group(1)) * 1_000_000_000)
 
         # Default to 7B if unknown
         if num_params is None:
